@@ -101,7 +101,9 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 
 The dependency-free site in `site/` is published to <https://mrashrhodes.github.io/glint/> by `.github/workflows/pages.yml` on changes to that directory on `main`, or by manual workflow dispatch. The Pages publishing source must be **GitHub Actions**. Only `site/` is uploaded; research, source and build outputs are not published to Pages.
 
-Preview with `python3 -m http.server 8000 --directory site` and visit <http://localhost:8000/>. Edit `index.html`, `guide.html`, `styles.css` and `site.js` directly. The site works without JavaScript; JavaScript adds preset switching and command copying. Keep all asset links relative for the `/glint/` project path (the custom 404 uses that absolute prefix).
+Preview with `python3 -m http.server 8000 --directory site` and visit <http://localhost:8000/>. Edit `index.html`, `guide.html`, `styles.css` and `site.js` directly. The Light Table shows real pre-rendered exports, not a browser editor: JavaScript adds subject/preset selection, an Original/Finished comparison and command copying. The static preview, installation instructions and guide remain useful without JavaScript. Keep all asset links relative for the `/glint/` project path (the custom 404 uses that absolute prefix).
+
+Run `node --test .github/scripts/site.test.cjs` (Node.js 20+) for asset/link integrity and preview/clipboard regression coverage; CI runs it alongside the app tests. Also check the homepage, guide and 404 in a browser at desktop and narrow mobile widths, with keyboard navigation, reduced motion and JavaScript disabled. Preview requests are latest-wins: a failed or superseded image load must not change the displayed image or selected controls.
 
 `Scripts/make_site_assets.sh` draws original sample images and renders them through Glint. It needs a built app and `cwebp`; set `GLINT_BIN` to use a specific build. The fonts are self-hosted with their OFL license texts in `site/fonts/`. Do not add third-party product artwork or comparison branding.
 

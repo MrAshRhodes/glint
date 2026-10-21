@@ -34,6 +34,9 @@ render terminal "Clean" terminal-clean
 render terminal "Transparent" terminal-transparent
 render dashboard "Default" dashboard-default
 render dashboard "Clean" dashboard-clean
+cwebp -quiet -q 90 "$WORK/src/dashboard.png" -o "$OUT/dashboard-raw.webp"
+render dashboard "Social 16:9" dashboard-social
+render dashboard "Transparent" dashboard-transparent
 
 sips -s format jpeg -Z 1200 "$WORK/terminal-social.png" --out "$OUT/og.jpg" >/dev/null
 sips -z 64 64 docs/assets/icon-1024.png --out site/favicon.png >/dev/null
