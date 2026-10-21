@@ -208,6 +208,12 @@ public struct RenderSettings: Codable, Equatable, Sendable {
     public var cornerRadius: Double
     public var shadow: ShadowSettings
     public var background: BackgroundStyle
+    // Optional storage keeps older presets compatible and omits the key when disabled.
+    private var desktopWallpaper: Bool?
+    public var usesDesktopWallpaper: Bool {
+        get { desktopWallpaper ?? false }
+        set { desktopWallpaper = newValue ? true : nil }
+    }
     public var aspectRatio: AspectRatioPreset
     public var border: BorderStyle
     public var windowFrame: WindowFrameSettings
@@ -226,13 +232,14 @@ public struct RenderSettings: Codable, Equatable, Sendable {
                 windowFrame: WindowFrameSettings = WindowFrameSettings(), tilt: Tilt = .zero,
                 rotation: Rotation = .none, flipHorizontal: Bool = false, flipVertical: Bool = false,
                 watermark: WatermarkSettings = WatermarkSettings(), autoBalance: Bool = true,
-                outputScale: Double = 1) {
+                outputScale: Double = 1, usesDesktopWallpaper: Bool = false) {
         self.padding = padding; self.inset = inset; self.insetColor = insetColor
         self.cornerRadius = cornerRadius; self.shadow = shadow; self.background = background
         self.aspectRatio = aspectRatio; self.border = border; self.windowFrame = windowFrame
         self.tilt = tilt; self.rotation = rotation; self.flipHorizontal = flipHorizontal
         self.flipVertical = flipVertical; self.watermark = watermark; self.autoBalance = autoBalance
         self.outputScale = outputScale
+        self.desktopWallpaper = usesDesktopWallpaper ? true : nil
     }
 
     public static let `default` = RenderSettings()

@@ -95,6 +95,7 @@ final class EditorModel: ObservableObject {
     @Published var settings: RenderSettings {
         didSet {
             guard settings != oldValue else { return }
+            if settings.usesDesktopWallpaper != oldValue.usesDesktopWallpaper { refreshWallpaper() }
             preferences.lastRenderSettings = settings
             preferences.autoBalance = settings.autoBalance
             requestRender()
@@ -114,6 +115,7 @@ final class EditorModel: ObservableObject {
         didSet { if editingID != oldValue { requestRender() } }
     }
     @Published private(set) var preview: Preview?
+    @Published private(set) var wallpaperProblem: String?
     @Published var presets: [Preset] = []
     @Published var statusMessage: String?
     @Published var ocrLines: [RecognizedLine] = []
@@ -126,6 +128,8 @@ final class EditorModel: ObservableObject {
     var previewTarget = CGSize(width: 1800, height: 1200)
 
     private var backgroundCache: [String: CGImage] = [:]
+    private let wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError>
+    private var wallpaperImage: CGImage?
     private var rendering = false
     private var dirty = false
     private var scheduled = false
@@ -134,13 +138,15 @@ final class EditorModel: ObservableObject {
     private var styleEditDate = Date.distantPast
     private var autoRedactIDs: Set<UUID> = []
 
-    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
+    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore,
+         wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
         self.image = context.image
         self.backingScale = max(context.backingScale, 1)
         self.rawURL = context.rawURL
         self.source = context.source
         self.preferences = preferences
         self.presetStore = presetStore
+        self.wallpaperProvider = wallpaperProvider
         self.settings = EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore)
         self.redactStyle = preferences.redactStyle
         self.redactOptions = preferences.autoRedactOptions
@@ -150,6 +156,7 @@ final class EditorModel: ObservableObject {
         style.fontSize = TextSizeVariant.normal.rawValue * Double(max(context.backingScale, 1))
         self.defaultStyle = style
         self.presets = presetStore.presets
+        refreshWallpaper()
         requestRender()
         if preferences.autoRedact { Task { await self.runAutoRedact(announce: false) } }
     }
@@ -168,6 +175,23 @@ final class EditorModel: ObservableObject {
     private var pixelScale: Double { Double(backingScale) }
 
     // MARK: Rendering
+
+    private func refreshWallpaper() {
+        wallpaperImage = nil
+        wallpaperProblem = nil
+        guard settings.usesDesktopWallpaper else { return }
+        switch wallpaperProvider() {
+        case .success(let image): wallpaperImage = image
+        case .failure(let error): wallpaperProblem = error.localizedDescription
+        }
+    }
+
+    func chooseBackground(_ background: BackgroundStyle) {
+        var updated = settings
+        updated.background = background
+        updated.usesDesktopWallpaper = false
+        settings = updated
+    }
 
     func requestRender() {
         dirty = true
@@ -206,10 +230,12 @@ final class EditorModel: ObservableObject {
         var s = settings
         s.outputScale = settings.outputScale * Double(previewScale())
         let bg = backgroundImage(for: settings)
+        let wallpaper = wallpaperImage
         let img = image, scale = backingScale
         let anns = annotations.filter { $0.id != editingID }
         Task.detached(priority: .userInitiated) { [weak self] in
-            let r = Compositor.renderDetailed(image: img, settings: s, annotations: anns, backingScale: scale, backgroundImage: bg)
+            let r = Compositor.renderDetailed(image: img, settings: s, annotations: anns, backingScale: scale,
+                                              backgroundImage: bg, wallpaper: wallpaper)
             var region = CGRect(origin: .zero, size: img.pixelSize)
             if let b = r.border { region = AutoBalance.balanceCropRect(imageSize: img.pixelSize, border: b) }
             let p = Preview(image: r.image, layout: r.layout,
@@ -236,7 +262,7 @@ final class EditorModel: ObservableObject {
     /// Full-resolution output with every annotation burned in.
     func renderFinal() -> CGImage {
         Compositor.render(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
-                          backgroundImage: backgroundImage(for: settings))
+                          backgroundImage: backgroundImage(for: settings), wallpaper: wallpaperImage)
     }
 
     // MARK: Annotation editing

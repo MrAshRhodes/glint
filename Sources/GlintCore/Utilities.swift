@@ -121,9 +121,9 @@ public enum GlintImageIO {
         return decode(src)
     }
 
-    private static func decode(_ src: CGImageSource) -> CGImage? {
-        guard let first = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
-        let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+    static func decode(_ src: CGImageSource, index: Int = 0) -> CGImage? {
+        guard let first = CGImageSourceCreateImageAtIndex(src, index, nil) else { return nil }
+        let props = CGImageSourceCopyPropertiesAtIndex(src, index, nil) as? [CFString: Any]
         let orientation = (props?[kCGImagePropertyOrientation] as? Int) ?? 1
         if orientation != 1 {
             let opts: [CFString: Any] = [
@@ -131,7 +131,7 @@ public enum GlintImageIO {
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: max(first.width, first.height),
             ]
-            if let t = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) { return t.glintSRGB() }
+            if let t = CGImageSourceCreateThumbnailAtIndex(src, index, opts as CFDictionary) { return t.glintSRGB() }
         }
         return first.glintSRGB()
     }

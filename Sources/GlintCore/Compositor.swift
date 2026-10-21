@@ -23,13 +23,15 @@ public struct RenderResult {
 public enum Compositor {
     /// Output image of the full "beautify" pipeline. Deterministic for identical inputs.
     public static func render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
-                              backingScale: CGFloat = 1, backgroundImage: CGImage? = nil) -> CGImage {
+                              backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
+                              wallpaper: CGImage? = nil) -> CGImage {
         renderDetailed(image: image, settings: settings, annotations: annotations,
-                       backingScale: backingScale, backgroundImage: backgroundImage).image
+                       backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper).image
     }
 
     public static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
-                                      backingScale: CGFloat = 1, backgroundImage: CGImage? = nil) -> RenderResult {
+                                      backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
+                                      wallpaper: CGImage? = nil) -> RenderResult {
         let source = image.glintSRGB()
 
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
@@ -60,9 +62,13 @@ public enum Compositor {
         let k = layout.factor
 
         // 4. background
-        var bgImage = backgroundImage
-        if bgImage == nil, case .image(let path, _) = settings.background { bgImage = GlintImageIO.load(url: URL(fileURLWithPath: path)) }
-        BackgroundRenderer.fill(settings.background, in: ctx, size: layout.canvasSize, scale: k, image: bgImage)
+        if settings.usesDesktopWallpaper, let wallpaper {
+            BackgroundRenderer.fill(.image(path: "", fit: .fill), in: ctx, size: layout.canvasSize, scale: k, image: wallpaper)
+        } else {
+            var bgImage = backgroundImage
+            if bgImage == nil, case .image(let path, _) = settings.background { bgImage = GlintImageIO.load(url: URL(fileURLWithPath: path)) }
+            BackgroundRenderer.fill(settings.background, in: ctx, size: layout.canvasSize, scale: k, image: bgImage)
+        }
 
         // 5. card (+shadow), optionally tilted
         if settings.tilt.isFlat {

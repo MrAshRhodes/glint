@@ -1,5 +1,5 @@
 import AppKit
-import GlintCore
+@testable import GlintCore
 import Testing
 @testable import Glint
 
@@ -16,6 +16,9 @@ private final class CaptureFixture {
     var notifications: [(title: String, body: String, url: URL?)] = []
     var recent: [URL] = []
     var copies = 0
+    var copiedImage: CGImage?
+    var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
+    var wallpaperReads = 0
     var failWrite = false
     var failRaw = false
     var copySucceeds = true
@@ -55,7 +58,8 @@ private final class CaptureFixture {
             }
             return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
         }
-        services.copy = { [self] _ in copies += 1; return copySucceeds }
+        services.copy = { [self] image in copies += 1; copiedImage = image; return copySucceeds }
+        services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
         services.recognize = { [self] _, _ in
             if failRecognition { throw TestFailure.recognition }
             return lines
@@ -95,6 +99,40 @@ struct CapturePipelineTests {
         #expect(f.recent == [write.url] && f.copies == 0)
         #expect(f.notifications.map(\.title) == ["Screenshot saved"])
         #expect(f.notifications.first?.url == write.url)
+        #expect(f.wallpaperReads == 0)
+    }
+
+    @Test func wallpaperPresetUsesSameImageForAutomaticSaveAndCopy() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.presets.add(name: "Test", settings: RenderSettings(
+            padding: 20, cornerRadius: 0, shadow: .none, background: .solid(.black), usesDesktopWallpaper: true
+        ))
+        f.wallpaper = .success(f.image)
+        f.preferences.exportFormat = .plainPNG
+        f.preferences.exportScale = .original
+        f.preferences.copyToClipboardAfterCapture = true
+        await f.run()
+        let savedURL = try #require(f.recent.first)
+        let saved = try #require(GlintImageIO.load(url: savedURL))
+        let copied = try #require(f.copiedImage)
+        #expect(try #require(PixelBuffer(saved)).pixel(1, 1) == (255, 255, 255, 255))
+        #expect(PixelBuffer(saved)?.data == PixelBuffer(copied)?.data)
+        #expect(f.wallpaperReads == 1 && f.copies == 1)
+        #expect(f.notifications.map(\.title) == ["Screenshot saved"])
+    }
+
+    @Test func unreadableWallpaperReportsFallbackWithoutBlockingExport() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.presets.add(name: "Test", settings: RenderSettings(
+            padding: 20, cornerRadius: 0, shadow: .none, background: .solid(.black), usesDesktopWallpaper: true
+        ))
+        f.preferences.exportFormat = .plainPNG
+        await f.run()
+        let savedURL = try #require(f.recent.first)
+        let saved = try #require(GlintImageIO.load(url: savedURL))
+        #expect(try #require(PixelBuffer(saved)).pixel(1, 1) == (0, 0, 0, 255))
+        #expect(f.notifications.first?.body.contains(DesktopWallpaperError.unavailable.localizedDescription) == true)
+        #expect(f.wallpaperReads == 1)
     }
 
     @Test func clipboardOnlyNeverSavesRenderedOutput() async throws {
