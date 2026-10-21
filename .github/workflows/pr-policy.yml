@@ -1,0 +1,37 @@
+name: PR policy
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: pr-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  issue-link:
+    name: Issue link
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test the issue-link policy
+        run: node --test .github/scripts/issue-link.test.cjs
+
+      - name: Require a real issue in this repository
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { checkIssueLink } = require('./.github/scripts/issue-link.cjs');
+            const numbers = await checkIssueLink({ github, context });
+            core.info(`Linked issues: ${numbers.map(number => `#${number}`).join(', ')}`);
