@@ -2,6 +2,7 @@ import Testing
 @testable import Glint
 
 @Suite("Command-line arguments")
+@MainActor
 struct CommandLineTests {
     @Test(arguments: ["--help", "-h", "--version", "-v"])
     func helpAndVersionAliasesExitWithoutStartingGUI(_ argument: String) {

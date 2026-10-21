@@ -19,6 +19,7 @@ final class CapturePipeline {
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
         var sound: @MainActor () -> Void = { Notifier.playSound() }
         var addRecent: (URL) -> Void = { RecentFiles.add($0) }
+        var wallpaper: @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }
     }
 
     let prefs: AppPreferences
@@ -168,7 +169,16 @@ final class CapturePipeline {
     }
 
     private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool) {
-        let rendered = Compositor.render(image: image, settings: settings(), backingScale: scale)
+        let settings = settings()
+        var wallpaper: CGImage?
+        var wallpaperProblem: String?
+        if settings.usesDesktopWallpaper {
+            switch services.wallpaper() {
+            case .success(let image): wallpaper = image
+            case .failure(let error): wallpaperProblem = error.localizedDescription
+            }
+        }
+        let rendered = Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
         var saved: URL?
         var failures: [String] = []
         if prefs.saveOutput && !clipboardOnly {
@@ -198,7 +208,7 @@ final class CapturePipeline {
             title = "Screenshot export failed"
             detail = "The beautified image was not saved or copied."
         }
-        services.notify(title, ([detail] + failures).joined(separator: "\n"), saved)
+        services.notify(title, ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n"), saved)
         if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
             quickAccess.show(image: rendered, fileURL: saved) { [weak self] in
                 self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)

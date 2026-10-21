@@ -4,6 +4,7 @@ import GlintCapture
 import GlintCore
 
 /// Headless command-line entry points. Returns an exit code, or nil to start the GUI.
+@MainActor
 enum CommandLine_ {
     static let usage = """
     Usage: Glint [options]
@@ -76,7 +77,15 @@ enum CommandLine_ {
             }
             settings = p.settings
         }
-        let result = Compositor.render(image: image, settings: settings, backingScale: scale)
+        var wallpaper: CGImage?
+        if settings.usesDesktopWallpaper {
+            switch DesktopWallpaper.current() {
+            case .success(let image): wallpaper = image
+            case .failure(let error):
+                FileHandle.standardError.write(Data("warning: \(error.localizedDescription)\n".utf8))
+            }
+        }
+        let result = Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
         let format: ExportFormat
         switch output.pathExtension.lowercased() {
         case "jpg", "jpeg": format = .jpeg(quality: 0.9)

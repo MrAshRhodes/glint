@@ -69,6 +69,11 @@
           <p>Start with a preset, then adjust the background, padding, inset, corner radius and shadow. Choose an aspect ratio for the destination, or keep the natural image proportions. You can also rotate, flip, add perspective, apply a window frame or add a watermark.</p>
           <p><strong>Auto-balance</strong> looks for uniform image borders and balances the margins. It works best on screenshots with clear, flat surrounding space.</p>
           <p>The backgrounds include gradients, mesh gradients, patterns, solids and transparency. A custom image is also supported.</p>
+          <h3 id="desktop-wallpaper">Use your desktop wallpaper</h3>
+          <p>Check <strong>Use desktop wallpaper</strong> under Background. Glint reads the system wallpaper image directly, without a file picker. It never captures desktop icons, windows or other desktop content for the background. The image fills the canvas, cropping at the edges when needed; padding, shadows, rounded corners, frames and other styling still work.</p>
+          <p>Glint uses the wallpaper macOS reports for the <strong>main display (the display with the primary menu bar), in its current Space</strong>, even when the capture or editor is on another display. It keeps that image fixed in the editor so preview and export use the same wallpaper. Toggle the checkbox off and on to refresh after changing wallpapers or Spaces.</p>
+          <p><strong>Dynamic wallpapers:</strong> Glint uses the image file's primary still, which may differ from the time-of-day or animated scene currently on your desktop. For rotating wallpapers, it uses the current image if macOS supplies an image file. If macOS supplies only a folder, no readable file, or an unsupported wallpaper, Glint explains the problem and uses your normal background instead.</p>
+          <p>Uncheck the option to restore your previous background, or choose any normal background control to switch away from wallpaper. The option is remembered in your editor settings and saved presets; a preset resolves the current wallpaper rather than storing a copy of it. Direct capture exports and command-line renders use the same rule and report a warning if they need to fall back.</p>
         </section>
         <section id="annotations">
           <h2>Annotations</h2>

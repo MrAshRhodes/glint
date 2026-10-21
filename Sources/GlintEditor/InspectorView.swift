@@ -204,6 +204,21 @@ struct InspectorView: View {
 
     private var backgroundSection: some View {
         Section(title: "Background") {
+            Toggle("Use desktop wallpaper", isOn: s.usesDesktopWallpaper)
+                .toggleStyle(.checkbox)
+            if model.settings.usesDesktopWallpaper {
+                Text("Main display, current Space. Toggle off and on to refresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Dynamic wallpapers use their primary still image.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let problem = model.wallpaperProblem {
+                Label(problem, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             let cols = Array(repeating: GridItem(.fixed(34), spacing: 6), count: 6)
             LazyVGrid(columns: cols, alignment: .leading, spacing: 6) {
                 swatch(id: "none", name: "None", style: .transparent, selected: model.settings.background == .transparent)
@@ -215,7 +230,7 @@ struct InspectorView: View {
                 ColorPicker("Solid colour", selection: colorBinding({
                     if case .solid(let c) = model.settings.background { return c }
                     return .white
-                }) { model.settings.background = .solid($0) }, supportsOpacity: false)
+                }) { model.chooseBackground(.solid($0)) }, supportsOpacity: false)
                     .font(.system(size: 12))
                 Spacer()
                 Button("Image…") { chooseBackgroundImage() }
@@ -223,23 +238,24 @@ struct InspectorView: View {
             if case .linear(let g) = model.settings.background, let first = g.stops.first, let last = g.stops.last {
                 HStack {
                     ColorPicker("From", selection: colorBinding({ first.color }) { c in
-                        var n = g; n.stops[0].color = c; model.settings.background = .linear(n) }, supportsOpacity: false)
+                        var n = g; n.stops[0].color = c; model.chooseBackground(.linear(n)) }, supportsOpacity: false)
                     ColorPicker("To", selection: colorBinding({ last.color }) { c in
-                        var n = g; n.stops[n.stops.count - 1].color = c; model.settings.background = .linear(n) }, supportsOpacity: false)
+                        var n = g; n.stops[n.stops.count - 1].color = c; model.chooseBackground(.linear(n)) }, supportsOpacity: false)
                 }
                 .font(.system(size: 12))
                 SliderRow(title: "Gradient angle", value: Binding(get: { g.angle }, set: { v in
-                    var n = g; n.angle = v; model.settings.background = .linear(n) }), range: 0...360) { "\(Int($0))°" }
+                    var n = g; n.angle = v; model.chooseBackground(.linear(n)) }), range: 0...360) { "\(Int($0))°" }
             } else {
                 Button("Custom gradient") {
-                    model.settings.background = .linear(LinearGradient(angle: 135, hexes: ["#6A11CB", "#2575FC"]))
+                    model.chooseBackground(.linear(LinearGradient(angle: 135, hexes: ["#6A11CB", "#2575FC"])))
                 }
             }
         }
     }
 
     private func swatch(id: String, name: String, style: GlintCore.BackgroundStyle, selected: Bool) -> some View {
-        Button { model.settings.background = style } label: {
+        let selected = selected && !model.settings.usesDesktopWallpaper
+        return Button { model.chooseBackground(style) } label: {
             Group {
                 if style == .transparent {
                     Image(systemName: "nosign").foregroundStyle(.secondary).frame(width: 30, height: 30)
@@ -261,7 +277,7 @@ struct InspectorView: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            model.settings.background = .image(path: url.path, fit: .fill)
+            model.chooseBackground(.image(path: url.path, fit: .fill))
         }
     }
 

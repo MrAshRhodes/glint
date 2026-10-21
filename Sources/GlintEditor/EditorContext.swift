@@ -35,8 +35,20 @@ public enum EditorHeadless {
     }
 
     /// Composes the capture with the current preferences (and auto-redaction when enabled).
-    public static func render(context: EditorContext, preferences: AppPreferences) -> CGImage {
+    @MainActor
+    public static func render(context: EditorContext, preferences: AppPreferences,
+                              wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() },
+                              onWallpaperFailure: (DesktopWallpaperError) -> Void = {
+                                  FileHandle.standardError.write(Data("warning: \($0.localizedDescription)\n".utf8))
+                              }) -> CGImage {
         let settings = initialSettings(preferences: preferences)
+        var wallpaper: CGImage?
+        if settings.usesDesktopWallpaper {
+            switch wallpaperProvider() {
+            case .success(let image): wallpaper = image
+            case .failure(let error): onWallpaperFailure(error)
+            }
+        }
         var annotations: [Annotation] = []
         if preferences.autoRedact, let lines = try? TextRecognizer.recognizeSync(in: context.image) {
             var options = AutoRedactOptions(detector: preferences.autoRedactOptions, style: preferences.redactStyle,
@@ -45,6 +57,6 @@ public enum EditorHeadless {
             annotations = AutoRedact.annotations(for: lines, options: options, imageSize: context.image.pixelSize)
         }
         return Compositor.render(image: context.image, settings: settings, annotations: annotations,
-                                 backingScale: context.backingScale)
+                                 backingScale: context.backingScale, wallpaper: wallpaper)
     }
 }
