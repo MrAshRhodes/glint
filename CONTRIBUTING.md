@@ -65,6 +65,7 @@ Resources/                Info.plist, entitlements and the generated app icon
 Scripts/                  Build, packaging and release scripts
 packaging/homebrew/       Homebrew cask template
 .github/workflows/        CI and release workflows
+site/                     Static product site and user guide (GitHub Pages)
 ```
 
 ## Architecture
@@ -96,6 +97,14 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 - Document public API with `///` comments and explain why, not what.
 - Do not add a third-party dependency without discussing it in an issue first.
 
+## Product site
+
+The dependency-free site in `site/` is published to <https://mrashrhodes.github.io/glint/> by `.github/workflows/pages.yml` on changes to that directory on `main`, or by manual workflow dispatch. The Pages publishing source must be **GitHub Actions**. Only `site/` is uploaded; research, source and build outputs are not published to Pages.
+
+Preview with `python3 -m http.server 8000 --directory site` and visit <http://localhost:8000/>. Edit `index.html`, `guide.html`, `styles.css` and `site.js` directly. The site works without JavaScript; JavaScript adds preset switching and command copying. Keep all asset links relative for the `/glint/` project path (the custom 404 uses that absolute prefix).
+
+`Scripts/make_site_assets.sh` draws original sample images and renders them through Glint. It needs a built app and `cwebp`; set `GLINT_BIN` to use a specific build. The fonts are self-hosted with their OFL license texts in `site/fonts/`. Do not add third-party product artwork or comparison branding.
+
 ## Packaging, releasing and signing
 
 ### Local packages
@@ -114,6 +123,8 @@ Published releases are immutable. The cask pins the sha256 of the release zip, a
 ### Homebrew tap
 
 Users install with `brew install --cask mrashrhodes/tap/glint`. The cask lives in the `MrAshRhodes/homebrew-tap` repository and is rendered from `packaging/homebrew/glint.rb.tmpl` by `Scripts/render_cask.sh`.
+
+Updates are manual: users quit Glint, run `brew update && brew upgrade --cask glint`, then reopen it. `brew update` alone does not upgrade the app. Glint's Check for Updates action checks the latest GitHub release, not the tap; finish the tap update before announcing that Homebrew users can upgrade.
 
 - Preview what a release would publish: `Scripts/update_tap.sh --version X.Y.Z --from-release --dry-run`. It prints the cask and diffs it against the tap without changing anything.
 - Create the tap repository the first time (needs `gh auth login`): `Scripts/update_tap.sh --create`.

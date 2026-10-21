@@ -420,6 +420,10 @@ private struct AboutTab: View {
                 Button("Check for Updates") { UpdateChecker.check() }
                 Button("GitHub") { NSWorkspace.shared.open(GlintInfo.repositoryURL) }
             }
+            Text("Updates are manual. Glint does not download or install them automatically.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Link("How to update with Homebrew or a download", destination: UpdateChecker.guideURL)
+                .font(.caption)
             Divider()
             PermissionsPane()
             Spacer()

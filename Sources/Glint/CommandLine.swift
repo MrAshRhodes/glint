@@ -16,7 +16,7 @@ enum CommandLine_ {
     """
 
     static func run(_ args: [String]) -> Int32? {
-        guard let first = args.first(where: { $0.hasPrefix("--") }) else { return nil }
+        guard let first = args.first(where: { $0.hasPrefix("-") }) else { return nil }
         switch first {
         case "--version", "-v":
             print("Glint \(AppInfo.version)")
@@ -53,6 +53,16 @@ enum CommandLine_ {
             guard let k = args.firstIndex(of: flag), args.count > k + 1 else { return nil }
             return args[k + 1]
         }
+        let scale: CGFloat
+        if args.contains("--scale") {
+            guard let value = value("--scale"), let number = Double(value), number.isFinite, number > 0 else {
+                FileHandle.standardError.write(Data("--scale needs a finite number greater than zero\n".utf8))
+                return 2
+            }
+            scale = CGFloat(number)
+        } else {
+            scale = 1
+        }
         guard let image = GlintImageIO.load(url: input) else {
             FileHandle.standardError.write(Data("cannot read image: \(input.path)\n".utf8))
             return 1
@@ -66,7 +76,6 @@ enum CommandLine_ {
             }
             settings = p.settings
         }
-        let scale = value("--scale").flatMap(Double.init).map { CGFloat($0) } ?? 1
         let result = Compositor.render(image: image, settings: settings, backingScale: scale)
         let format: ExportFormat
         switch output.pathExtension.lowercased() {

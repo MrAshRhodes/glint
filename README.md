@@ -6,6 +6,8 @@ Open-source screenshot beautifier for macOS. Capture an area, window or screen, 
 
 Glint is an independent project, released under the MIT license. It is not affiliated with or endorsed by any other screenshot product.
 
+**[Product site](https://mrashrhodes.github.io/glint/)** · **[User guide](https://mrashrhodes.github.io/glint/guide.html)** · **[Releases](https://github.com/MrAshRhodes/glint/releases/latest)**
+
 ## Install
 
 ```sh
@@ -19,10 +21,24 @@ The app is ad-hoc signed, not notarized. The Homebrew cask clears the quarantine
 
 Requires macOS 14 or later. On first launch grant **Screen Recording** permission (System Settings → Privacy & Security).
 
+## Updates
+
+Glint does **not** automatically download or install updates. **Check for Updates…** in the menu bar (also in Preferences → About) checks GitHub for a newer release and explains how to install it.
+
+For a Homebrew installation, save your work, quit Glint, then run:
+
+```sh
+brew update && brew upgrade --cask glint
+```
+
+Reopen Glint afterward. `brew update` refreshes Homebrew's package list; only `brew upgrade` installs the newer app. A release must also be published to the Homebrew tap before it appears there.
+
+For a manual installation, quit Glint, download the latest ZIP or DMG, replace `/Applications/Glint.app`, and reopen it. Your separately stored preferences, presets and images remain in place. Ad-hoc signing means macOS may require Screen Recording permission again after an update. See the [update guide](https://mrashrhodes.github.io/glint/guide.html#updates).
+
 ## Features
 
 - **Capture**: area (crosshair overlay), window picker, full screen, repeat last area, timer (3/5/10 s), capture text (OCR to clipboard). Multi-display and Retina aware.
-- **Global hotkeys**: ⌃⌥⌘4 area, ⌃⌥⌘5 window by default. All rebindable.
+- **Global hotkeys**: ⌃⌥⌘4 area to editor, ⌃⌥⌘5 area to clipboard, ⌃⌥⌘6 window, ⌃⌥⌘3 full screen, ⌃⌥⌘7 OCR, ⌃⌥⌘R repeat last area. All rebindable.
 - **Beautify**: 32 built-in backgrounds (gradients, mesh, patterns, solid, transparent, your own image), padding, inset, corner radius, two-layer shadow, 3D tilt, rotate/flip, window frames, watermark.
 - **Auto-balance**: detects uniform borders and balances the margins.
 - **Aspect ratios**: auto, 1:1, 4:3, 3:2, 16:9, 9:16, 4:5, and social presets, plus custom.

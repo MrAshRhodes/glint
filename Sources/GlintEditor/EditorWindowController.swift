@@ -3,6 +3,18 @@ import GlintCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct EditorExportServices {
+    var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+    var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
+        try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
+    }
+    var beep: () -> Void = { NSSound.beep() }
+    var dragDirectory: URL = (
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches")
+    ).appendingPathComponent("Glint/Drag", isDirectory: true)
+}
+
 /// Window that routes editor shortcuts unless a text field is being edited.
 final class EditorWindow: NSWindow {
     weak var controller: EditorWindowController?
@@ -19,14 +31,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     public var onClose: (() -> Void)?
     public var onExported: ((URL?) -> Void)?
 
-    private let model: EditorModel
+    let model: EditorModel
+    private let exportServices: EditorExportServices
     private let actions = EditorActions()
     private let canvas: CanvasView
-    private var dragFile: URL?
+    private var dragFiles: Set<URL> = []
 
-    public init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
+    public convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
+        self.init(context: context, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
+    }
+
+    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, exportServices: EditorExportServices) {
         let model = EditorModel(context: context, preferences: preferences, presetStore: presetStore)
         self.model = model
+        self.exportServices = exportServices
         self.canvas = CanvasView(model: model)
 
         let window = EditorWindow(contentRect: NSRect(x: 0, y: 0, width: 1261, height: 704),
@@ -100,15 +118,18 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// Copies the composed output (annotations burned in) to the clipboard.
-    public func copyToClipboard() {
+    @discardableResult
+    public func copyToClipboard() -> Bool {
         canvas.endEditing()
         let image = model.renderFinal()
-        if Exporter.copyToClipboard(image) {
+        if exportServices.copy(image) {
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
+            return true
         } else {
             model.statusMessage = "Copy failed"
-            NSSound.beep()
+            exportServices.beep()
+            return false
         }
     }
 
@@ -130,18 +151,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         canvas.endEditing()
         let image = model.renderFinal()
         do {
-            try Exporter.write(image, to: url, format: format, scale: model.preferences.exportScale, backingScale: model.backingScale)
+            _ = try exportServices.write(image, url, format, model.preferences.exportScale, model.backingScale)
             model.statusMessage = "Saved \(url.lastPathComponent)"
             onExported?(url)
         } catch {
             model.statusMessage = "Save failed: \(error.localizedDescription)"
-            NSSound.beep()
+            exportServices.beep()
         }
     }
 
     func copyAndMaybeClose() {
-        copyToClipboard()
-        if model.preferences.closeAfterCopy { window?.close() }
+        if copyToClipboard(), model.preferences.closeAfterCopy { window?.close() }
     }
 
     private func saveAs() {
@@ -180,20 +200,18 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// Renders the output to a cache file used as the drag-out payload.
-    private func prepareDragFile() -> URL? {
+    func prepareDragFile() -> URL? {
         canvas.endEditing()
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches")
-        let dir = caches.appendingPathComponent("Glint/Drag", isDirectory: true)
+        let dir = exportServices.dragDirectory
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
         let url = FileNaming.uniqueURL(directory: dir, baseName: name, ext: "png")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         do {
-            try Exporter.write(model.renderFinal(), to: url, format: .plainPNG, scale: model.preferences.exportScale,
-                               backingScale: model.backingScale)
-            dragFile = url
+            _ = try exportServices.write(model.renderFinal(), url, .plainPNG, model.preferences.exportScale, model.backingScale)
+            dragFiles.insert(url)
             return url
         } catch {
+            model.statusMessage = "Drag export failed: \(error.localizedDescription)"
+            exportServices.beep()
             return nil
         }
     }
@@ -249,7 +267,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     public func windowWillClose(_ notification: Notification) {
         canvas.endEditing()
-        if let dragFile { try? FileManager.default.removeItem(at: dragFile) }
+        for url in dragFiles { try? FileManager.default.removeItem(at: url) }
+        dragFiles.removeAll()
         onClose?()
     }
 

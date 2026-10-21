@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glint — screenshots, dressed for the occasion</title>
+  <meta name="description" content="A free, open-source screenshot beautifier for macOS. Capture, style, annotate and redact on your Mac. No account. No uploads.">
+  <meta name="theme-color" content="#f3eee4">
+  <link rel="canonical" href="https://mrashrhodes.github.io/glint/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Glint — screenshots, dressed for the occasion">
+  <meta property="og:description" content="Capture it. Make it glint. Free, open-source screenshot tools for macOS.">
+  <meta property="og:url" content="https://mrashrhodes.github.io/glint/">
+  <meta property="og:image" content="https://mrashrhodes.github.io/glint/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="preload" href="fonts/InstrumentSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="./" aria-label="Glint home"><img src="favicon.png" width="34" height="34" alt="">Glint</a>
+      <nav class="nav" aria-label="Main navigation">
+        <a class="hide-sm" href="#features">Features</a>
+        <a href="guide.html">Guide</a>
+        <a class="hide-sm" href="https://github.com/MrAshRhodes/glint">GitHub</a>
+        <a class="nav-cta" href="#install">Get Glint</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow rise">A little light for your screenshots</p>
+          <h1 class="rise">Capture it.<br><em>Make it <span class="mark">glint.</span></em></h1>
+          <p class="lede rise">The screenshot is just the beginning. Give it a background, a little breathing room, and something worth sharing. Free and open source. Made for your Mac.</p>
+          <div class="cmd rise">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code id="install-command">brew install --cask MrAshRhodes/tap/glint</code>
+            <button class="copy" type="button" data-copy="install-command" aria-label="Copy install command" hidden>
+              <svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg>
+              <svg class="icon-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+            </button>
+          </div>
+          <div class="hero-actions rise">
+            <a class="btn btn-ink" href="https://github.com/MrAshRhodes/glint/releases/latest">Download for Mac <span aria-hidden="true">↗</span></a>
+            <a class="btn btn-ghost" href="guide.html">Get started <span aria-hidden="true">→</span></a>
+          </div>
+          <ul class="meta rise"><li>Free · MIT license</li><li>macOS 14+</li><li>Apple silicon + Intel</li></ul>
+        </div>
+        <figure class="stage rise">
+          <span class="scribble" aria-hidden="true">Real renderer output
+            <svg viewBox="0 0 64 52" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4c38-5 42 16 35 38m-8-10 9 12 12-9"/></svg>
+          </span>
+          <div class="stage-frame">
+            <div class="stage-view" id="preset-preview" role="tabpanel" aria-labelledby="tab-default" tabindex="0">
+              <img id="demo-image" src="assets/terminal-default.webp" width="1712" height="1052" alt="A fictional terminal capture with Glint's Default gradient background, rounded corners and shadow" fetchpriority="high">
+            </div>
+          </div>
+          <div class="tabs" role="tablist" aria-label="Preview a Glint preset" hidden>
+            <button type="button" role="tab" id="tab-raw" aria-controls="preset-preview" aria-selected="false" tabindex="-1" data-preset="raw">Raw</button>
+            <button type="button" role="tab" id="tab-default" aria-controls="preset-preview" aria-selected="true" tabindex="0" data-preset="default">Default</button>
+            <button type="button" role="tab" id="tab-social" aria-controls="preset-preview" aria-selected="false" tabindex="-1" data-preset="social">Social 16:9</button>
+            <button type="button" role="tab" id="tab-clean" aria-controls="preset-preview" aria-selected="false" tabindex="-1" data-preset="clean">Clean</button>
+            <button type="button" role="tab" id="tab-transparent" aria-controls="preset-preview" aria-selected="false" tabindex="-1" data-preset="transparent">Transparent</button>
+          </div>
+          <figcaption class="stage-caption">
+            <span>Original sample artwork, styled by Glint.</span>
+            <output id="demo-size" aria-live="polite">Default · 1712 × 1052</output>
+          </figcaption>
+          <p id="demo-error" role="status"></p>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section wrap" id="features">
+      <div class="section-head">
+        <div><span class="kicker">From capture to keeper</span><h2>Small details.<br><em>Big difference.</em></h2></div>
+        <p>For the bug report that needs context, the launch post that needs polish, and the tutorial that needs one very good arrow.</p>
+      </div>
+      <ul class="features">
+        <li class="feature wide"><h3>Start with exactly what you need.</h3><p>Grab an area, a window or your screen. Repeat the last area, set a 3, 5 or 10 second timer, or open an existing image. Global shortcuts keep capture close at hand.</p><ul class="chips"><li>Retina aware</li><li>Multiple displays</li><li>OCR to clipboard</li></ul></li>
+        <li class="feature dark"><h3>Your images stay yours.</h3><p>Rendering and text recognition run on your Mac. No account, no image uploads, no cloud processing.</p></li>
+        <li class="feature"><h3>Set the scene.</h3><p>Choose from 32 built-in backgrounds or bring your own image. Dial in padding, inset, corner radius and shadow.</p></li>
+        <li class="feature"><h3>Get the framing right.</h3><p>Balance empty margins, choose an aspect ratio, add a window frame, or give your capture a little perspective.</p></li>
+        <li class="feature"><h3>Make your point.</h3><p>Arrows, shapes, pen strokes, highlighter, text and numbered steps. Style each object, arrange layers, and undo your last move.</p></li>
+        <li class="feature"><h3>Leave private details out.</h3><p>Blur, pixelate or cover a region. Optional on-device detection helps find sensitive text. Always inspect the result before sharing.</p></li>
+        <li class="feature"><h3>Find your signature look.</h3><p>Save a preset, make it the default, and apply the same treatment to your next capture. Less fiddling. More consistency.</p></li>
+        <li class="feature"><h3>Ready for wherever it goes.</h3><p>Export PNG, JPEG, HEIC or TIFF at 1× or 2×. Copy, save, share, or drag an image out of the editor.</p></li>
+      </ul>
+    </section>
+
+    <section class="section wrap showcase">
+      <div class="pair">
+        <img src="assets/dashboard-default.webp" width="1472" height="992" alt="An original project dashboard styled with Glint's colorful Default preset" loading="lazy" decoding="async">
+        <img src="assets/dashboard-clean.webp" width="1408" height="928" alt="The same sample dashboard with the minimal Clean preset" loading="lazy" decoding="async">
+      </div>
+      <div><span class="kicker">One capture, your way</span><h2>A good look.<br><em>On repeat.</em></h2><p class="lede">Keep the original. Make the finished image your own. Presets turn a handful of adjustments into a repeatable style.</p><a href="guide.html#presets">Meet your four starting presets <span aria-hidden="true">→</span></a></div>
+    </section>
+
+    <section class="section wrap">
+      <div class="section-head"><div><span class="kicker">Under your fingertips</span><h2>Less clicking.<br><em>More capturing.</em></h2></div><p>Defaults use Control + Option + Command. Rebind them in Preferences to fit your muscle memory.</p></div>
+      <table class="keys">
+        <caption class="visually-hidden">Default global capture shortcuts</caption>
+        <tbody>
+          <tr><th scope="row">Capture area → editor</th><td><kbd aria-label="Control Option Command 4">⌃⌥⌘ 4</kbd></td></tr>
+          <tr><th scope="row">Capture area → clipboard</th><td><kbd aria-label="Control Option Command 5">⌃⌥⌘ 5</kbd></td></tr>
+          <tr><th scope="row">Capture window</th><td><kbd aria-label="Control Option Command 6">⌃⌥⌘ 6</kbd></td></tr>
+          <tr><th scope="row">Capture full screen</th><td><kbd aria-label="Control Option Command 3">⌃⌥⌘ 3</kbd></td></tr>
+          <tr><th scope="row">Capture text (OCR)</th><td><kbd aria-label="Control Option Command 7">⌃⌥⌘ 7</kbd></td></tr>
+          <tr><th scope="row">Repeat last area</th><td><kbd aria-label="Control Option Command R">⌃⌥⌘ R</kbd></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section band" id="install">
+      <div class="wrap">
+        <div class="section-head"><div><span class="kicker">Make room for Glint</span><h2>Yours in<br><em>a few moments.</em></h2></div><p>macOS 14 or newer. One universal build for Apple silicon and Intel. No subscription and no account to create.</p></div>
+        <ol class="steps">
+          <li class="step"><h3><span>1</span> Pick your install</h3><p>Use <a href="https://brew.sh/">Homebrew</a>:</p><div class="cmd"><code>brew install --cask MrAshRhodes/tap/glint</code></div><p>Or <a href="https://github.com/MrAshRhodes/glint/releases/latest">download the latest release</a>, unzip it and move Glint.app to Applications.</p></li>
+          <li class="step"><h3><span>2</span> Allow screen capture</h3><p>Open Glint. Grant Screen Recording access in System Settings → Privacy &amp; Security when prompted, then relaunch if macOS asks.</p><p>You can style existing images without capturing your screen.</p></li>
+          <li class="step"><h3><span>3</span> Make your first image</h3><p>Choose Capture Area from the menu bar. Select a region, choose a preset in the editor, then copy or save the result.</p><p><a href="guide.html">Read the getting-started guide →</a></p></li>
+        </ol>
+        <p class="note"><strong>A note before installing.</strong> Current releases are ad-hoc signed, not Apple-notarized. macOS may block a manually downloaded app. Review the source and release before deciding to install; see <a href="guide.html#install">installation details</a>.</p>
+        <p class="note"><strong>Updates are manual.</strong> Glint does not install updates in the background. With Homebrew, quit Glint, run <code>brew update &amp;&amp; brew upgrade --cask glint</code>, then reopen it. <code>brew update</code> alone does not upgrade the app. For a direct download, use <strong>Check for Updates…</strong> in Glint and replace the app with the new release. <a href="guide.html#updates">Update guide →</a></p>
+      </div>
+    </section>
+
+    <section class="section wrap" id="automation">
+      <div class="section-head"><div><span class="kicker">Plays well with your workflow</span><h2>A little less manual.<br><em>A little more magic.</em></h2></div><p>Trigger a capture from another app, or render an image from a script. Use the same presets as the editor.</p></div>
+      <div class="two-col">
+        <div><h3>A URL for the shortcut crowd</h3><pre class="code"><code><span class="c"># Trigger Glint from Terminal or an automation</span>
+open <span class="s">'glint://capture-area'</span>
+open <span class="s">'glint://capture-text'</span>
+open <span class="s">'glint://preset?name=Clean'</span></code></pre></div>
+        <div><h3>A command for the terminal crowd</h3><pre class="code"><code><span class="c"># Render an existing image at 2×</span>
+/Applications/Glint.app/Contents/MacOS/Glint \
+  --render input.png output.png \
+  --preset <span class="s">"Social 16:9"</span> --scale 2</code></pre></div>
+      </div>
+      <p><a href="guide.html#automation">See the automation reference →</a></p>
+    </section>
+
+    <section class="section wrap faq" id="faq">
+      <span class="kicker">Good to know</span><h2>A few answers.</h2>
+      <details><summary>Is it really free?</summary><p>Yes. Glint is open source under the MIT license. Download a release, build it yourself, or contribute on <a href="https://github.com/MrAshRhodes/glint">GitHub</a>.</p></details>
+      <details><summary>Does anything leave my Mac?</summary><p>Your screenshots are processed locally and are not uploaded by Glint. Manually choosing Check for Updates contacts GitHub to check the latest release. Sharing and opening links use the apps and destinations you choose.</p></details>
+      <details><summary>Will it update itself?</summary><p>No. Check for Updates tells you about a newer release, but does not install it. Homebrew users should quit Glint and run <code>brew update &amp;&amp; brew upgrade --cask glint</code>. Download users replace Glint.app with the new release. <a href="guide.html#updates">Full update instructions</a>.</p></details>
+      <details><summary>Can I trust automatic redaction?</summary><p>Treat it as a helpful first pass, not a guarantee. Detection can miss sensitive information. Review every image and add manual redactions before sharing. Exported redactions replace the affected pixels, but an untouched raw copy may still exist if you keep capture history.</p></details>
+      <details><summary>Is Glint affiliated with another screenshot app?</summary><p>No. Glint is an independent project with its own identity. The sample images on this page are original artwork, rendered using Glint.</p></details>
+      <details><summary>Where do I report a problem?</summary><p><a href="https://github.com/MrAshRhodes/glint/issues">Open an issue on GitHub</a> with your macOS version, Glint version and steps to reproduce. Please remove private information from screenshots and diagnostic output first.</p></details>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap"><p class="big-word">Glint.</p><div><p>A little polish. Entirely yours.</p><nav aria-label="Footer"><a href="guide.html">Guide</a><a href="https://github.com/MrAshRhodes/glint">Source</a><a href="https://github.com/MrAshRhodes/glint/releases">Releases</a><a href="https://github.com/MrAshRhodes/glint/blob/main/LICENSE">MIT license</a></nav><p>Independent software for macOS.</p></div></div>
+  </footer>
+  <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
+</body>
+</html>

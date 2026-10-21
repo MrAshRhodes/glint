@@ -7,16 +7,32 @@ import GlintEditor
 /// Capture -> raw save -> auto-redact -> editor or direct export.
 @MainActor
 final class CapturePipeline {
+    struct Services {
+        var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
+            try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
+        }
+        var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+        var recognize: (CGImage, TextRecognizer.Options) async throws -> [RecognizedLine] = {
+            try await TextRecognizer.recognize(in: $0, options: $1)
+        }
+        var bake: (CGImage, [Annotation]) -> CGImage? = { AnnotationRenderer.bake(source: $0, annotations: $1) }
+        var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
+        var sound: @MainActor () -> Void = { Notifier.playSound() }
+        var addRecent: (URL) -> Void = { RecentFiles.add($0) }
+    }
+
     let prefs: AppPreferences
     let presetStore: PresetStore
+    private let services: Services
     private var editors: [EditorWindowController] = []
     private var busy = false
-    private let quickAccess = QuickAccessPanel()
+    private lazy var quickAccess = QuickAccessPanel()
     var onStatusTitle: ((String?) -> Void)?
 
-    init(prefs: AppPreferences, presetStore: PresetStore) {
+    init(prefs: AppPreferences, presetStore: PresetStore, services: Services = Services()) {
         self.prefs = prefs
         self.presetStore = presetStore
+        self.services = services
     }
 
     enum Mode { case area, window, fullscreen, repeatLast, text, areaToClipboard, timer(Int) }
@@ -105,20 +121,33 @@ final class CapturePipeline {
 
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
                 saveRaw: Bool, clipboardOnly: Bool = false) async {
-        Notifier.playSound()
+        services.sound()
         var rawURL = existingRaw
         if saveRaw, prefs.saveRaw, let url = prefs.outputPaths.rawURL() {
-            if (try? Exporter.write(image, to: url, format: .plainPNG, scale: .original, backingScale: scale)) != nil {
-                rawURL = url
+            do {
+                rawURL = try services.write(image, url, .plainPNG, .original, scale)
+            } catch {
+                services.notify("Raw screenshot not saved", error.localizedDescription, nil)
             }
         }
         var working = image
-        var redactions: [Annotation] = []
         if prefs.autoRedact {
             var opts = AutoRedactOptions(detector: prefs.autoRedactOptions, style: prefs.redactStyle, color: prefs.redactColor)
             opts.padding = 3
-            redactions = await AutoRedact.run(image, options: opts)
-            if !redactions.isEmpty { working = AnnotationRenderer.bake(source: image, annotations: redactions) ?? image }
+            do {
+                let lines = try await services.recognize(image, opts.recognizer)
+                let redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
+                if !redactions.isEmpty {
+                    guard let redacted = services.bake(image, redactions) else {
+                        services.notify("Auto-redaction failed", "The image was not exported because redactions could not be applied.", nil)
+                        return
+                    }
+                    working = redacted
+                }
+            } catch {
+                services.notify("Auto-redaction failed", "The image was not exported because text recognition failed: \(error.localizedDescription)", nil)
+                return
+            }
         }
         if prefs.openEditorAfterCapture && !clipboardOnly {
             openEditor(image: working, scale: scale, rawURL: rawURL, source: source)
@@ -141,18 +170,36 @@ final class CapturePipeline {
     private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool) {
         let rendered = Compositor.render(image: image, settings: settings(), backingScale: scale)
         var saved: URL?
+        var failures: [String] = []
         if prefs.saveOutput && !clipboardOnly {
             let format = prefs.exportFormat
             let url = prefs.outputPaths.outputURL(format: format) ?? prefs.outputPaths.saveURL(format: format)
-            saved = try? Exporter.write(rendered, to: url, format: format, scale: prefs.exportScale, backingScale: scale)
+            do {
+                saved = try services.write(rendered, url, format, prefs.exportScale, scale)
+            } catch {
+                failures.append("Save failed: \(error.localizedDescription)")
+            }
         }
+        var copied = false
         if prefs.copyToClipboardAfterCapture || clipboardOnly || prefs.openEditorAfterCapture == false && saved == nil {
-            Exporter.copyToClipboard(rendered)
+            copied = services.copy(rendered)
+            if !copied { failures.append("Copy to clipboard failed.") }
         }
-        if let saved { RecentFiles.add(saved) }
-        Notifier.post(title: clipboardOnly ? "Copied to clipboard" : "Screenshot saved",
-                      body: saved?.lastPathComponent ?? "The beautified image is on the clipboard.", fileURL: saved)
-        if UserDefaults.standard.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
+        if let saved { services.addRecent(saved) }
+        let title: String
+        let detail: String
+        if let saved {
+            title = failures.isEmpty ? "Screenshot saved" : "Screenshot saved, but copy failed"
+            detail = saved.lastPathComponent + (copied ? " — also copied to clipboard." : "")
+        } else if copied {
+            title = failures.isEmpty ? "Copied to clipboard" : "Copied to clipboard, but save failed"
+            detail = "The beautified image is on the clipboard."
+        } else {
+            title = "Screenshot export failed"
+            detail = "The beautified image was not saved or copied."
+        }
+        services.notify(title, ([detail] + failures).joined(separator: "\n"), saved)
+        if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
             quickAccess.show(image: rendered, fileURL: saved) { [weak self] in
                 self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)
             }

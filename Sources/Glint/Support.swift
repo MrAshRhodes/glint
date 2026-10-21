@@ -50,38 +50,87 @@ enum Notifier {
     }
 }
 
-/// GitHub-releases update check (no Sparkle).
+/// Manual GitHub release checks. Installation stays with Homebrew or the user's download.
 @MainActor
 enum UpdateChecker {
+    static let homebrewCommand = "brew update && brew upgrade --cask glint"
+    static let guideURL = URL(string: "https://mrashrhodes.github.io/glint/guide.html#updates")!
+    static let releasesURL = GlintInfo.repositoryURL.appendingPathComponent("releases/latest")
+    private static var isChecking = false
+
     static func check(silent: Bool = false) {
+        guard !isChecking else { return }
+        isChecking = true
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/MrAshRhodes/glint/releases/latest")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
         Task { @MainActor in
+            defer { isChecking = false }
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200,
-                      let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tag = json["tag_name"] as? String else {
-                    if !silent { alert("No releases found", "Could not read the latest release information.") }
+                guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                    if !silent {
+                        alert("Update check failed",
+                              "GitHub could not provide release information. Check your connection or try again later. No changes were made to Glint.")
+                    }
                     return
                 }
-                let page = (json["html_url"] as? String).flatMap(URL.init(string:)) ?? GlintInfo.repositoryURL
+                let release = try JSONDecoder().decode(Release.self, from: data)
+                let tag = release.tag_name
                 if isNewer(tag, than: AppInfo.version) {
-                    let a = NSAlert()
-                    a.messageText = "Glint \(tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))) is available"
-                    a.informativeText = "You are running version \(AppInfo.version)."
-                    a.addButton(withTitle: "Download")
-                    a.addButton(withTitle: "Later")
+                    let a = availableAlert(tag: tag, current: AppInfo.version)
                     NSApp.activate(ignoringOtherApps: true)
-                    if a.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(page) }
+                    switch a.runModal() {
+                    case .alertFirstButtonReturn:
+                        if copyHomebrewCommand() {
+                            alert("Homebrew command copied",
+                                  "Save your edits and quit Glint, then paste this command into Terminal:\n\n\(homebrewCommand)\n\nReopen Glint when it finishes. Nothing has been installed yet.")
+                        } else {
+                            alert("Could not copy the command", "Run this in Terminal after quitting Glint:\n\n\(homebrewCommand)")
+                        }
+                    case .alertSecondButtonReturn:
+                        if !NSWorkspace.shared.open(releasesURL) {
+                            alert("Could not open the release page", "Open \(releasesURL.absoluteString) in your browser.")
+                        }
+                    default: break
+                    }
                 } else if !silent {
-                    alert("You're up to date", "Glint \(AppInfo.version) is the latest version.")
+                    alert("You're up to date",
+                          "Glint \(AppInfo.version) is up to date with the latest stable GitHub release.\n\nUpdates are manual. Glint checks only when you ask and does not download or install updates in the background.")
                 }
             } catch {
                 if !silent { alert("Update check failed", error.localizedDescription) }
             }
         }
+    }
+
+    private struct Release: Decodable {
+        let tag_name: String
+    }
+
+    static func availableAlert(tag: String, current: String) -> NSAlert {
+        let a = NSAlert()
+        a.messageText = "Glint \(tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))) is available"
+        a.informativeText = """
+        You are running version \(current). Updates are manual; nothing will be installed automatically.
+
+        Homebrew install: save your edits, quit Glint, then run:
+        \(homebrewCommand)
+        Reopen Glint afterward. “brew update” alone does not upgrade the app. The tap may briefly lag a new release.
+
+        Direct download: quit Glint, download the new ZIP or DMG, replace Glint.app in Applications, then reopen it.
+
+        Your preferences, presets and saved images stay in place. macOS may ask for Screen Recording permission again after an update.
+        """
+        a.addButton(withTitle: "Copy Homebrew Command")
+        a.addButton(withTitle: "Open Release Page…")
+        a.addButton(withTitle: "Later")
+        return a
+    }
+
+    static func copyHomebrewCommand(to pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.clearContents()
+        return pasteboard.setString(homebrewCommand, forType: .string)
     }
 
     static func isNewer(_ tag: String, than current: String) -> Bool {

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting started &amp; updates — Glint</title>
+  <meta name="description" content="Install and update Glint, capture your first screenshot, style and redact images, and automate your macOS screenshot workflow.">
+  <meta name="theme-color" content="#f3eee4">
+  <link rel="canonical" href="https://mrashrhodes.github.io/glint/guide.html">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header"><div class="wrap">
+    <a class="brand" href="./" aria-label="Glint home"><img src="favicon.png" width="34" height="34" alt="">Glint</a>
+    <nav class="nav" aria-label="Main navigation"><a class="hide-sm" href="./#features">Features</a><a href="guide.html" aria-current="page">Guide</a><a class="hide-sm" href="https://github.com/MrAshRhodes/glint">GitHub</a><a class="nav-cta" href="#install">Get Glint</a></nav>
+  </div></header>
+  <main id="main">
+    <header class="guide-hero wrap"><span class="kicker">The field guide</span><h1>Your first glint.<br><em>And everything after.</em></h1><p>From installation to a finished screenshot, with the useful details close at hand.</p></header>
+    <div class="guide wrap">
+      <nav class="toc" aria-label="On this page"><h2>On this page</h2><ol>
+        <li><a href="#install">Install</a></li><li><a href="#updates">Update Glint</a></li><li><a href="#permissions">Permissions</a></li><li><a href="#capture">Capture</a></li><li><a href="#editor">Style your image</a></li><li><a href="#annotations">Annotations</a></li><li><a href="#redaction">Redaction &amp; privacy</a></li><li><a href="#presets">Presets</a></li><li><a href="#export">Export &amp; folders</a></li><li><a href="#preferences">Preferences</a></li><li><a href="#automation">Automation</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#source">Build from source</a></li>
+      </ol></nav>
+      <article class="prose" aria-label="Glint user guide">
+        <section id="install">
+          <h2>Install</h2>
+          <p>Glint needs <strong>macOS 14 or later</strong>. Release downloads are universal: they include Apple silicon and Intel builds.</p>
+          <h3>With Homebrew</h3>
+          <p>If you already have <a href="https://brew.sh/">Homebrew</a>, run:</p>
+          <pre class="code"><code>brew install --cask MrAshRhodes/tap/glint</code></pre>
+          <p>This adds the tap if needed and installs Glint in Applications.</p>
+          <h3>With a download</h3>
+          <p>Open the <a href="https://github.com/MrAshRhodes/glint/releases/latest">latest release</a>. Download the versioned ZIP, extract it and move <strong>Glint.app</strong> to Applications. Alternatively, open the DMG and drag the app into Applications. Each archive has a matching SHA-256 checksum.</p>
+          <div class="callout"><p><strong>Signing status:</strong> Glint is currently ad-hoc signed, not Apple-notarized. macOS may block a manual download. The Homebrew cask removes this app's quarantine flag, bypassing its Gatekeeper quarantine check. Only install if you trust the project and its release. Do not ignore a malware warning.</p></div>
+          <p>For a manual download, consult <a href="https://support.apple.com/en-us/102445">Apple's guidance on opening apps safely</a>. You can also build Glint yourself from the source below.</p>
+        </section>
+        <section id="updates">
+          <h2>Update Glint</h2>
+          <p><strong>Glint does not automatically download or install updates.</strong> Choose <strong>Check for Updates…</strong> from the menu bar, or use the button in Preferences → About. This contacts GitHub to compare your installed version with the latest stable release.</p>
+          <h3>If you installed with Homebrew</h3>
+          <ol><li>Save any open edits and quit Glint.</li><li>Run the command below.</li><li>Open Glint from Applications again. Check the version in About Glint.</li></ol>
+          <pre class="code"><code>brew update &amp;&amp; brew upgrade --cask glint</code></pre>
+          <p><code>brew update</code> refreshes Homebrew and its taps; it does <strong>not</strong> install a newer Glint. The <code>brew upgrade</code> part does that. Keep using Homebrew for an app it manages rather than replacing the app manually.</p>
+          <p>If Glint reports a new release but Homebrew says it is already current, the tap may still be catching up. Try again after the release's tap update has finished. You can inspect the available version with <code>brew info --cask glint</code>.</p>
+          <h3>If you installed from a ZIP or DMG</h3>
+          <ol><li>Save your edits and quit Glint.</li><li><a href="https://github.com/MrAshRhodes/glint/releases/latest">Download the new release</a> from GitHub.</li><li>Replace Glint.app in Applications with the new copy, then reopen it.</li></ol>
+          <p>Replacing the app keeps your separately stored preferences, presets and image files. Do not delete those folders to update.</p>
+          <div class="callout"><p><strong>After an update:</strong> because the app is ad-hoc signed, macOS may ask for Screen Recording permission again. If capture stops working, revisit the permission settings and relaunch Glint.</p></div>
+        </section>
+        <section id="permissions">
+          <h2>Permissions</h2>
+          <p>Screen capture requires <strong>Screen Recording</strong> access. In System Settings → Privacy &amp; Security, find Screen Recording (called Screen &amp; System Audio Recording on some macOS versions), enable Glint, and relaunch if asked.</p>
+          <p>Open existing images with <strong>Open Image…</strong> or <kbd>⌘ O</kbd>; screen access is not needed just to style an image file.</p>
+        </section>
+        <section id="capture">
+          <h2>Capture</h2>
+          <p>Use the menu bar icon to capture an area, a window or the full screen. <strong>Capture with Timer</strong> gives you 3, 5 or 10 seconds to get ready. <strong>Repeat Last Area</strong> captures the same region again.</p>
+          <p>Default shortcuts use Control + Option + Command:</p>
+          <table><caption class="visually-hidden">Default capture shortcuts</caption><thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th></tr></thead><tbody>
+            <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr>
+          </tbody></table>
+          <p>Cancel a selection with <kbd>Esc</kbd>. Change the shortcuts in Preferences if another app uses the same combination.</p>
+        </section>
+        <section id="editor">
+          <h2>Style your image</h2>
+          <p>Start with a preset, then adjust the background, padding, inset, corner radius and shadow. Choose an aspect ratio for the destination, or keep the natural image proportions. You can also rotate, flip, add perspective, apply a window frame or add a watermark.</p>
+          <p><strong>Auto-balance</strong> looks for uniform image borders and balances the margins. It works best on screenshots with clear, flat surrounding space.</p>
+          <p>The backgrounds include gradients, mesh gradients, patterns, solids and transparency. A custom image is also supported.</p>
+        </section>
+        <section id="annotations">
+          <h2>Annotations</h2>
+          <p>Use arrows and lines to point things out, rectangles and ellipses to frame an area, and pen or highlighter to draw freely. Add text and numbered counters for instructions.</p>
+          <p>Select an annotation to change its styling or layer order. Undo and redo let you revise without starting over. Use the redaction tool, rather than a translucent highlighter, for private information.</p>
+        </section>
+        <section id="redaction">
+          <h2>Redaction &amp; privacy</h2>
+          <p>Manual redaction can blur, pixelate or cover a region with solid color. Exporting renders those changes into the output image.</p>
+          <p>Optional <strong>Auto-redact</strong> uses on-device text recognition to find patterns such as email addresses, phone numbers, credit card numbers, IP addresses and common API tokens. It is off by default.</p>
+          <div class="callout"><p><strong>Review before you share.</strong> Detection is not a guarantee and can miss information. Use solid redaction for sensitive details and inspect the exported image. If raw history is enabled, the untouched capture may still contain the information you removed from the styled output.</p></div>
+          <p>Glint does not upload your screenshots. The manual update check contacts GitHub; opening web links or sharing an image uses the destination you select.</p>
+        </section>
+        <section id="presets">
+          <h2>Presets</h2>
+          <p>Glint starts with <strong>Default</strong>, <strong>Clean</strong>, <strong>Social 16:9</strong> and <strong>Transparent</strong>. Apply one, adjust the look, then save your own preset for reuse. Set a default in Preferences → Presets.</p>
+          <p>The homepage preview shows actual output from these presets using original sample artwork. It is a renderer demonstration, not a screenshot of the app's editor.</p>
+        </section>
+        <section id="export">
+          <h2>Export &amp; folders</h2>
+          <p>Save PNG, JPEG, HEIC or TIFF at 1× or 2× scale. PNG is a good choice for crisp text and transparent backgrounds. You can also copy to the clipboard, use the share sheet, or drag the result into another app.</p>
+          <p>Preferences → Output controls the save folder, naming and history. The default save folder is Desktop; capture history uses <code>~/Documents/Glint</code>, with <code>Raw</code> and <code>Output</code> subfolders. These locations are configurable.</p>
+          <p>The default filename template is <code>Glint-{datetime}</code>. The menu's <strong>Show Output Folder</strong> and <strong>Show Raw Folder</strong> actions take you to the history folders.</p>
+          <p>Copying normally closes the editor. Disable <strong>Close editor after copying</strong> in Preferences if you want to keep adjusting the image.</p>
+        </section>
+        <section id="preferences">
+          <h2>Preferences</h2>
+          <p>Open Preferences with <kbd>⌘ ,</kbd>. General controls launch at login, menu bar and Dock visibility, sounds and notifications. Capture controls cursor visibility, remembering the last area and hiding Glint windows during capture.</p>
+          <p>Output controls capture actions and files. Editor controls auto-balance and auto-redact. Presets manages your default look. About shows the version, permissions and manual update check.</p>
+        </section>
+        <section id="automation">
+          <h2>Automation</h2>
+          <h3>URL scheme</h3>
+          <p>With Glint installed, another app or script can open these URLs:</p>
+          <pre class="code"><code>glint://capture-area
+glint://capture-window
+glint://capture-fullscreen
+glint://capture-text
+glint://repeat-last
+glint://preferences
+glint://preset?name=Clean
+glint://open?file=%2FUsers%2Fyou%2FDesktop%2Fimage.png</code></pre>
+          <p>Percent-encode spaces and other special characters in query values. From Terminal, use <code>open 'glint://capture-area'</code>. Capture actions still require screen permission.</p>
+          <h3>Command-line rendering</h3>
+          <pre class="code"><code>/Applications/Glint.app/Contents/MacOS/Glint \
+  --render input.png output.png \
+  --preset "Social 16:9" --scale 2
+
+/Applications/Glint.app/Contents/MacOS/Glint --list-presets
+/Applications/Glint.app/Contents/MacOS/Glint --version
+/Applications/Glint.app/Contents/MacOS/Glint --diagnose</code></pre>
+          <p>Use <code>--help</code> for the command reference. The output extension selects the file format. These commands operate on local files; they do not upload an image.</p>
+        </section>
+        <section id="troubleshooting">
+          <h2>Troubleshooting</h2>
+          <h3>Capture is blocked or stopped after an update</h3>
+          <p>Check Screen Recording permission for Glint and relaunch. An ad-hoc signing change can mean you need to remove the old Glint entry in that permission list and add the current app again.</p>
+          <h3>I cannot find the app window</h3>
+          <p>Glint is a menu bar app. Look for its icon near the clock. Capture a region or choose Open Image… to open an editor.</p>
+          <h3>Homebrew does not offer the release yet</h3>
+          <p>Run <code>brew update</code>, then <code>brew info --cask glint</code>. The cask must be updated after the release publishes. Check the <a href="https://github.com/MrAshRhodes/homebrew-tap">tap</a> if the displayed version is behind.</p>
+          <h3>Something else is wrong</h3>
+          <p>Check <a href="https://github.com/MrAshRhodes/glint/issues">existing issues</a> or report the problem with the steps, macOS version and Glint version. Review <code>--diagnose</code> output for private information before including it.</p>
+        </section>
+        <section id="source">
+          <h2>Build from source</h2>
+          <p>Install Xcode or the Apple Command Line Tools with a compatible Swift toolchain, then:</p>
+          <pre class="code"><code>git clone https://github.com/MrAshRhodes/glint.git
+cd glint
+make test
+make app</code></pre>
+          <p>The app is written to <code>dist/Glint.app</code>. Use <code>make universal</code> for both architectures. Read the <a href="https://github.com/MrAshRhodes/glint/blob/main/CONTRIBUTING.md">contributor guide</a> for toolchain details and release instructions.</p>
+          <p>Glint is an independent project under the <a href="https://github.com/MrAshRhodes/glint/blob/main/LICENSE">MIT license</a>. This site uses original sample artwork and self-hosted <a href="fonts/LICENSE-OFL.txt">OFL-licensed fonts</a>.</p>
+        </section>
+      </article>
+    </div>
+  </main>
+  <footer class="site-footer"><div class="wrap"><a class="brand" href="./">Glint.</a><nav aria-label="Footer"><a href="./">Home</a><a href="https://github.com/MrAshRhodes/glint">Source</a><a href="https://github.com/MrAshRhodes/glint/releases">Releases</a><a href="https://github.com/MrAshRhodes/glint/issues">Report an issue</a></nav></div></footer>
+</body>
+</html>

@@ -22,5 +22,8 @@ let package = Package(
             path: "Sources/Glint"
         ),
         .testTarget(name: "GlintCoreTests", dependencies: ["GlintCore"], path: "Tests/GlintCoreTests"),
+        .testTarget(name: "GlintAppTests", dependencies: ["Glint"], path: "Tests/GlintAppTests"),
+        .testTarget(name: "GlintEditorTests", dependencies: ["GlintEditor"], path: "Tests/GlintEditorTests"),
+        .testTarget(name: "GlintCaptureTests", dependencies: ["GlintCapture"], path: "Tests/GlintCaptureTests"),
     ]
 )
