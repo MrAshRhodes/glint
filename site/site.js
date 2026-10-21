@@ -1,66 +1,73 @@
 "use strict";
 
 const presets = {
-  raw: { name: "Raw", width: 1520, height: 860, description: "Original fictional terminal capture, before styling" },
-  default: { name: "Default", width: 1712, height: 1052, description: "Terminal capture with Glint's Default gradient background, rounded corners and shadow" },
-  social: { name: "Social 16:9", width: 1984, height: 1116, description: "Terminal capture styled for a wide 16:9 composition" },
-  clean: { name: "Clean", width: 1648, height: 988, description: "Terminal capture with a minimal light background and soft shadow" },
-  transparent: { name: "Transparent", width: 1680, height: 1020, description: "Terminal capture on a transparent canvas; checkerboard indicates transparency" },
+  default: { name: "Default", description: "A gradient backdrop, rounded corners and a soft shadow. The Default preset, straight from Glint." },
+  clean: { name: "Clean", description: "A quiet background and a little breathing room. The image does the talking." },
+  social: { name: "Social 16:9", description: "A wide composition with room around the edges. Ready for a post, a slide or a launch." },
+  transparent: { name: "Transparent", description: "Keep the rounded corners and shadow. Lose the background. The checkerboard shows transparency." },
+};
+const samples = {
+  terminal: { name: "Terminal", number: "01" },
+  dashboard: { name: "Dashboard", number: "02" },
 };
 
-const tabs = [...document.querySelectorAll("[data-preset]")];
-const preview = document.getElementById("preset-preview");
 const demo = document.getElementById("demo-image");
+const surface = document.getElementById("preview-surface");
 const size = document.getElementById("demo-size");
+const presetButtons = [...document.querySelectorAll("[data-preset]")];
+const sampleButtons = [...document.querySelectorAll("[data-sample]")];
+const viewButtons = [...document.querySelectorAll("[data-view]")];
+let requested = { sample: "terminal", preset: "default", original: false };
+let displayed = requested;
 let selection = 0;
 
-async function selectPreset(tab) {
+async function updatePreview(change) {
   const request = ++selection;
-  const key = tab.dataset.preset;
-  const preset = presets[key];
+  const next = { ...requested, ...change };
+  requested = next;
+  const preset = presets[next.preset];
+  const sample = samples[next.sample];
   const image = new Image();
-  image.src = `assets/terminal-${key}.webp`;
+  surface.setAttribute("aria-busy", "true");
+  image.src = `assets/${next.sample}-${next.original ? "raw" : next.preset}.webp`;
   try {
     await image.decode();
   } catch (error) {
     if (request !== selection) return;
-    document.getElementById("demo-error").textContent = "This preview could not load. Please try again.";
-    console.error("Glint preset preview failed to load:", error);
+    requested = displayed;
+    surface.setAttribute("aria-busy", "false");
+    document.getElementById("demo-error").textContent = "This sample could not load. Your previous preview is still shown. Please try again.";
+    console.error("Glint preview failed to load:", error);
     return;
   }
+  // Only the latest request may replace the image or its selected controls.
   if (request !== selection) return;
+  displayed = next;
   document.getElementById("demo-error").textContent = "";
-  for (const item of tabs) {
-    const active = item === tab;
-    item.setAttribute("aria-selected", String(active));
-    item.tabIndex = active ? 0 : -1;
-  }
-  preview.setAttribute("aria-labelledby", tab.id);
-  preview.toggleAttribute("data-checker", key === "transparent");
+  for (const button of presetButtons) button.setAttribute("aria-pressed", String(button.dataset.preset === next.preset));
+  for (const button of sampleButtons) button.setAttribute("aria-pressed", String(button.dataset.sample === next.sample));
+  for (const button of viewButtons) button.setAttribute("aria-pressed", String((button.dataset.view === "original") === next.original));
+  surface.toggleAttribute("data-original", next.original);
+  surface.toggleAttribute("data-checker", !next.original && next.preset === "transparent");
   demo.src = image.src;
-  demo.width = preset.width;
-  demo.height = preset.height;
-  demo.alt = preset.description;
-  demo.classList.toggle("is-raw", key === "raw");
-  size.textContent = `${preset.name} · ${preset.width} × ${preset.height}`;
+  demo.width = image.naturalWidth;
+  demo.height = image.naturalHeight;
+  demo.alt = next.original
+    ? `Original fictional ${sample.name.toLowerCase()} artwork, before styling`
+    : `Original sample ${sample.name.toLowerCase()} artwork rendered by Glint with the ${preset.name} preset${next.preset === "transparent" ? "; checkerboard indicates transparency" : ""}`;
+  document.getElementById("sample-label").textContent = `Sample ${sample.number} / ${next.sample}.png`;
+  document.getElementById("finish-description").textContent = next.original
+    ? "The untouched sample, before Glint. Switch to Finished or choose a preset to see the difference."
+    : preset.description;
+  size.textContent = `${sample.name} · ${next.original ? "Original" : preset.name} · ${image.naturalWidth} × ${image.naturalHeight}`;
+  surface.setAttribute("aria-busy", "false");
 }
 
-if (tabs.length && preview && demo && size) {
-  document.querySelector(".tabs").hidden = false;
-  for (const [index, tab] of tabs.entries()) {
-    tab.addEventListener("click", () => selectPreset(tab));
-    tab.addEventListener("keydown", (event) => {
-      let next;
-      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-      else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = tabs.length - 1;
-      else return;
-      event.preventDefault();
-      tabs[next].focus();
-      selectPreset(tabs[next]);
-    });
-  }
+if (demo && surface && size) {
+  for (const controls of document.querySelectorAll("[data-preview-controls]")) controls.hidden = false;
+  for (const button of presetButtons) button.addEventListener("click", () => updatePreview({ preset: button.dataset.preset, original: false }));
+  for (const button of sampleButtons) button.addEventListener("click", () => updatePreview({ sample: button.dataset.sample }));
+  for (const button of viewButtons) button.addEventListener("click", () => updatePreview({ original: button.dataset.view === "original" }));
 }
 
 for (const button of document.querySelectorAll("[data-copy]")) {
@@ -105,6 +112,6 @@ if (tocLinks.length && "IntersectionObserver" in window) {
         else link.removeAttribute("aria-current");
       }
     }
-  }, { rootMargin: "-90px 0px -60% 0px", threshold: 0 });
+  }, { rootMargin: "-100px 0px -60% 0px", threshold: 0 });
   for (const section of document.querySelectorAll(".prose section[id]")) observer.observe(section);
 }
