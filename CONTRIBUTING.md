@@ -147,4 +147,18 @@ Updates are manual: users quit Glint, run `brew update && brew upgrade --cask gl
 
 ## Pull requests
 
-Keep a pull request focused on one change, add or update tests for behavior changes, and make sure `make test` and `make app` pass. CI runs the same checks on every pull request.
+Every change to `main` needs an issue and a pull request, including documentation, maintenance, dependency and workflow changes. Do not push directly to `main`.
+
+1. Create or choose an issue in `MrAshRhodes/glint` that describes the change.
+2. Create a focused branch from `main`, for example `feat/123-short-description`.
+3. Open a pull request to `main` and put `Fixes #123` in its description, outside comments and code blocks. `Closes` and `Resolves` also work, as do same-repository issue URLs. A PR number, nonexistent issue or issue in another repository does not count. Existing closed issues are allowed for follow-up work.
+4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy (Node.js 20+).
+5. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
+
+The issue-link check runs again when a PR is opened, reopened, updated, marked ready or its description is edited. It reads the current description and verifies the referenced issues with a read-only token. Do not rename either required job without updating branch protection.
+
+### Main branch protection
+
+Branch protection is configured in GitHub under **Settings > Branches**, not by the CI workflow itself. `main` requires a pull request, resolved conversations, and both checks from GitHub Actions, with the branch up to date before merging. These requirements apply to administrators too; force-pushes and branch deletion are disabled.
+
+No second-person approval is required, so a solo maintainer can merge their own PR after the checks pass. Maintainers should review changes to the policy workflow itself, since it is part of the proposed code on a `pull_request` run. The workflow has no write permissions or deployment secrets and never interpolates PR text into executable code. Normal CI must not receive an admin token to change branch protection.
