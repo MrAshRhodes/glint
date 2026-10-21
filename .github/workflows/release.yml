@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag such as v1.2.3 builds a universal Glint.app, publishes the GitHub release and,
-# when the TAP_GITHUB_TOKEN secret exists, updates the Homebrew cask.
+# when the TAP_GITHUB_TOKEN secret exists, updates the Homebrew cask. A published release is never
+# rebuilt or overwritten, because the cask pins the sha256 of its zip.
 on:
   push:
     tags: ['v*']
@@ -27,6 +28,8 @@ jobs:
 
       - name: Resolve the version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           version_re='^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?$'
@@ -42,22 +45,33 @@ jobs:
           if [[ "$version" == *-* ]]; then
             prerelease=true
           fi
+          # Published assets are immutable: the Homebrew cask pins the zip's sha256, and every
+          # build differs byte for byte, so replacing an asset would break `brew install`.
+          exists=false
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            exists=true
+            echo "::notice title=Release already published::$GITHUB_REF_NAME already has a release, so nothing is rebuilt or replaced. Delete the release and tag to rebuild, or cut a new version."
+          fi
           {
             echo "version=$version"
             echo "prerelease=$prerelease"
+            echo "exists=$exists"
           } >> "$GITHUB_OUTPUT"
 
       - name: Show the toolchain
+        if: steps.version.outputs.exists != 'true'
         run: |
           xcodebuild -version
           swift --version
 
       - name: Build and package
+        if: steps.version.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: Scripts/package_release.sh --version "$VERSION" --require-universal --build-number "$GITHUB_RUN_NUMBER"
 
       - name: Publish the GitHub release
+        if: steps.version.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -69,11 +83,6 @@ jobs:
             "dist/Glint-$VERSION.dmg"
             "dist/Glint-$VERSION.dmg.sha256"
           )
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; replacing its assets."
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-            exit 0
-          fi
           flags=()
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease)
@@ -88,12 +97,13 @@ jobs:
         id: tap
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [[ -n "$TAP_GITHUB_TOKEN" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Homebrew tap not updated::Add a TAP_GITHUB_TOKEN secret (a token that can push to the tap repository) to update the cask automatically."
+            echo "::notice title=Homebrew tap not updated::Add a TAP_GITHUB_TOKEN secret (a token that can push to the tap repository) to update the cask automatically, or run Scripts/update_tap.sh --version $RELEASE_VERSION --from-release yourself."
           fi
 
       - name: Update the Homebrew tap
@@ -101,4 +111,4 @@ jobs:
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: Scripts/update_tap.sh --version "$VERSION" --zip "dist/Glint-$VERSION.zip"
+        run: Scripts/update_tap.sh --version "$VERSION" --from-release

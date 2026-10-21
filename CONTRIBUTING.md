@@ -104,20 +104,20 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 
 ### Cutting a release
 
-1. Update `VERSION`, merge to `main`.
-2. Push a tag: `git tag v1.2.3 && git push origin v1.2.3`.
+1. Update `VERSION`, merge to `main` and wait for CI to pass.
+2. Push a tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
 3. `.github/workflows/release.yml` builds the universal app, creates the GitHub release with generated notes, and attaches the zip, the dmg and their checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases and do not touch the Homebrew tap.
-4. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow then runs `Scripts/update_tap.sh` to publish the new cask version.
+4. Update the tap. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow does it. Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
 
-Re-running a failed release job is safe: it replaces the assets of an existing release.
+Published releases are immutable. The cask pins the sha256 of the release zip, and every build differs byte for byte, so replacing an asset would break `brew install` for everyone. The workflow therefore never overwrites an existing release: a re-run only retries the tap update, and `--from-release` always hashes the zip that is actually published. To rebuild a broken release, delete the release and its tag first, or cut a new version.
 
 ### Homebrew tap
 
 Users install with `brew install --cask mrashrhodes/tap/glint`. The cask lives in the `MrAshRhodes/homebrew-tap` repository and is rendered from `packaging/homebrew/glint.rb.tmpl` by `Scripts/render_cask.sh`.
 
-- Preview what a release would publish: `Scripts/update_tap.sh --dry-run`. It prints the cask and diffs it against the tap without changing anything.
+- Preview what a release would publish: `Scripts/update_tap.sh --version X.Y.Z --from-release --dry-run`. It prints the cask and diffs it against the tap without changing anything.
 - Create the tap repository the first time (needs `gh auth login`): `Scripts/update_tap.sh --create`.
-- The cask removes the quarantine flag in a `postflight` block, because the app is not notarized. Recent Homebrew versions prefer `postflight_steps` for official taps but still accept this form in third-party taps.
+- The cask removes the quarantine flag in a `postflight_steps` block, because the app is not notarized. That skips Gatekeeper's check for this one app, which is why the cask caveats say so. Remove the block from the template if you would rather have users clear the flag themselves.
 
 ### Signing and permissions
 

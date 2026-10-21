@@ -103,7 +103,9 @@ sha_re='^[0-9a-f]{64}$'
 # VERSION and SHA256 were validated above, so they cannot contain sed metacharacters.
 rendered="$(sed -e "s|{{VERSION}}|$VERSION|g" -e "s|{{SHA256}}|$SHA256|g" "$TEMPLATE")"
 
-if grep -Eq '\{\{|\}\}' <<<"$rendered"; then
+# Homebrew's own install-time tokens in *_steps blocks are lowercase ({{appdir}}); only this
+# template's uppercase placeholders must be fully resolved.
+if grep -Eq '\{\{[A-Z][A-Z0-9_]*\}\}' <<<"$rendered"; then
   die "unresolved placeholder left in $TEMPLATE"
 fi
 

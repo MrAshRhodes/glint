@@ -12,16 +12,16 @@ cask "glint" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Glint.app"
 
   # Glint is signed ad-hoc rather than notarized, so Gatekeeper would refuse to open a quarantined
   # copy. Clearing the quarantine flag keeps `brew install --cask` a one-step install.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args:         ["-dr", "com.apple.quarantine", "#{appdir}/Glint.app"],
-                   must_succeed: false
+  postflight_steps do
+    run "/usr/bin/xattr",
+        args:         ["-dr", "com.apple.quarantine", "{{appdir}}/Glint.app"],
+        must_succeed: false
   end
 
   zap trash: [

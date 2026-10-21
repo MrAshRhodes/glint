@@ -3,13 +3,17 @@
 # update_tap.sh - publish the Glint cask to the Homebrew tap repository.
 #
 # Usage:
-#   Scripts/update_tap.sh [--version X.Y.Z] [--sha256 HEX | --zip FILE] [--repo OWNER/NAME]
-#                         [--branch NAME] [--dry-run] [--create] [--skip-asset-check]
+#   Scripts/update_tap.sh [--version X.Y.Z] [--sha256 HEX | --zip FILE | --from-release]
+#                         [--repo OWNER/NAME] [--branch NAME] [--dry-run] [--create]
+#                         [--skip-asset-check]
 #
 #   --version X.Y.Z       Release to publish. Default: the contents of VERSION.
 #   --sha256 HEX          SHA-256 of Glint-<version>.zip. Default: hash dist/Glint-<version>.zip
 #                         (or read dist/Glint-<version>.zip.sha256).
 #   --zip FILE            Hash this release zip instead.
+#   --from-release        Download the zip that is published on the GitHub release and hash that.
+#                         This is what releases should use: the cask must pin the published asset,
+#                         never a separately built copy, because every build differs byte for byte.
 #   --repo OWNER/NAME     Tap repository. Default: MrAshRhodes/homebrew-tap.
 #   --branch NAME         Branch to commit to. Default: the tap's default branch (main when new).
 #   --dry-run             Render dist/glint.rb, print it and diff it against the tap. Never
@@ -38,14 +42,17 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: Scripts/update_tap.sh [--version X.Y.Z] [--sha256 HEX | --zip FILE] [--repo OWNER/NAME]
-                             [--branch NAME] [--dry-run] [--create] [--skip-asset-check]
+Usage: Scripts/update_tap.sh [--version X.Y.Z] [--sha256 HEX | --zip FILE | --from-release]
+                             [--repo OWNER/NAME] [--branch NAME] [--dry-run] [--create]
+                             [--skip-asset-check]
 
 Publishes Casks/glint.rb (version + sha256) to the Homebrew tap and pushes it.
 
   --version X.Y.Z       release to publish (default: contents of VERSION)
   --sha256 HEX          SHA-256 of Glint-<version>.zip
   --zip FILE            hash this release zip (default: dist/Glint-<version>.zip)
+  --from-release        download the zip published on the GitHub release and hash that
+                        (use this for releases: the cask must pin the published asset)
   --repo OWNER/NAME     tap repository (default: MrAshRhodes/homebrew-tap)
   --branch NAME         branch to commit to (default: the tap's default branch)
   --dry-run             render + print the cask and diff it against the tap; change nothing
@@ -59,6 +66,7 @@ EOF
 VERSION=""
 SHA256=""
 ZIP=""
+FROM_RELEASE=0
 REPO="MrAshRhodes/homebrew-tap"
 BRANCH=""
 DRY_RUN=0
@@ -82,6 +90,7 @@ while (($#)); do
       shift
       ;;
     --zip=*) ZIP="${1#*=}" ;;
+    --from-release) FROM_RELEASE=1 ;;
     --repo)
       REPO="${2:?--repo needs a value}"
       shift
@@ -113,6 +122,26 @@ if [[ -z "$VERSION" ]]; then
 fi
 VERSION="${VERSION#v}"
 
+APP_REPO="MrAshRhodes/glint"
+
+if ((FROM_RELEASE)); then
+  [[ -z "$SHA256" && -z "$ZIP" ]] || die "--from-release cannot be combined with --sha256 or --zip"
+  RELEASE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/glint-release.XXXXXX")"
+  trap 'rm -rf "$RELEASE_TMP"' EXIT
+  zip_url="https://github.com/$APP_REPO/releases/download/v$VERSION/Glint-$VERSION.zip"
+  log "Downloading the published release zip: $zip_url"
+  curl -fsSL --retry 3 -o "$RELEASE_TMP/Glint-$VERSION.zip" "$zip_url" ||
+    die "could not download $zip_url (is the release published?)"
+  actual_sum="$(shasum -a 256 "$RELEASE_TMP/Glint-$VERSION.zip" | awk '{print $1}')"
+  if published_sum="$(curl -fsSL --retry 3 "$zip_url.sha256" 2>/dev/null)"; then
+    published_sum="$(awk '{print $1; exit}' <<<"$published_sum")"
+    [[ "$actual_sum" == "$published_sum" ]] ||
+      die "the downloaded zip ($actual_sum) does not match its published .sha256 ($published_sum)"
+  else
+    warn "no published .sha256 to cross-check; using the hash of the downloaded zip"
+  fi
+  ZIP="$RELEASE_TMP/Glint-$VERSION.zip"
+fi
 render_args=(--version "$VERSION" --output "$CASK_OUT")
 if [[ -n "$SHA256" && -n "$ZIP" ]]; then
   die "pass either --sha256 or --zip, not both"
