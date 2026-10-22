@@ -25,6 +25,8 @@ public struct CaptureResult {
 
 public struct CaptureOptions: Sendable {
     public var hideCursor: Bool = true
+    /// Snap area-selection edges to visible windows and display bounds. Command temporarily inverts this.
+    public var snapToEdges: Bool = false
     /// For window capture: keep the system drop shadow (false = shadow-free, transparent corners).
     public var includeWindowShadow: Bool = false
     /// Seconds to wait after the overlay closes before grabbing pixels.

@@ -137,6 +137,12 @@ private struct CaptureTab: View {
     @AppStorage(ShellKey.timerSeconds) private var timer = 5
     @AppStorage(ShellKey.hideCursor) private var hideCursor = true
     @AppStorage(ShellKey.rememberArea) private var rememberArea = true
+    @AppStorage private var snapToEdges: Bool
+
+    init(model: PrefsModel) {
+        self.model = model
+        _snapToEdges = AppStorage(wrappedValue: false, AppPreferences.Key.snapToEdges, store: model.prefs.defaults)
+    }
 
     var body: some View {
         Form {
@@ -152,6 +158,10 @@ private struct CaptureTab: View {
                 Toggle("Hide mouse cursor", isOn: $hideCursor.onChange { model.changed() })
                 Toggle("Remember last area", isOn: $rememberArea)
                 Toggle("Hide Glint windows while capturing", isOn: model.bind(\.hideWindowsDuringCapture))
+                Toggle("Snap selection to edges", isOn: $snapToEdges.onChange { model.changed() })
+                Text("Snap to window and display edges only. Hold Command to temporarily invert snapping. Shift still constrains the selection to a square.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

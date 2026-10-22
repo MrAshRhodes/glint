@@ -18,25 +18,50 @@ final class SelectionSession {
     var cursor: CGPoint = .zero     // CG coords
     var hoverWindow: WindowInfo?
     var lastArea: CGRect?
+    let snapToEdges: Bool
+    var snappingEnabled: Bool { snapToEdges != command }
+    var snapGuides: [SnapEdge] { drag?.guides ?? [] }
+    var snappingHint: String {
+        let action = command ? "Release" : "Hold"
+        let nextState = snappingEnabled ? "off" : "on"
+        return "Snap: \(snappingEnabled ? "on" : "off")  ·  \(action) ⌘: \(nextState)"
+    }
 
     private var panels: [OverlayPanel] = []
     private var windows: [WindowInfo] = []
-    private var anchor: CGPoint?
-    private var dragDisplay: CGRect?
+    private var displays: [DisplayInfo] = []
+    private var targets: [CGDirectDisplayID: [SnapEdge]] = [:]
+
+    /// Lets tests drive a session without `run()` enumerating real windows.
+    func useDisplays(_ displays: [DisplayInfo]) {
+        self.displays = displays
+    }
+    private var drag: SnappingSelection?
+    private var dragDisplayID: CGDirectDisplayID?
+    private var shift = false
+    private var command = false
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
     private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
 
-    init(mode: OverlayStartMode, lastArea: CGRect?) {
+    init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false) {
         self.mode = mode == .area ? .area : .window
         self.lastArea = lastArea
+        self.snapToEdges = snapToEdges
         self.primaryHeight = NSScreen.screens.first?.frame.height ?? 0
     }
 
     func run() async throws -> SelectionOutcome {
         firstDrawInterval = OverlayPerformance.begin("OverlayFirstDraw")
         let setup = OverlayPerformance.begin("OverlaySetup")
-        windows = OverlayPerformance.measure("WindowEnumeration") { WindowEnumerator.onScreenWindows() }
+        let snapshot = OverlayPerformance.measure("WindowEnumeration") { WindowEnumerator.selectionSnapshot() }
+        windows = snapshot.windows
+        displays = WindowEnumerator.displays()
+        targets = Dictionary(uniqueKeysWithValues: displays.map {
+            ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
+        })
+        shift = NSEvent.modifierFlags.contains(.shift)
+        command = NSEvent.modifierFlags.contains(.command)
         cursor = CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: primaryHeight)
         return try await withCheckedThrowingContinuation { cont in
             defer { OverlayPerformance.end("OverlaySetup", setup) }
@@ -75,27 +100,31 @@ final class SelectionSession {
     func mouseDown(at p: CGPoint) {
         cursor = p
         if mode == .window {
+            updateHover()
             if let w = hoverWindow { finish(.success(.window(w))) }
             return
         }
-        anchor = p
-        dragDisplay = displayFrame(containing: p)
-        selection = CGRect(origin: p, size: .zero)
+        guard let index = CaptureGeometry.index(containing: p, in: displays.map(\.frame)) else { return }
+        let display = displays[index]
+        dragDisplayID = display.id
+        drag = SnappingSelection(anchor: p, bounds: display.frame, targets: targets[display.id] ?? [],
+                                 snapToEdges: snapToEdges)
+        drag?.setModifiers(shift: shift, command: command)
+        updateSelection()
         refresh()
     }
 
-    func mouseDragged(to p: CGPoint, shift: Bool) {
-        guard mode == .area, let a = anchor else { return }
-        let bounded = dragDisplay.map { CaptureGeometry.clamp(p, to: $0) } ?? p
-        cursor = bounded
-        selection = constrained(CaptureGeometry.rect(from: a, to: bounded, square: shift))
+    func mouseDragged(to p: CGPoint) {
+        guard mode == .area, drag != nil else { return }
+        drag?.move(to: p)
+        updateSelection()
         refresh()
     }
 
     func mouseUp(at p: CGPoint) {
-        guard mode == .area, anchor != nil else { return }
-        defer { anchor = nil }
-        guard let sel = selection, sel.width >= 3, sel.height >= 3 else {
+        guard mode == .area, let drag else { return }
+        defer { self.drag = nil }
+        guard drag.isValid, let sel = selection else {
             selection = nil; refresh(); return
         }
         finish(.success(.area(sel, displayID(for: sel))))
@@ -103,16 +132,14 @@ final class SelectionSession {
 
     func toggleMode() {
         mode = mode == .area ? .window : .area
-        anchor = nil; selection = nil
+        drag = nil; selection = nil; dragDisplayID = nil
         updateHover(); refresh()
     }
 
     func nudge(dx: CGFloat, dy: CGFloat) {
-        if var a = anchor, selection != nil {
-            a.x += dx; a.y += dy
-            anchor = a
-            cursor.x += dx; cursor.y += dy
-            selection = constrained(CaptureGeometry.rect(from: a, to: cursor, square: false))
+        if drag != nil {
+            drag?.nudge(dx: dx, dy: dy)
+            updateSelection()
         } else {
             cursor.x += dx; cursor.y += dy
             CGWarpMouseCursorPosition(cursor)
@@ -128,19 +155,25 @@ final class SelectionSession {
 
     func cancel() { finish(.failure(CaptureError.cancelled)) }
 
-    private func constrained(_ r: CGRect) -> CGRect {
-        dragDisplay.map { r.intersection($0) } ?? r
+    func modifiersChanged(shift: Bool, command: Bool) {
+        guard self.shift != shift || self.command != command else { return }
+        self.shift = shift
+        self.command = command
+        drag?.setModifiers(shift: shift, command: command)
+        updateSelection()
+        refresh()
     }
 
-    private func displayFrame(containing p: CGPoint) -> CGRect? {
-        let frames = WindowEnumerator.displays().map(\.frame)
-        return CaptureGeometry.index(containing: p, in: frames).map { frames[$0] }
+    private func updateSelection() {
+        guard let drag else { return }
+        cursor = drag.rawCursor
+        selection = drag.rectangle
     }
 
     private func displayID(for r: CGRect) -> CGDirectDisplayID {
-        let ds = WindowEnumerator.displays()
-        let i = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: ds.map(\.frame))
-        return i.map { ds[$0].id } ?? CGMainDisplayID()
+        if let dragDisplayID { return dragDisplayID }
+        let i = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: displays.map(\.frame))
+        return i.map { displays[$0].id } ?? CGMainDisplayID()
     }
 
     private func finish(_ result: Result<SelectionOutcome, Error>) {
@@ -168,6 +201,8 @@ final class OverlayPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
+        // Command is a selection modifier now; keep Command-drag on a background panel from sliding the overlay.
+        isMovable = false
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
         isReleasedWhenClosed = false
@@ -198,8 +233,14 @@ final class OverlayView: NSView {
     private static let hintAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 12, weight: .medium),
         .foregroundColor: NSColor.white]
-    private static let areaHint = TextLayout("Drag to select  ·  Space: window  ·  Esc: cancel", attributes: hintAttributes)
-    private static let windowHint = TextLayout("Click a window  ·  Space: area  ·  Esc: cancel", attributes: hintAttributes)
+    private var hintLayouts: [String: TextLayout] = [:]
+
+    private func hintLayout(_ text: String) -> TextLayout {
+        if let cached = hintLayouts[text] { return cached }
+        let layout = TextLayout(text, attributes: Self.hintAttributes)
+        hintLayouts[text] = layout
+        return layout
+    }
 
     private final class TextLayout {
         let text: String
@@ -232,6 +273,17 @@ final class OverlayView: NSView {
         var crosshair: NSPoint?
         var detail: Label?
         var hint: Label?
+        var guides: [GuideLine] = []
+    }
+
+    private struct GuideLine: Equatable {
+        let start: NSPoint
+        let end: NSPoint
+
+        var frame: NSRect {
+            NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                   width: abs(start.x - end.x), height: abs(start.y - end.y)).insetBy(dx: -2, dy: -2)
+        }
     }
 
     init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat) {
@@ -261,25 +313,30 @@ final class OverlayView: NSView {
                width: r.width, height: r.height)
     }
 
-    override func mouseMoved(with e: NSEvent) {
-        OverlayPerformance.measure("MouseMoved") { session.mouseMoved(to: toCG(e)) }
+    private func updateModifiers(_ e: NSEvent) {
+        session.modifiersChanged(shift: e.modifierFlags.contains(.shift), command: e.modifierFlags.contains(.command))
     }
+
+    // Hotkey chords include ⌘, so a release that happens before this panel is key would otherwise leave the hint stale.
+    override func mouseMoved(with e: NSEvent) {
+        OverlayPerformance.measure("MouseMoved") { updateModifiers(e); session.mouseMoved(to: toCG(e)) }
+    }
+    override func flagsChanged(with e: NSEvent) { updateModifiers(e) }
     override func mouseDown(with e: NSEvent) {
-        OverlayPerformance.measure("MouseDown") { session.mouseDown(at: toCG(e)) }
+        OverlayPerformance.measure("MouseDown") { updateModifiers(e); session.mouseDown(at: toCG(e)) }
     }
     override func mouseDragged(with e: NSEvent) {
-        OverlayPerformance.measure("MouseDragged") {
-            session.mouseDragged(to: toCG(e), shift: e.modifierFlags.contains(.shift))
-        }
+        OverlayPerformance.measure("MouseDragged") { updateModifiers(e); session.mouseDragged(to: toCG(e)) }
     }
     override func mouseUp(with e: NSEvent) {
-        OverlayPerformance.measure("MouseUp") { session.mouseUp(at: toCG(e)) }
+        OverlayPerformance.measure("MouseUp") { updateModifiers(e); session.mouseUp(at: toCG(e)) }
     }
     override func rightMouseDown(with e: NSEvent) { session.cancel() }
 
     override func keyDown(with e: NSEvent) {
         let interval = OverlayPerformance.begin("KeyDown")
         defer { OverlayPerformance.end("KeyDown", interval) }
+        updateModifiers(e)
         let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
         switch e.keyCode {
         case 53: session.cancel()
@@ -305,6 +362,22 @@ final class OverlayView: NSView {
             snapshot.detail = label(CaptureGeometry.dimensionLabel(highlight), near: hole)
         }
 
+        if session.mode == .area {
+            snapshot.guides = session.snapGuides.map { guide in
+                let start: CGPoint, end: CGPoint
+                if guide.axis == .x {
+                    start = CGPoint(x: guide.coordinate, y: guide.lower)
+                    end = CGPoint(x: guide.coordinate, y: guide.upper)
+                } else {
+                    start = CGPoint(x: guide.lower, y: guide.coordinate)
+                    end = CGPoint(x: guide.upper, y: guide.coordinate)
+                }
+                return GuideLine(
+                    start: NSPoint(x: start.x - screenFrameCG.minX, y: bounds.height - (start.y - screenFrameCG.minY)),
+                    end: NSPoint(x: end.x - screenFrameCG.minX, y: bounds.height - (end.y - screenFrameCG.minY)))
+            }
+        }
+
         let c = NSPoint(x: session.cursor.x - screenFrameCG.minX, y: bounds.height - (session.cursor.y - screenFrameCG.minY))
         if session.mode == .area, bounds.contains(c) {
             snapshot.crosshair = c
@@ -315,7 +388,10 @@ final class OverlayView: NSView {
         }
 
         if session.mode == .window || session.selection == nil {
-            let layout = session.mode == .area ? Self.areaHint : Self.windowHint
+            let text = session.mode == .area
+                ? "Drag to select  ·  \(session.snappingHint)  ·  ⇧: square  ·  Space: window  ·  Esc: cancel"
+                : "Click a window  ·  Space: area  ·  Esc: cancel"
+            let layout = hintLayout(text)
             snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36))
         }
         return snapshot
@@ -372,6 +448,9 @@ final class OverlayView: NSView {
                 damage.append(NSRect(x: bounds.minX, y: c.y - crosshairMargin,
                                      width: bounds.width, height: 2 * crosshairMargin))
             }
+        }
+        if previous.guides != next.guides {
+            damage += (previous.guides + next.guides).map(\.frame)
         }
         for (old, new) in [(previous.detail, next.detail), (previous.hint, next.hint)] where old != new {
             damage += [old, new].compactMap { $0?.frame.insetBy(dx: -1 / scale, dy: -1 / scale) }
@@ -443,6 +522,18 @@ final class OverlayView: NSView {
             context.setLineWidth(1.5)
             context.stroke(hole.insetBy(dx: 0.5, dy: 0.5))
             if let label = snapshot.detail { paintLabel(label) }
+        }
+
+        if !snapshot.guides.isEmpty {
+            context.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor)
+            context.setLineWidth(1)
+            context.setLineDash(phase: 0, lengths: [4, 3])
+            for guide in snapshot.guides {
+                context.move(to: guide.start)
+                context.addLine(to: guide.end)
+            }
+            context.strokePath()
+            context.setLineDash(phase: 0, lengths: [])
         }
 
         if let c = snapshot.crosshair {

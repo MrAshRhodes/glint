@@ -11,6 +11,7 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 ### Added
 
 - A style-label menu for choosing Solid, Blur, or Pixelate, an optional two-colour checkerboard for Solid, and an optional solid-colour highlight for the Pixelate mosaic. ([#45])
+- Optional window/display-edge snapping for capture-area selections, with visible guides, a shared **Snap to Edges** menu item and **Snap selection to edges** preference (off by default). Hold Command to temporarily invert snapping; Shift keeps its square/10-point-nudge behavior. Arbitrary content inside windows is not detected. ([#43])
 
 ### Changed
 
@@ -165,3 +166,4 @@ First public release.
 [#39]: https://github.com/MrAshRhodes/glint/issues/39
 [#45]: https://github.com/MrAshRhodes/glint/issues/45
 [#42]: https://github.com/MrAshRhodes/glint/issues/42
+[#43]: https://github.com/MrAshRhodes/glint/issues/43

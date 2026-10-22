@@ -74,6 +74,11 @@
             <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr>
           </tbody></table>
           <p>Cancel a selection with <kbd>Esc</kbd>. Change the shortcuts in Preferences if another app uses the same combination.</p>
+          <h3 id="selection-snapping">Snap selection to edges</h3>
+          <p>Enable <strong>Snap to Edges</strong> in the menu bar or <strong>Snap selection to edges</strong> in Preferences → Capture. These controls share one saved setting, are off by default, and reset to off with <strong>Reset all preferences</strong>. The menu checkmark and Preferences switch stay in sync.</p>
+          <p>While selecting an area, the anchor and moving corner can align to nearby visible window bounds or display edges. Guides show the active alignment, and the captured rectangle is the one shown in the preview. This also applies to area-to-clipboard, Capture Text and timed area selection. The selection stays on the display where the drag began.</p>
+          <p>Hold <kbd>⌘</kbd> to temporarily invert the setting: with snapping off, hold to snap; with it on, hold for free selection. Releasing the key restores the saved setting, even without moving the mouse. The overlay hint shows the current state. <kbd>Shift</kbd>-drag still makes a square; <kbd>Shift</kbd>-arrow still nudges by 10 points. <kbd>Space</kbd> switches area/window mode, <kbd>Return</kbd> confirms, and <kbd>Esc</kbd> or right-click cancels.</p>
+          <p>Targets are sampled when the overlay opens. Restart selection if another window moves. Snapping uses rectangular window bounds, not shadows, rounded contours, controls, cards or images inside a window. Arbitrary visual-content detection is not enabled, and snapping does not take an extra screen image or request Accessibility permission.</p>
         </section>
         <section id="editor">
           <h2>Style your image</h2>
@@ -118,7 +123,7 @@
         </section>
         <section id="preferences">
           <h2>Preferences</h2>
-          <p>Open Preferences with <kbd>⌘ ,</kbd>. General controls launch at login, menu bar and Dock visibility, sounds and notifications. Capture controls cursor visibility, remembering the last area and hiding Glint windows during capture.</p>
+          <p>Open Preferences with <kbd>⌘ ,</kbd>. General controls launch at login, menu bar and Dock visibility, sounds and notifications. Capture controls cursor visibility, remembering the last area, <a href="#selection-snapping">selection snapping</a> and hiding Glint windows during capture.</p>
           <p>Output controls capture actions and files. Editor controls the default preset, <strong>Remember settings</strong>, auto-balance and auto-redact. Presets adds, edits, renames, deletes, imports and exports presets and sets your default look; see <a href="#presets">Presets</a>. About shows the version, Screen Recording permission (with <strong>Re-authorize Screen Recording…</strong>) and manual update check.</p>
         </section>
         <section id="automation">

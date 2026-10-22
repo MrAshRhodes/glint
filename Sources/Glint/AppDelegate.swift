@@ -4,7 +4,7 @@ import GlintCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    let prefs = AppPreferences.shared
+    let prefs: AppPreferences
     let presetStore = PresetStore()
     lazy var pipeline = CapturePipeline(prefs: prefs, presetStore: presetStore)
     lazy var urlCaptureHandler: URLCaptureHandler = {
@@ -15,7 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ))
     }()
     private var statusItem: NSStatusItem?
-    private let menu = NSMenu()
+    private let menu: NSMenu
+
+    init(prefs: AppPreferences = .shared, menu: NSMenu = NSMenu()) {
+        self.prefs = prefs
+        self.menu = menu
+        super.init()
+    }
 
     // MARK: lifecycle
 
@@ -148,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         timer.submenu = sub
         menu.addItem(timer)
+        add(menu, "Snap to Edges", #selector(toggleSnapToEdges)).state = prefs.snapToEdges ? .on : .off
         menu.addItem(.separator())
 
         add(menu, "Open Image…", #selector(openImage), key: "o")
@@ -201,6 +208,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func captureText() { pipeline.start(.text) }
     @objc private func repeatLast() { pipeline.start(.repeatLast) }
     @objc private func timerCapture(_ sender: NSMenuItem) { pipeline.start(.timer(sender.tag)) }
+    @objc private func toggleSnapToEdges() {
+        prefs.snapToEdges.toggle()
+        NotificationCenter.default.post(name: .glintPreferencesChanged, object: nil)
+    }
     @objc private func openRecent(_ sender: NSMenuItem) { if let u = sender.representedObject as? URL { pipeline.openFile(u) } }
     @objc private func clearRecent() { RecentFiles.clear() }
     @objc private func checkUpdates() { UpdateChecker.check() }

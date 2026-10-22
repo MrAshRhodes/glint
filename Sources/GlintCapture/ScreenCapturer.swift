@@ -92,7 +92,7 @@ public final class ScreenCapturer {
     }
 
     private func select(_ mode: OverlayStartMode) async throws -> SelectionOutcome {
-        let session = SelectionSession(mode: mode, lastArea: lastArea)
+        let session = SelectionSession(mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges)
         return try await session.run()
     }
 
