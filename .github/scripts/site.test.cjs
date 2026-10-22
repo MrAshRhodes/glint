@@ -10,7 +10,7 @@ const script = fs.readFileSync(path.join(root, "site.js"), "utf8");
 const pages = ["index.html", "guide.html", "404.html"];
 
 function attributes(tag) {
-  return Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+  return Object.fromEntries([...tag.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].map((match) => [match[1], match[2] ?? ""]));
 }
 
 test("every local HTML asset and fragment resolves under the Pages project path", () => {
@@ -69,30 +69,50 @@ function element(attrs = {}, hidden = false) {
   };
 }
 
-function browser({ empty = false, clipboardError = false } = {}) {
+function storage(initial = {}, broken = false) {
+  const values = new Map(Object.entries(initial));
+  const guard = () => { if (broken) throw new Error("SecurityError: storage is disabled"); };
+  return {
+    values,
+    getItem: (key) => { guard(); return values.get(key) ?? null; },
+    setItem: (key, value) => { guard(); values.set(key, String(value)); },
+    removeItem: (key) => { guard(); values.delete(key); },
+  };
+}
+
+function browser({ empty = false, clipboardError = false, page = html, stored = {}, storageError = false } = {}) {
   const elements = new Map();
   const buttons = [];
   const controls = [];
+  const metas = [];
   if (!empty) {
-    for (const match of html.matchAll(/<([a-z][a-z0-9-]*)\b([^>]*)>/g)) {
+    for (const match of page.matchAll(/<([a-z][a-z0-9-]*)\b([^>]*)>/g)) {
       const attrs = attributes(match[2]);
       const item = element(attrs, /\bhidden\b/.test(match[2]));
       if (attrs.id) elements.set(attrs.id, item);
       if (match[1] === "button") buttons.push(item);
+      if (match[1] === "meta") metas.push(item);
       if (match[2].includes("data-preview-controls")) controls.push(item);
     }
-    elements.get("demo-image").src = "assets/terminal-default.webp";
-    elements.get("install-command").textContent = "brew install --cask MrAshRhodes/tap/glint";
+    if (elements.has("demo-image")) {
+      elements.get("demo-image").src = "assets/terminal-default.webp";
+      elements.get("install-command").textContent = "brew install --cask MrAshRhodes/tap/glint";
+    }
   }
+  const root = element();
+  const localStorage = storage(stored, storageError);
+  const windowListeners = new Map();
   const pending = [];
   const errors = [];
   const copied = [];
   const timers = new Set();
   const selected = [];
   const document = {
+    documentElement: root,
     getElementById: (id) => elements.get(id) ?? null,
     querySelectorAll: (selector) => {
       if (selector === "[data-preview-controls]") return controls;
+      if (selector === 'meta[name="theme-color"]') return metas.filter((meta) => meta.getAttribute("name") === "theme-color");
       const key = selector.match(/^\[data-([\w-]+)\]$/)?.[1];
       return key ? buttons.filter((button) => key in button.dataset) : [];
     },
@@ -114,19 +134,24 @@ function browser({ empty = false, clipboardError = false } = {}) {
     }
   }
   vm.runInNewContext(script, {
-    document, Image,
+    document, Image, localStorage,
     navigator: { clipboard: { writeText: async (text) => {
       if (clipboardError) throw new Error("Permission denied");
       copied.push(text);
     } } },
-    window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) },
+    window: {
+      getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
+      addEventListener: (name, listener) => windowListeners.set(name, listener),
+    },
     console: { error: (...args) => errors.push(args) },
     setTimeout: (callback) => { timers.add(callback); return callback; },
     clearTimeout: (callback) => timers.delete(callback),
   });
   const button = (key, value) => buttons.find((item) => item.dataset[key] === value);
   return {
-    elements, controls, pending, errors, copied, timers, selected, button,
+    elements, controls, pending, errors, copied, timers, selected, button, root, metas, localStorage,
+    themeToggle: () => buttons.find((item) => "theme-toggle" in item.dataset),
+    dispatch: (name, event) => windowListeners.get(name)(event),
     click: (key, value) => button(key, value).click(),
     async load(key, value, width, height) {
       const result = button(key, value).click();
@@ -262,4 +287,99 @@ test("clipboard denial exposes manual-copy instructions and selects the command"
   assert.deepEqual(ui.selected, [ui.elements.get("install-command")]);
   assert.equal(ui.errors.length, 1);
   assert.equal(ui.button("copy", "install-command").getAttribute("data-copied"), null);
+});
+
+function pageSource(page) {
+  return fs.readFileSync(path.join(root, page), "utf8");
+}
+
+function themeBootstrap(page) {
+  const head = pageSource(page).match(/<head>([\s\S]*?)<\/head>/)[1];
+  const inline = [...head.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal(inline.length, 1, `${page}: expected one inline theme bootstrap`);
+  assert.ok(inline[0].index < head.search(/<link rel="stylesheet"/), `${page}: theme bootstrap must run before the stylesheet`);
+  return inline[0][1];
+}
+
+test("every page has one hidden, enhanceable theme toggle and scheme-aware metadata", () => {
+  for (const page of pages) {
+    const source = pageSource(page);
+    const toggles = [...source.matchAll(/<button\b[^>]*\bdata-theme-toggle\b[^>]*>/g)];
+    assert.equal(toggles.length, 1, `${page}: expected one theme toggle`);
+    assert.match(toggles[0][0], /\bhidden\b/, `${page}: theme toggle must stay hidden without JavaScript`);
+    assert.match(toggles[0][0], /type="button"/);
+    for (const icon of ["system", "light", "dark"]) assert.match(source, new RegExp(`class="theme-icon theme-icon-${icon}"[^>]*aria-hidden="true"`));
+    assert.match(source, /<meta name="color-scheme" content="light dark">/);
+    assert.match(source, /<meta name="theme-color" content="#f0f1ee" media="\(prefers-color-scheme: light\)">/);
+    assert.match(source, /<meta name="theme-color" content="#[0-9a-f]{6}" media="\(prefers-color-scheme: dark\)">/);
+    assert.equal(source.match(/name="theme-color"/g).length, 2, `${page}: expected light and dark theme-color metas`);
+    assert.match(source, /<script src="(?:\/glint\/)?site\.js" defer><\/script>/, `${page}: theme toggle needs site.js`);
+  }
+});
+
+test("the no-flash bootstrap applies only a valid stored choice and tolerates blocked storage", () => {
+  const bootstraps = pages.map(themeBootstrap);
+  assert.ok(bootstraps.every((source) => source === bootstraps[0]), "theme bootstraps differ between pages");
+  for (const [stored, expected] of [["light", "light"], ["dark", "dark"], ["sepia", null], [undefined, null]]) {
+    const root = element();
+    vm.runInNewContext(bootstraps[0], { document: { documentElement: root }, localStorage: storage(stored ? { "glint-theme": stored } : {}) });
+    assert.equal(root.getAttribute("data-theme"), expected);
+  }
+  const root = element();
+  assert.doesNotThrow(() => vm.runInNewContext(bootstraps[0], { document: { documentElement: root }, localStorage: storage({}, true) }));
+  assert.equal(root.getAttribute("data-theme"), null);
+});
+
+test("the theme toggle cycles system, light and dark, persists the choice and updates theme-color", () => {
+  for (const page of pages) {
+    const ui = browser({ page: pageSource(page) });
+    const toggle = ui.themeToggle();
+    const colors = () => ui.metas.filter((meta) => meta.getAttribute("name") === "theme-color").map((meta) => meta.getAttribute("content"));
+    const [light, dark] = colors();
+    assert.equal(toggle.hidden, false, `${page}: toggle not revealed`);
+    assert.equal(toggle.getAttribute("data-theme-choice"), "system");
+    assert.equal(toggle.getAttribute("aria-label"), "Theme: system (switch to light)");
+    assert.equal(ui.root.getAttribute("data-theme"), null);
+    toggle.click();
+    assert.equal(ui.root.getAttribute("data-theme"), "light");
+    assert.equal(ui.localStorage.values.get("glint-theme"), "light");
+    assert.equal(toggle.getAttribute("aria-label"), "Theme: light (switch to dark)");
+    assert.equal(toggle.getAttribute("title"), "Theme: light (switch to dark)");
+    assert.deepEqual(colors(), [light, light]);
+    toggle.click();
+    assert.equal(ui.root.getAttribute("data-theme"), "dark");
+    assert.equal(ui.localStorage.values.get("glint-theme"), "dark");
+    assert.equal(toggle.getAttribute("data-theme-choice"), "dark");
+    assert.equal(toggle.getAttribute("aria-label"), "Theme: dark (switch to system)");
+    assert.deepEqual(colors(), [dark, dark]);
+    toggle.click();
+    assert.equal(ui.root.getAttribute("data-theme"), null);
+    assert.equal(ui.localStorage.values.has("glint-theme"), false);
+    assert.equal(toggle.getAttribute("data-theme-choice"), "system");
+    assert.deepEqual(colors(), [light, dark]);
+  }
+});
+
+test("a stored theme is restored, other tabs stay in sync and blocked storage still toggles", () => {
+  const ui = browser({ stored: { "glint-theme": "dark" } });
+  assert.equal(ui.themeToggle().getAttribute("data-theme-choice"), "dark");
+  assert.equal(ui.root.getAttribute("data-theme"), "dark");
+  ui.localStorage.values.set("glint-theme", "light");
+  ui.dispatch("storage", { key: "glint-theme" });
+  assert.equal(ui.root.getAttribute("data-theme"), "light");
+  ui.localStorage.values.set("unrelated", "x");
+  ui.localStorage.values.delete("glint-theme");
+  ui.dispatch("storage", { key: "unrelated" });
+  assert.equal(ui.root.getAttribute("data-theme"), "light");
+  ui.dispatch("storage", { key: null });
+  assert.equal(ui.root.getAttribute("data-theme"), null);
+  assert.equal(ui.themeToggle().getAttribute("data-theme-choice"), "system");
+
+  const blocked = browser({ storageError: true });
+  assert.equal(blocked.themeToggle().getAttribute("data-theme-choice"), "system");
+  assert.doesNotThrow(() => blocked.themeToggle().click());
+  assert.equal(blocked.root.getAttribute("data-theme"), "light");
+  blocked.themeToggle().click();
+  assert.equal(blocked.root.getAttribute("data-theme"), "dark");
+  assert.equal(blocked.errors.length, 0);
 });

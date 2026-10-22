@@ -102,6 +102,61 @@ for (const button of document.querySelectorAll("[data-copy]")) {
   });
 }
 
+const themeKey = "glint-theme";
+const themes = ["system", "light", "dark"];
+const themeToggles = [...document.querySelectorAll("[data-theme-toggle]")];
+const themeMetas = [...document.querySelectorAll('meta[name="theme-color"]')].map((meta) => ({
+  meta,
+  content: meta.getAttribute("content"),
+  scheme: /dark/.test(meta.getAttribute("media") ?? "") ? "dark" : "light",
+}));
+
+function storedTheme() {
+  try {
+    const value = localStorage.getItem(themeKey);
+    return value === "light" || value === "dark" ? value : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function applyTheme(theme) {
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  // An explicit choice overrides the system scheme, so every theme-color meta follows it.
+  const color = themeMetas.find((item) => item.scheme === theme)?.content;
+  for (const item of themeMetas) item.meta.setAttribute("content", color ?? item.content);
+  const label = `Theme: ${theme} (switch to ${themes[(themes.indexOf(theme) + 1) % themes.length]})`;
+  for (const button of themeToggles) {
+    button.setAttribute("data-theme-choice", theme);
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+  }
+}
+
+if (themeToggles.length) {
+  let theme = storedTheme();
+  applyTheme(theme);
+  for (const button of themeToggles) {
+    button.hidden = false;
+    button.addEventListener("click", () => {
+      theme = themes[(themes.indexOf(theme) + 1) % themes.length];
+      applyTheme(theme);
+      try {
+        if (theme === "system") localStorage.removeItem(themeKey);
+        else localStorage.setItem(themeKey, theme);
+      } catch {
+        // Storage may be blocked; the choice still applies until the page is left.
+      }
+    });
+  }
+  window.addEventListener("storage", (event) => {
+    if (event.key !== themeKey && event.key !== null) return;
+    theme = storedTheme();
+    applyTheme(theme);
+  });
+}
+
 const tocLinks = [...document.querySelectorAll(".toc a")];
 if (tocLinks.length && "IntersectionObserver" in window) {
   const observer = new IntersectionObserver((entries) => {
