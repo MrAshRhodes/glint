@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-22
+
 ### Added
 
 - **Re-authorize Screen Recording…** in Preferences → About clears Glint's stale Screen Recording entry and requests access again; allow Glint in System Settings, then relaunch Glint. If the reset fails, Glint explains the manual recovery steps. If Glint has seen Screen Recording granted and it later goes missing, Glint opens its setup window at launch; otherwise it opens when a capture fails for lack of access. ([#39])
@@ -120,7 +122,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/MrAshRhodes/glint/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/MrAshRhodes/glint/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/MrAshRhodes/glint/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/MrAshRhodes/glint/compare/v1.0.1...v1.1.0
