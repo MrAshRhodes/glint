@@ -9,7 +9,7 @@ enum CommandLine_ {
     static let usage = """
     Usage: Glint [options]
       --version                       Print the version and exit
-      --diagnose                      Print capture diagnostics and exit
+      --diagnose                      Print capture permission, counts and status only, then exit
       --list-presets                  Print preset names and exit
       --render IN OUT [--preset NAME] [--scale N]
                                       Beautify IN into OUT without launching the UI

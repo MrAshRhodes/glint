@@ -1,37 +1,44 @@
-import AppKit
+import Foundation
 
 public enum CaptureDiagnostics {
-    /// Headless report: permission state, displays, windows, and (if permitted) SCK visibility.
+    /// Headless report of permission state and aggregate counts, without window or display metadata.
     @MainActor
     public static func run() async -> String {
+        await report(
+            permission: ScreenRecordingPermission.state,
+            captureBinaryAvailable: FileManager.default.isExecutableFile(atPath: "/usr/sbin/screencapture"),
+            displayCount: WindowEnumerator.displays().count,
+            windowCount: WindowEnumerator.onScreenWindows().count
+        ) {
+            let content = try await WindowEnumerator.shareableContent()
+            return (content.displays.count, content.windows.count, content.applications.count)
+        }
+    }
+
+    @MainActor
+    static func report(
+        permission: ScreenRecordingPermission.State,
+        captureBinaryAvailable: Bool,
+        displayCount: Int,
+        windowCount: Int,
+        shareableCounts: @MainActor () async throws -> (displays: Int, windows: Int, applications: Int)
+    ) async -> String {
         var out: [String] = ["== Glint capture diagnostics =="]
-        out.append("Screen Recording: granted=\(ScreenRecordingPermission.isGranted) state=\(ScreenRecordingPermission.state.rawValue)")
-        out.append("screencapture binary: \(FileManager.default.isExecutableFile(atPath: "/usr/sbin/screencapture") ? "present" : "MISSING")")
-        let displays = WindowEnumerator.displays()
-        out.append("Displays (\(displays.count)):")
-        for d in displays {
-            out.append("  #\(d.id) \(d.name)\(d.isMain ? " [main]" : "") frame=\(fmt(d.frame)) scale=\(d.scale)x")
-        }
-        let wins = WindowEnumerator.onScreenWindows()
-        out.append("On-screen windows (\(wins.count)):")
-        for w in wins.prefix(15) {
-            out.append("  id=\(w.id) pid=\(w.pid) \(w.ownerName) — \(w.title.isEmpty ? "(untitled)" : w.title) \(fmt(w.frame))")
-        }
-        if wins.count > 15 { out.append("  … \(wins.count - 15) more") }
-        if ScreenRecordingPermission.isGranted {
+        out.append("Screen Recording: granted=\(permission == .granted) state=\(permission.rawValue)")
+        out.append("screencapture binary: \(captureBinaryAvailable ? "present" : "MISSING")")
+        out.append("Displays: \(displayCount)")
+        out.append("On-screen windows: \(windowCount)")
+        if permission == .granted {
             do {
-                let c = try await WindowEnumerator.shareableContent()
-                out.append("ScreenCaptureKit: \(c.displays.count) displays, \(c.windows.count) windows, \(c.applications.count) apps")
+                let counts = try await shareableCounts()
+                out.append("ScreenCaptureKit: \(counts.displays) displays, \(counts.windows) windows, \(counts.applications) apps")
             } catch {
-                out.append("ScreenCaptureKit error: \(error.localizedDescription)")
+                // Framework error descriptions may contain the same private metadata as window records.
+                out.append("ScreenCaptureKit: unavailable (enumeration failed)")
             }
         } else {
             out.append("ScreenCaptureKit: skipped (no permission)")
         }
         return out.joined(separator: "\n")
-    }
-
-    private static func fmt(_ r: CGRect) -> String {
-        "(\(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))×\(Int(r.height)))"
     }
 }
