@@ -32,13 +32,13 @@ struct DesktopWallpaperEditorTests {
         #expect(calls == 0)
         model.settings.padding = 20
         model.settings.usesDesktopWallpaper = true
-        let first = model.renderFinal()
+        let first = try model.renderFinal()
         #expect(try #require(PixelBuffer(first)).pixel(1, 1) == (255, 0, 0, 255))
         try await expectPreview(model, matches: first)
         wallpaper = try solid(.black)
         model.settings.cornerRadius = 15
         model.settings.shadow = ShadowSettings(strength: 20)
-        let styled = model.renderFinal()
+        let styled = try model.renderFinal()
         try await expectPreview(model, matches: styled)
         #expect(calls == 1)
         #expect(try #require(PixelBuffer(styled)).pixel(1, 1).0 > 240)
@@ -46,7 +46,7 @@ struct DesktopWallpaperEditorTests {
         model.settings.usesDesktopWallpaper = false
         #expect(model.settings.background == .transparent && model.wallpaperProblem == nil)
         model.settings.usesDesktopWallpaper = true
-        let refreshed = model.renderFinal()
+        let refreshed = try model.renderFinal()
         #expect(calls == 2)
         #expect(try #require(PixelBuffer(refreshed)).pixel(1, 1).0 == 0)
         try await expectPreview(model, matches: refreshed)
@@ -63,13 +63,13 @@ struct DesktopWallpaperEditorTests {
         model.settings.padding = 20
         model.settings.usesDesktopWallpaper = true
         #expect(model.wallpaperProblem == DesktopWallpaperError.unavailable.localizedDescription)
-        let fallback = model.renderFinal()
+        let fallback = try model.renderFinal()
         #expect(try #require(PixelBuffer(fallback)).pixel(1, 1) == (255, 0, 0, 255))
         try await expectPreview(model, matches: fallback)
         model.chooseBackground(.solid(.black))
         #expect(!model.settings.usesDesktopWallpaper && model.wallpaperProblem == nil)
         #expect(f.preferences.lastRenderSettings?.usesDesktopWallpaper == false)
-        #expect(try #require(PixelBuffer(model.renderFinal())).pixel(1, 1) == (0, 0, 0, 255))
+        #expect(try #require(PixelBuffer(try model.renderFinal())).pixel(1, 1) == (0, 0, 0, 255))
     }
 
     @Test func restoredSettingsAndPresetsResolveWallpaper() throws {
@@ -97,11 +97,11 @@ struct DesktopWallpaperEditorTests {
                                                           autoBalance: false, usesDesktopWallpaper: true)
         let wallpaper = try solid(RGBAColor(r: 1, g: 0, b: 0))
         var errors: [DesktopWallpaperError] = []
-        let rendered = EditorHeadless.render(context: f.context, preferences: f.preferences,
+        let rendered = try EditorHeadless.render(context: f.context, preferences: f.preferences,
                                               wallpaperProvider: { .success(wallpaper) }, onWallpaperFailure: { errors.append($0) })
         #expect(try #require(PixelBuffer(rendered)).pixel(1, 1) == (255, 0, 0, 255))
         #expect(errors.isEmpty)
-        let fallback = EditorHeadless.render(context: f.context, preferences: f.preferences,
+        let fallback = try EditorHeadless.render(context: f.context, preferences: f.preferences,
                                               wallpaperProvider: { .failure(.rotatingFolder) }, onWallpaperFailure: { errors.append($0) })
         #expect(try #require(PixelBuffer(fallback)).pixel(1, 1) == (0, 0, 0, 255))
         #expect(errors == [.rotatingFolder])

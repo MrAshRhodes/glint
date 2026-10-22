@@ -37,13 +37,24 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
 ## Compositor
 ```swift
 Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
-                  backingScale: CGFloat = 1, backgroundImage: CGImage? = nil) -> CGImage
-Compositor.renderDetailed(...) -> RenderResult   // image + layout + border
+                  backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
+                  wallpaper: CGImage? = nil) throws -> CGImage
+Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border
 Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/content rects (px, top-left)
 ```
 Pipeline: auto-balance crop → annotations baked into content (redactions destroy pixels) → rotate/flip →
 inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
+Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
+`RenderError.annotationsNotApplied` instead of returning the unredacted source, and every export path
+(editor copy/save/share/drag, direct capture export, `--render`) aborts with an error.
+The editor retains the image and annotations and offers **Retry** for the failed action, rendering again
+with the current edits. Save retries keep the chosen destination and format; after retrying a drag export,
+drag the thumbnail again to choose a destination. Capture auto-redaction and rendering failures offer
+**Retry** or **Discard Capture**, retaining the same capture in memory and preserving required redactions.
+Retries do not recapture the screen, repeat a raw-history save, or create a raw recovery file. This is
+in-memory recovery, not protection against quitting or a crash. The CLI still exits with an error;
+its input file is unchanged.
 
 ## Annotations
 `Annotation(id,z,kind,style)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
@@ -52,7 +63,7 @@ inset band → window frame → rounded card + two-layer shadow → background �
 `AnnotationStyle(color, fill?, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius)`.
 `annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction`.
 `AnnotationRenderer.draw(in ctx: CGContext, annotations:, imageSize:, source: CGImage?)` — `ctx` must map
-image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage`.
+image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage?` (nil on failure).
 Blur/pixelate/redact sample the *source* pixels; `.redact` is always drawn fully opaque.
 
 ## AutoBalance

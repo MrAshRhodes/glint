@@ -240,6 +240,8 @@ h2 { font-size: clamp(26px, 3vw, 38px); font-weight: 600; letter-spacing: -0.045
 .ledger-detail { justify-self: end; display: flex; flex-direction: column; align-items: end; gap: 12px; padding-top: 4px; font-size: 13px; }
 .ledger-detail small { font-size: 10px; color: var(--muted); }
 code, kbd { font-family: var(--mono); font-size: 0.88em; }
+/* Commands stay literal: JetBrains Mono would otherwise draw "-<" as an arrow. */
+code { font-variant-ligatures: none; }
 :not(pre) > code { background: rgb(var(--shade) / 3.5%); padding: 0.1em 0.3em; border-radius: 3px; overflow-wrap: anywhere; }
 kbd { display: inline-block; padding: 4px 8px; background: var(--surface); border-radius: 4px; box-shadow: 0 0 0 1px rgb(var(--shade) / 14.5%), 0 2px 0 rgb(var(--shadow) / 8.2%); font-family: var(--keys); font-weight: 500; white-space: nowrap; }
 .detail-frame { width: 100px; height: 66px; align-items: center; justify-content: center; padding: 13px; background: var(--frame); border: 1px dashed var(--muted-line); }

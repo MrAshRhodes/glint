@@ -50,6 +50,31 @@ enum Notifier {
     }
 }
 
+@MainActor
+enum CaptureRecovery {
+    static func requestRetry(title: String, message: String) -> Bool {
+        let alert = alert(title: title, message: message)
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    static func alert(title: String, message: String) -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = """
+        \(message)
+
+        No safe output was saved or copied. Your capture stays in memory while this dialog is open.
+
+        Retry processes the same captured image again. Discard Capture releases it from memory. No additional raw image is saved for recovery.
+        """
+        alert.addButton(withTitle: "Retry").keyEquivalent = "\r"
+        alert.addButton(withTitle: "Discard Capture")
+        return alert
+    }
+}
+
 /// Manual GitHub release checks. Installation stays with Homebrew or the user's download.
 @MainActor
 enum UpdateChecker {

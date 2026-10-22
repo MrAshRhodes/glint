@@ -17,6 +17,8 @@ private final class CaptureFixture {
     var recent: [URL] = []
     var copies = 0
     var copiedImage: CGImage?
+    var copiedTexts: [String] = []
+    var sounds = 0
     var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
     var wallpaperReads = 0
     var failWrite = false
@@ -24,7 +26,13 @@ private final class CaptureFixture {
     var copySucceeds = true
     var failRecognition = false
     var failBake = false
+    var failRender = false
     var lines: [RecognizedLine] = []
+    var recognizedImages: [CGImage] = []
+    var bakedImages: [CGImage] = []
+    var renderedImages: [CGImage] = []
+    var retryRequests: [(title: String, message: String)] = []
+    var retry: () -> Bool = { false }
 
     init() throws {
         directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -59,17 +67,29 @@ private final class CaptureFixture {
             return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
         }
         services.copy = { [self] image in copies += 1; copiedImage = image; return copySucceeds }
+        services.copyText = { [self] in copiedTexts.append($0) }
         services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
-        services.recognize = { [self] _, _ in
+        services.recognize = { [self] image, _ in
+            recognizedImages.append(image)
             if failRecognition { throw TestFailure.recognition }
             return lines
         }
         services.bake = { [self] image, annotations in
-            failBake ? nil : AnnotationRenderer.bake(source: image, annotations: annotations)
+            bakedImages.append(image)
+            return failBake ? nil : AnnotationRenderer.bake(source: image, annotations: annotations)
+        }
+        services.render = { [self] image, settings, backingScale, wallpaper in
+            renderedImages.append(image)
+            if failRender { throw RenderError.annotationsNotApplied }
+            return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
+        services.requestRetry = { [self] title, message in
+            retryRequests.append((title, message))
+            return retry()
+        }
         services.addRecent = { [self] in recent.append($0) }
-        services.sound = {}
+        services.sound = { [self] in sounds += 1 }
         return CapturePipeline(prefs: preferences, presetStore: presets, services: services)
     }
 
@@ -79,6 +99,7 @@ private final class CaptureFixture {
     }
 
     func cleanUp() {
+        retry = { false }
         preferences.defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directory)
     }
@@ -87,6 +108,46 @@ private final class CaptureFixture {
 @Suite("Capture export outcomes")
 @MainActor
 struct CapturePipelineTests {
+    @Test(arguments: [
+        "demo-password-4826",
+        "recovery-code-1234\n" + String(repeating: "token-", count: 30) + "\ncaf\u{00E9} \u{1F511}"
+    ])
+    func captureTextKeepsRecognizedContentOutOfNotifications(text: String) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.lines = text.components(separatedBy: "\n").map { RecognizedLine(text: $0, box: .zero) }
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts == [text])
+        #expect(f.sounds == 1)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "Text copied")
+        #expect(notification.body == "Recognized text copied to clipboard")
+        #expect(notification.url == nil)
+    }
+
+    @Test func captureTextWithNoTextDoesNotCopyOrReportSuccess() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts.isEmpty && f.sounds == 0)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "No text found")
+        #expect(notification.body == "Nothing was recognised in the selected area.")
+        #expect(notification.url == nil)
+    }
+
+    @Test func captureTextRecognitionFailureDoesNotCopyOrReportSuccess() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.failRecognition = true
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts.isEmpty && f.sounds == 0)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "Text recognition failed")
+        #expect(notification.body == TestFailure.recognition.localizedDescription)
+        #expect(notification.url == nil)
+    }
+
     @Test func savesAutomaticOutputAndRecordsOnlySuccessfulFile() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         f.preferences.exportFormat = .jpeg(quality: 0.7)
@@ -240,6 +301,25 @@ struct CapturePipelineTests {
         #expect(f.notifications.first?.body.contains("redactions could not be applied") == true)
     }
 
+    @Test func failedRenderNeverSavesOrCopies() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.copyToClipboardAfterCapture = true
+        f.failRender = true
+        await f.run()
+        #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
+        #expect(f.notifications.map(\.title) == ["Screenshot not exported"])
+        #expect(f.notifications.first?.body == RenderError.annotationsNotApplied.localizedDescription)
+        #expect(f.notifications.first?.url == nil)
+    }
+
+    @Test func failedRenderInClipboardOnlyModeNeverCopies() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.failRender = true
+        await f.run(clipboardOnly: true)
+        #expect(f.writes.isEmpty && f.copies == 0 && f.copiedImage == nil)
+        #expect(f.notifications.map(\.title) == ["Screenshot not exported"])
+    }
+
     @Test func successfulRedactionIsBakedIntoExport() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         f.preferences.autoRedact = true
@@ -262,5 +342,127 @@ struct CapturePipelineTests {
         await f.run()
         #expect(f.writes.count == 1 && f.recent.count == 1)
         #expect(f.notifications.map(\.title) == ["Screenshot saved"])
+    }
+
+    @Test func retryAlertOffersRecoveryWithoutShowingCapturedPixels() throws {
+        let alert = CaptureRecovery.alert(title: "Auto-redaction failed", message: "Redactions could not be applied.")
+        #expect(alert.messageText == "Auto-redaction failed")
+        #expect(alert.informativeText.contains("No safe output was saved or copied."))
+        #expect(alert.informativeText.contains("stays in memory"))
+        #expect(alert.informativeText.contains("No additional raw image is saved"))
+        #expect(alert.buttons.map(\.title) == ["Retry", "Discard Capture"])
+        #expect(alert.buttons.first?.keyEquivalent == "\r")
+        #expect(alert.accessoryView == nil)
+    }
+
+    @Test func retriesOCRAndBakeWithoutLosingPixelsOrRequiredRedactions() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        f.failRecognition = true
+        f.failBake = true
+        f.retry = {
+            #expect(f.writes.isEmpty && f.copies == 0 && f.renderedImages.isEmpty)
+            f.preferences.autoRedact = false
+            f.preferences.autoRedactOptions = SensitiveInfoOptions(categories: [])
+            f.preferences.redactColor = .white
+            if f.retryRequests.count == 2 { f.failRecognition = false }
+            if f.retryRequests.count == 4 { f.failBake = false }
+            return f.retryRequests.count <= 4
+        }
+        await f.run()
+        #expect(f.retryRequests.count == 4)
+        #expect(f.recognizedImages.count == 3 && f.bakedImages.count == 3)
+        #expect(f.recognizedImages.allSatisfy { $0 === f.image })
+        #expect(f.bakedImages.allSatisfy { $0 === f.image })
+        #expect(f.sounds == 1 && f.writes.count == 1 && f.copies == 0)
+        let savedURL = try #require(f.recent.first)
+        let saved = try #require(GlintImageIO.load(url: savedURL))
+        #expect(try #require(PixelBuffer(saved)).pixel(50, 20) == (0, 0, 0, 255))
+    }
+
+    @Test(arguments: [false, true])
+    func discardingRepeatedRedactionFailuresNeverExports(bakeFailure: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        f.failRecognition = !bakeFailure
+        f.failBake = bakeFailure
+        f.retry = {
+            #expect(f.writes.isEmpty && f.copies == 0 && f.renderedImages.isEmpty)
+            return f.retryRequests.count < 100
+        }
+        await f.run()
+        #expect(f.retryRequests.count == 100)
+        #expect(f.recognizedImages.count == (bakeFailure ? 1 : 100))
+        #expect(f.bakedImages.count == (bakeFailure ? 100 : 0))
+        #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
+        #expect(f.renderedImages.isEmpty && f.sounds == 1)
+    }
+
+    @Test func retriesDoNotRepeatExplicitRawSaveOrCaptureSound() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.saveRaw = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        f.failBake = true
+        f.failRender = true
+        f.retry = {
+            #expect(f.writes.count == 1 && f.copies == 0 && f.sounds == 1)
+            if f.retryRequests.count == 2 { f.failBake = false }
+            if f.retryRequests.count == 4 { f.failRender = false }
+            return f.retryRequests.count <= 4
+        }
+        await f.run(saveRaw: true)
+        #expect(f.retryRequests.count == 4 && f.sounds == 1)
+        #expect(f.recognizedImages.count == 1 && f.bakedImages.count == 3 && f.renderedImages.count == 3)
+        #expect(f.writes.count == 2 && f.recent.count == 1)
+        #expect(f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }.count == 1)
+        let rawURL = try #require(f.writes.first?.url)
+        let savedURL = try #require(f.recent.first)
+        let raw = try #require(GlintImageIO.load(url: rawURL))
+        let saved = try #require(GlintImageIO.load(url: savedURL))
+        #expect(try #require(PixelBuffer(raw)).pixel(50, 20) == (255, 255, 255, 255))
+        #expect(try #require(PixelBuffer(saved)).pixel(50, 20) == (0, 0, 0, 255))
+    }
+
+    @Test func renderRetryKeepsRedactedInputAndClipboardOnlyPolicy() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.openEditorAfterCapture = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        f.failRender = true
+        f.retry = {
+            #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
+            f.preferences.autoRedact = false
+            f.preferences.saveOutput = true
+            if f.retryRequests.count == 2 { f.failRender = false }
+            return f.retryRequests.count <= 2
+        }
+        await f.run(clipboardOnly: true)
+        #expect(f.retryRequests.count == 2)
+        #expect(f.recognizedImages.count == 1 && f.bakedImages.count == 1 && f.renderedImages.count == 3)
+        let redacted = try #require(f.renderedImages.first)
+        #expect(redacted !== f.image)
+        #expect(f.renderedImages.allSatisfy { $0 === redacted })
+        #expect(try #require(PixelBuffer(redacted)).pixel(50, 20) == (0, 0, 0, 255))
+        let copied = try #require(f.copiedImage)
+        #expect(try #require(PixelBuffer(copied)).pixel(50, 20) == (0, 0, 0, 255))
+        #expect(f.writes.isEmpty && f.recent.isEmpty && f.copies == 1 && f.sounds == 1)
+        #expect(f.notifications.last?.title == "Copied to clipboard")
+    }
+
+    @Test(arguments: [false, true])
+    func discardingRepeatedRenderFailuresNeverExports(clipboardOnly: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.failRender = true
+        f.retry = {
+            #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
+            return f.retryRequests.count < 100
+        }
+        await f.run(clipboardOnly: clipboardOnly)
+        #expect(f.retryRequests.count == 100 && f.renderedImages.count == 100)
+        #expect(f.renderedImages.allSatisfy { $0 === f.image })
+        #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty && f.sounds == 1)
     }
 }
