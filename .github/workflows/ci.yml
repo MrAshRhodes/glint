@@ -36,6 +36,11 @@ jobs:
       - name: Test the product site
         run: node --test .github/scripts/site.test.cjs
 
+      - name: Check the changelog
+        run: |
+          node --test .github/scripts/changelog.test.cjs
+          node .github/scripts/changelog.cjs check
+
       # Exercises the same path as a release: build, bundle, ad-hoc sign and verify Glint.app.
       - name: Assemble Glint.app
         env:

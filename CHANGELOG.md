@@ -10,7 +10,7 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ### Added
 
-- This changelog, covering every release since 1.0.0.
+- This changelog, covering every release since 1.0.0. GitHub release notes now come from the release's section here.
 
 ### Changed
 
