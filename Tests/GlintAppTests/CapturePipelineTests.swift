@@ -33,7 +33,6 @@ private final class CaptureFixture {
     var renderedImages: [CGImage] = []
     var retryRequests: [(title: String, message: String)] = []
     var retry: () -> Bool = { false }
-    var sounds = 0
 
     init() throws {
         directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
