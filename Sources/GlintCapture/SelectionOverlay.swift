@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 enum SelectionOutcome {
     case area(CGRect, CGDirectDisplayID)
@@ -23,6 +24,7 @@ final class SelectionSession {
     private var anchor: CGPoint?
     private var dragDisplay: CGRect?
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
+    private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
 
     init(mode: OverlayStartMode, lastArea: CGRect?) {
@@ -32,13 +34,18 @@ final class SelectionSession {
     }
 
     func run() async throws -> SelectionOutcome {
-        windows = WindowEnumerator.onScreenWindows()
+        firstDrawInterval = OverlayPerformance.begin("OverlayFirstDraw")
+        let setup = OverlayPerformance.begin("OverlaySetup")
+        windows = OverlayPerformance.measure("WindowEnumeration") { WindowEnumerator.onScreenWindows() }
         cursor = CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: primaryHeight)
         return try await withCheckedThrowingContinuation { cont in
+            defer { OverlayPerformance.end("OverlaySetup", setup) }
             continuation = cont
             let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
             for screen in NSScreen.screens {
-                let panel = OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight)
+                let panel = OverlayPerformance.measure("PanelCreation") {
+                    OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight)
+                }
                 panels.append(panel)
                 panel.orderFrontRegardless()
             }
@@ -50,7 +57,12 @@ final class SelectionSession {
         }
     }
 
-    func refresh() { panels.forEach { $0.contentView?.needsDisplay = true } }
+    func refresh() { panels.forEach { ($0.contentView as? OverlayView)?.refresh() } }
+
+    fileprivate func didDraw() {
+        OverlayPerformance.end("OverlayFirstDraw", firstDrawInterval)
+        firstDrawInterval = nil
+    }
 
     private func updateHover() {
         hoverWindow = mode == .window ? WindowEnumerator.window(at: cursor, in: windows) : nil
@@ -134,7 +146,13 @@ final class SelectionSession {
     private func finish(_ result: Result<SelectionOutcome, Error>) {
         guard let c = continuation else { return }
         continuation = nil
-        panels.forEach { $0.orderOut(nil); $0.close() }
+        OverlayPerformance.end("OverlayFirstDraw", firstDrawInterval, cancelled: true)
+        firstDrawInterval = nil
+        panels.forEach {
+            ($0.contentView as? OverlayView)?.cancelPendingDraw()
+            $0.orderOut(nil)
+            $0.close()
+        }
         panels.removeAll()
         NSCursor.arrow.set()
         c.resume(with: result)
@@ -169,6 +187,52 @@ final class OverlayView: NSView {
     private unowned let session: SelectionSession
     private let screenFrameCG: CGRect
     private let scale: CGFloat
+    private var lastSnapshot: Snapshot?
+    private var detailLayout: TextLayout?
+    private var pendingDrawInterval: OSSignpostIntervalState?
+    private var hasDrawn = false
+
+    private static let detailAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+        .foregroundColor: NSColor.white]
+    private static let hintAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+        .foregroundColor: NSColor.white]
+    private static let areaHint = TextLayout("Drag to select  ·  Space: window  ·  Esc: cancel", attributes: hintAttributes)
+    private static let windowHint = TextLayout("Click a window  ·  Space: area  ·  Esc: cancel", attributes: hintAttributes)
+
+    private final class TextLayout {
+        let text: String
+        let attributedText: NSAttributedString
+        let size: NSSize
+
+        init(_ text: String, attributes: [NSAttributedString.Key: Any]) {
+            self.text = text
+            attributedText = NSAttributedString(string: text, attributes: attributes)
+            size = attributedText.size()
+        }
+    }
+
+    private struct Label: Equatable {
+        let layout: TextLayout
+        let origin: NSPoint
+
+        var frame: NSRect {
+            NSRect(x: origin.x - 6, y: origin.y - 3, width: layout.size.width + 12, height: layout.size.height + 6)
+        }
+
+        static func == (lhs: Label, rhs: Label) -> Bool {
+            lhs.layout === rhs.layout && lhs.origin == rhs.origin
+        }
+    }
+
+    private struct Snapshot {
+        var hole: NSRect?
+        var windowHighlight = false
+        var crosshair: NSPoint?
+        var detail: Label?
+        var hint: Label?
+    }
 
     init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat) {
         self.session = session
@@ -197,15 +261,25 @@ final class OverlayView: NSView {
                width: r.width, height: r.height)
     }
 
-    override func mouseMoved(with e: NSEvent) { session.mouseMoved(to: toCG(e)) }
-    override func mouseDown(with e: NSEvent) { session.mouseDown(at: toCG(e)) }
-    override func mouseDragged(with e: NSEvent) {
-        session.mouseDragged(to: toCG(e), shift: e.modifierFlags.contains(.shift))
+    override func mouseMoved(with e: NSEvent) {
+        OverlayPerformance.measure("MouseMoved") { session.mouseMoved(to: toCG(e)) }
     }
-    override func mouseUp(with e: NSEvent) { session.mouseUp(at: toCG(e)) }
+    override func mouseDown(with e: NSEvent) {
+        OverlayPerformance.measure("MouseDown") { session.mouseDown(at: toCG(e)) }
+    }
+    override func mouseDragged(with e: NSEvent) {
+        OverlayPerformance.measure("MouseDragged") {
+            session.mouseDragged(to: toCG(e), shift: e.modifierFlags.contains(.shift))
+        }
+    }
+    override func mouseUp(with e: NSEvent) {
+        OverlayPerformance.measure("MouseUp") { session.mouseUp(at: toCG(e)) }
+    }
     override func rightMouseDown(with e: NSEvent) { session.cancel() }
 
     override func keyDown(with e: NSEvent) {
+        let interval = OverlayPerformance.begin("KeyDown")
+        defer { OverlayPerformance.end("KeyDown", interval) }
         let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
         switch e.keyCode {
         case 53: session.cancel()
@@ -219,68 +293,175 @@ final class OverlayView: NSView {
         }
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let dim = NSColor.black.withAlphaComponent(0.38)
+    private func makeSnapshot() -> Snapshot {
+        var snapshot = Snapshot()
         let highlight: CGRect? = session.mode == .window ? session.hoverWindow?.frame : session.selection
-        let hole = highlight.flatMap { r -> NSRect? in
+        snapshot.hole = highlight.flatMap { r -> NSRect? in
             let l = toLocal(r).intersection(bounds)
             return l.isNull || l.isEmpty ? nil : l
         }
-
-        let path = NSBezierPath(rect: bounds)
-        if let hole { path.append(NSBezierPath(rect: hole)); path.windingRule = .evenOdd }
-        dim.setFill(); path.fill()
-
-        if let hole {
-            let accent = NSColor.controlAccentColor
-            if session.mode == .window {
-                accent.withAlphaComponent(0.18).setFill(); NSBezierPath(rect: hole).fill()
-            }
-            accent.setStroke()
-            let b = NSBezierPath(rect: hole.insetBy(dx: 0.5, dy: 0.5)); b.lineWidth = 1.5; b.stroke()
-            if let r = highlight { drawLabel(CaptureGeometry.dimensionLabel(r), near: hole) }
+        snapshot.windowHighlight = session.mode == .window
+        if let hole = snapshot.hole, let highlight {
+            snapshot.detail = label(CaptureGeometry.dimensionLabel(highlight), near: hole)
         }
 
         let c = NSPoint(x: session.cursor.x - screenFrameCG.minX, y: bounds.height - (session.cursor.y - screenFrameCG.minY))
         if session.mode == .area, bounds.contains(c) {
-            NSColor.white.withAlphaComponent(0.55).setStroke()
-            let h = NSBezierPath(); h.move(to: NSPoint(x: 0, y: c.y)); h.line(to: NSPoint(x: bounds.maxX, y: c.y))
-            let v = NSBezierPath(); v.move(to: NSPoint(x: c.x, y: 0)); v.line(to: NSPoint(x: c.x, y: bounds.maxY))
-            for p in [h, v] { p.lineWidth = 0.5; p.stroke() }
+            snapshot.crosshair = c
             if session.selection == nil {
                 let pos = "\(Int(session.cursor.x)), \(Int(session.cursor.y))"
-                drawLabel(pos, near: NSRect(x: c.x, y: c.y, width: 0, height: 0), offset: 18)
+                snapshot.detail = label(pos, near: NSRect(origin: c, size: .zero), offset: 18)
             }
         }
 
         if session.mode == .window || session.selection == nil {
-            let hint = session.mode == .area ? "Drag to select  ·  Space: window  ·  Esc: cancel"
-                                             : "Click a window  ·  Space: area  ·  Esc: cancel"
-            drawLabel(hint, at: NSPoint(x: bounds.midX, y: 36), centered: true)
+            let layout = session.mode == .area ? Self.areaHint : Self.windowHint
+            snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36))
         }
+        return snapshot
     }
 
-    private func drawLabel(_ text: String, near rect: NSRect, offset: CGFloat = 8) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white]
-        let size = (text as NSString).size(withAttributes: attrs)
-        var origin = NSPoint(x: rect.minX + offset, y: rect.minY - size.height - offset - 6)
+    private func label(_ text: String, near rect: NSRect, offset: CGFloat = 8) -> Label {
+        let layout: TextLayout
+        if let cached = detailLayout, cached.text == text {
+            layout = cached
+        } else {
+            layout = TextLayout(text, attributes: Self.detailAttributes)
+            detailLayout = layout
+        }
+        var origin = NSPoint(x: rect.minX + offset, y: rect.minY - layout.size.height - offset - 6)
         if origin.y < 4 { origin.y = rect.maxY + offset }
-        origin.x = min(max(origin.x, 4), bounds.maxX - size.width - 16)
-        paintLabel(text, attrs: attrs, size: size, origin: origin)
+        origin.x = min(max(origin.x, 4), bounds.maxX - layout.size.width - 16)
+        return Label(layout: layout, origin: origin)
     }
 
-    private func drawLabel(_ text: String, at p: NSPoint, centered: Bool) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white]
-        let size = (text as NSString).size(withAttributes: attrs)
-        paintLabel(text, attrs: attrs, size: size, origin: NSPoint(x: p.x - size.width / 2, y: p.y))
+    /// Keep damage as separate rectangles: unioning crosshair strips would dirty the entire display.
+    /// AppKit accumulates these regions when several input events arrive before the next draw.
+    @discardableResult
+    func refresh() -> [NSRect] {
+        let next = makeSnapshot()
+        defer { lastSnapshot = next }
+        guard let previous = lastSnapshot else {
+            invalidate([bounds])
+            return [bounds]
+        }
+        var damage: [NSRect] = []
+        // Include the inset border's inner edge (0.5 + 1.5 / 2) and one backing pixel of antialiasing.
+        let borderMargin: CGFloat = 1.25 + 1 / scale
+        let crosshairMargin: CGFloat = 0.25 + 1 / scale
+        if previous.hole != next.hole || previous.windowHighlight != next.windowHighlight {
+            if previous.windowHighlight != next.windowHighlight {
+                damage += [previous.hole, next.hole].compactMap { $0?.insetBy(dx: -borderMargin, dy: -borderMargin) }
+            } else {
+                for (hole, other) in [(previous.hole, next.hole), (next.hole, previous.hole)] {
+                    guard let hole else { continue }
+                    damage += Self.subtract(hole, excluding: other)
+                    damage += Self.subtract(hole.insetBy(dx: -borderMargin, dy: -borderMargin),
+                                            excluding: hole.insetBy(dx: borderMargin, dy: borderMargin))
+                }
+            }
+        }
+        if previous.crosshair?.x != next.crosshair?.x {
+            for c in [previous.crosshair, next.crosshair].compactMap({ $0 }) {
+                damage.append(NSRect(x: c.x - crosshairMargin, y: bounds.minY,
+                                     width: 2 * crosshairMargin, height: bounds.height))
+            }
+        }
+        if previous.crosshair?.y != next.crosshair?.y {
+            for c in [previous.crosshair, next.crosshair].compactMap({ $0 }) {
+                damage.append(NSRect(x: bounds.minX, y: c.y - crosshairMargin,
+                                     width: bounds.width, height: 2 * crosshairMargin))
+            }
+        }
+        for (old, new) in [(previous.detail, next.detail), (previous.hint, next.hint)] where old != new {
+            damage += [old, new].compactMap { $0?.frame.insetBy(dx: -1 / scale, dy: -1 / scale) }
+        }
+        let rects = damage.compactMap { rect -> NSRect? in
+            let x = floor(rect.minX * scale) / scale, y = floor(rect.minY * scale) / scale
+            let aligned = NSRect(x: x, y: y, width: ceil(rect.maxX * scale) / scale - x,
+                                 height: ceil(rect.maxY * scale) / scale - y).intersection(bounds)
+            return aligned.isEmpty || aligned.isNull ? nil : aligned
+        }
+        invalidate(rects)
+        return rects
     }
 
-    private func paintLabel(_ text: String, attrs: [NSAttributedString.Key: Any], size: NSSize, origin: NSPoint) {
-        let pill = NSRect(x: origin.x - 6, y: origin.y - 3, width: size.width + 12, height: size.height + 6)
+    private func invalidate(_ rects: [NSRect]) {
+        guard !rects.isEmpty else { return }
+        // Keep the oldest pending invalidation when AppKit coalesces several input events.
+        if pendingDrawInterval == nil {
+            pendingDrawInterval = OverlayPerformance.begin("InvalidationToDraw")
+        }
+        rects.forEach { setNeedsDisplay($0) }
+    }
+
+    fileprivate func cancelPendingDraw() {
+        OverlayPerformance.end("InvalidationToDraw", pendingDrawInterval, cancelled: true)
+        pendingDrawInterval = nil
+    }
+
+    private static func subtract(_ rect: NSRect, excluding other: NSRect?) -> [NSRect] {
+        guard let other, !other.isEmpty else { return [rect] }
+        let overlap = rect.intersection(other)
+        guard !overlap.isEmpty, !overlap.isNull else { return [rect] }
+        return [
+            NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: overlap.minY - rect.minY),
+            NSRect(x: rect.minX, y: overlap.maxY, width: rect.width, height: rect.maxY - overlap.maxY),
+            NSRect(x: rect.minX, y: overlap.minY, width: overlap.minX - rect.minX, height: overlap.height),
+            NSRect(x: overlap.maxX, y: overlap.minY, width: rect.maxX - overlap.maxX, height: overlap.height)
+        ].filter { !$0.isEmpty }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let name: StaticString = hasDrawn ? "Draw" : "FirstDraw"
+        let interval = OverlayPerformance.begin(name)
+        defer {
+            OverlayPerformance.end(name, interval)
+            OverlayPerformance.end("InvalidationToDraw", pendingDrawInterval)
+            pendingDrawInterval = nil
+            hasDrawn = true
+            session.didDraw()
+        }
+        let snapshot = makeSnapshot()
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.clip(to: dirtyRect)
+        // The panel is transparent. Repainting source-over without clearing would accumulate dimming
+        // and leave old selection holes/crosshairs behind during partial or overlapping redraws.
+        context.clear(dirtyRect)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.38).cgColor)
+        context.fill(Self.subtract(bounds, excluding: snapshot.hole))
+
+        if let hole = snapshot.hole {
+            let accent = NSColor.controlAccentColor
+            if snapshot.windowHighlight {
+                context.setFillColor(accent.withAlphaComponent(0.18).cgColor)
+                context.fill(hole)
+            }
+            context.setStrokeColor(accent.cgColor)
+            context.setLineWidth(1.5)
+            context.stroke(hole.insetBy(dx: 0.5, dy: 0.5))
+            if let label = snapshot.detail { paintLabel(label) }
+        }
+
+        if let c = snapshot.crosshair {
+            context.setStrokeColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+            context.setLineWidth(0.5)
+            context.move(to: NSPoint(x: 0, y: c.y))
+            context.addLine(to: NSPoint(x: bounds.maxX, y: c.y))
+            context.strokePath()
+            context.move(to: NSPoint(x: c.x, y: 0))
+            context.addLine(to: NSPoint(x: c.x, y: bounds.maxY))
+            context.strokePath()
+            if snapshot.hole == nil, let label = snapshot.detail { paintLabel(label) }
+        }
+        if let label = snapshot.hint { paintLabel(label) }
+    }
+
+    private func paintLabel(_ label: Label) {
         NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: pill, xRadius: 6, yRadius: 6).fill()
-        (text as NSString).draw(at: origin, withAttributes: attrs)
+        NSBezierPath(roundedRect: label.frame, xRadius: 6, yRadius: 6).fill()
+        label.layout.attributedText.draw(at: label.origin)
     }
 }

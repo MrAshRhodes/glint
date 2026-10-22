@@ -34,6 +34,97 @@ make run        # assemble dist/Glint.app and open it
 
 Every SwiftPM call goes through `Scripts/swiftw.sh`. With Xcode installed it is plain `swift`; on a Command Line Tools-only Mac it adds the flags described next.
 
+### Profiling the capture overlay
+
+Use an optimized build (`make app`, not `CONFIG=debug`). On a Mac with full Xcode,
+record Time Profiler and Points of Interest in Instruments, filtering signposts to
+subsystem `io.github.mrashrhodes.glint`, category `SelectionOverlay`. Keep cold
+(first capture after launching a new process) and warm captures separate. Compare
+the same before/after revisions, displays, backing scales, refresh rates and input
+path: area cursor motion, dragging (including Shift), and window-hover changes.
+The intervals are `OverlaySetup` (synchronous entry work), `WindowEnumeration`,
+`PanelCreation`, `OverlayFirstDraw` (session entry through the first panel's draw),
+`FirstDraw`/`Draw` (per-view drawing CPU work), and `MouseMoved`, `MouseDragged`,
+`MouseDown`, `MouseUp`, and `KeyDown` (handler CPU work). `InvalidationToDraw` spans
+the oldest pending visual invalidation through that view's next draw completion;
+coalesced events do not reset it. Intervals aborted on close are marked `cancelled`
+and must be excluded from latency percentiles. Correlate these with input dispatch
+and frame traces: invalidation omits earlier event processing, and draw completion
+is **not** screen presentation. Use a presentation trace or external measurement
+for real event-to-paint latency.
+Report sample counts, p50/p95, and individual stalls over 50 ms in the first two
+seconds. Check the actual display budget (16.7 ms at 60 Hz; 8.3 ms at 120 Hz) without
+claiming unmeasured refresh rates or hardware. Signposts must not include cursor
+coordinates, window metadata, or captured contents.
+
+Signpost intervals can also be collected without Xcode or changes to system logging
+settings. Start the collector before exercising an instrumented build, and use a
+different output file for each cold/warm run:
+
+```sh
+mkdir -p .build/overlay-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 60 \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND category == "SelectionOverlay"' \
+  > .build/overlay-traces/cold.ndjson
+```
+
+The `--signpost` flag is required; `--level debug` alone does not collect these
+intervals. Pair begin/end records by process ID, signpost ID, and signpost name,
+ignoring the collector's non-event header/footer and cancelled intervals. The
+collector stops after 60 seconds. This measures the instrumented intervals, not
+WindowServer presentation or main-thread work outside them; retain the live frame
+trace requirement above. The command has been smoke-tested against the offscreen
+harness, which confirms collection but does not validate live overlay latency.
+
+A bounded, permission-free CPU comparison also works with Command Line Tools:
+
+```sh
+Scripts/benchmark-overlay.sh baseline HEAD  # immutable git sources copied under .build/benchmark
+Scripts/benchmark-overlay.sh current        # snapshot of current working sources
+# Optional: compare clipped dirty regions instead of identical full-bounds draws.
+DRAW_MODE=damage Scripts/benchmark-overlay.sh baseline HEAD
+DRAW_MODE=damage Scripts/benchmark-overlay.sh current
+```
+
+The `swiftc -O` harness uses an unshown 1728 × 1117-point bitmap at 2×, three fixed
+scenarios, 20 fresh processes per scenario, and 120 subsequent draws per process.
+`ROUNDS=1..30` and `FRAMES=1..1000` bound the run. Each run preserves source hashes,
+toolchain/host metadata, raw `samples.jsonl`, and percentile `summary.json` in
+`.build/benchmark`. First draw really is the first overlay draw in that process,
+but OS caches are not reset; view initialization and state-update time are reported
+separately. No capture UI, capture permission request, or global mouse event is used.
+These are synchronous CPU drawing measurements, **not** real mouse latency, frame
+presentation, or a substitute for the live cold/warm acceptance trace above. Run
+comparisons sequentially with other builds and heavy background work stopped. Damage
+mode models a single draw with the disjoint dirty-region clip, not separate draws
+for overlapping strips; the input sequence is synthetic and unpaced.
+
+Reference CPU comparison for [#42](https://github.com/MrAshRhodes/glint/issues/42):
+Apple M2 Max (Mac14,6), 32 GiB, macOS 26.6 (25G5065a), `swiftc -O`, baseline
+`348266e6f8502d766c3ce9beefd5589686dcc080`, `DRAW_MODE=damage`, default run sizes.
+Both runs were sequential, after tests/builds finished. Times below include state
+update plus drawing, in milliseconds; each scenario has 20 fresh-process samples
+and 2,400 warm samples. Physical display refresh rate is not part of this test.
+
+| Scenario | First draw before p50/p95 | First draw after p50/p95 | Warm before p50/p95 | Warm after p50/p95 |
+| --- | --- | --- | --- | --- |
+| Area cursor | 26.852 / 41.412 | 26.532 / 30.770 | 18.052 / 18.801 | 0.302 / 0.347 |
+| Area selection | 26.145 / 29.929 | 26.316 / 29.431 | 16.080 / 17.840 | 0.618 / 1.300 |
+| Window hover | 26.973 / 30.038 | 27.266 / 31.244 | 18.546 / 19.700 | 0.001 / 4.746 |
+
+The improvement is in repeated redraw work, including moves after the first draw
+of a fresh session; **first-draw cost remains**. Window-hover samples include moves
+within the same window, which now require no drawing. Neither run recorded a CPU
+update/draw over 50 ms within its first two seconds, but this excludes setup and
+real event scheduling and does not establish the live acceptance target. Live
+cold/warm traces, perceived latency, and physical mixed-display verification remain
+outstanding; the signpost collector above is available on a Command Line Tools-only
+host, but still requires exercising the actual capture UI.
+The per-sample JSONL, summaries, manifests and source snapshots for this comparison
+are retained locally under `.build/benchmark/baseline-20261022T151935Z-44265` and
+`.build/benchmark/current-20261022T152237Z-60304` (ignored build artifacts; rerun the
+commands above on another checkout).
+
 ## Command Line Tools only
 
 Glint builds without Xcode, with a few differences:

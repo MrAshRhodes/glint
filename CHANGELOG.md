@@ -21,6 +21,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 - Pixelate now replaces covered pixels with an opaque, source-independent decorative mosaic instead of sampling sensitive content. Patterned Solid also replaces every tile and gap. Blur remains unsafe for secrets. ([#45])
 
+### Fixed
+
+- Capture overlays redraw changed display regions and reuse label layout instead of invalidating every display on each pointer move. Mouse input remains immediate, without smoothing or debounce. ([#42])
+
 ## [1.2.1] - 2026-10-22
 
 ### Added
@@ -160,3 +164,4 @@ First public release.
 [#37]: https://github.com/MrAshRhodes/glint/pull/37
 [#39]: https://github.com/MrAshRhodes/glint/issues/39
 [#45]: https://github.com/MrAshRhodes/glint/issues/45
+[#42]: https://github.com/MrAshRhodes/glint/issues/42
