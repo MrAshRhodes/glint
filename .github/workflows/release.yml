@@ -4,6 +4,14 @@ name: Release
 # that version's CHANGELOG.md section as its notes and, when the TAP_GITHUB_TOKEN secret exists,
 # updates the Homebrew cask. A published release is never rebuilt or overwritten, because the cask
 # pins the sha256 of its zip.
+#
+# Every release is signed with the same "Glint Release Signing" certificate, imported from the
+# GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets (create them once with
+# `make signing-cert`; see packaging/signing/README.md). macOS ties Screen Recording permission
+# to the app's designated requirement: with the certificate it is satisfied by every later
+# release, while an ad-hoc signature pins one build, so every update would make users remove
+# and re-add Glint in System Settings (#39). Without the secrets the release fails, unless the
+# repository variable GLINT_ALLOW_ADHOC_RELEASE is "true".
 on:
   push:
     tags: ['v*']
@@ -74,17 +82,62 @@ jobs:
           node .github/scripts/changelog.cjs check
           node .github/scripts/changelog.cjs notes "$VERSION" ${flags[@]+"${flags[@]}"} > "$RUNNER_TEMP/changelog.md"
 
+      # Fails before the build when the signing secrets are missing: an ad-hoc release would
+      # reset Screen Recording permission for every user who updates (#39).
+      - name: Import the signing identity
+        id: signing
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GLINT_SIGNING_P12_BASE64: ${{ secrets.GLINT_SIGNING_P12_BASE64 }}
+          GLINT_SIGNING_P12_PASSWORD: ${{ secrets.GLINT_SIGNING_P12_PASSWORD }}
+          ALLOW_ADHOC_RELEASE: ${{ vars.GLINT_ALLOW_ADHOC_RELEASE }}
+        run: |
+          if [[ -n "$GLINT_SIGNING_P12_BASE64" && -n "$GLINT_SIGNING_P12_PASSWORD" ]]; then
+            if [[ ! -s packaging/signing/designated-requirement.txt ]]; then
+              echo "::error title=Signing requirement missing::Commit packaging/signing/designated-requirement.txt from the one-time signing setup before releasing. Without it, a changed certificate could silently break existing Screen Recording grants."
+              exit 1
+            fi
+            Scripts/import_signing_identity.sh > /dev/null
+            echo "require-stable=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "$GLINT_SIGNING_P12_BASE64" || -n "$GLINT_SIGNING_P12_PASSWORD" ]]; then
+            echo "::error title=Incomplete signing secrets::Set both GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD (only one of them is set)."
+            exit 1
+          fi
+          if [[ "$ALLOW_ADHOC_RELEASE" == true ]]; then
+            echo "::warning title=Ad-hoc release::GLINT_ALLOW_ADHOC_RELEASE is true and the signing secrets are missing, so this release is signed ad-hoc. Every user who updates to it has to remove and re-add Glint under Screen Recording in System Settings (#39). Run 'make signing-cert' and add the GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets to fix this."
+            {
+              echo "identity=-"
+              echo "require-stable=0"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error title=Release signing certificate missing::The GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets are not set. Without them the release would be signed ad-hoc, and macOS would reset Screen Recording permission for every user on every update (#39). Run 'make signing-cert' (Scripts/make_signing_cert.sh) once, add the two secrets it prints (or use --set-github-secrets), commit packaging/signing/designated-requirement.txt and push the tag again. To publish an ad-hoc release anyway, set the repository variable GLINT_ALLOW_ADHOC_RELEASE to true."
+          exit 1
+
       - name: Show the toolchain
         if: steps.version.outputs.exists != 'true'
         run: |
           xcodebuild -version
           swift --version
 
+      # With the signing identity, build_app.sh and package_release.sh verify that the app (and
+      # the app inside the zip) has a stable signature that satisfies
+      # packaging/signing/designated-requirement.txt.
       - name: Build and package
         if: steps.version.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          GLINT_REQUIRE_STABLE_SIGNATURE: ${{ steps.signing.outputs.require-stable }}
         run: Scripts/package_release.sh --version "$VERSION" --require-universal --build-number "$GITHUB_RUN_NUMBER"
+
+      - name: Remove the signing keychain
+        if: always() && steps.signing.outputs.keychain != ''
+        env:
+          KEYCHAIN: ${{ steps.signing.outputs.keychain }}
+        run: Scripts/import_signing_identity.sh --cleanup "$KEYCHAIN"
 
       - name: Publish the GitHub release
         if: steps.version.outputs.exists != 'true'

@@ -15,7 +15,9 @@ struct UpdateCheckerTests {
         #expect(alert.informativeText.contains(UpdateChecker.homebrewCommand))
         #expect(alert.informativeText.contains("alone does not upgrade"))
         #expect(alert.informativeText.contains("replace Glint.app"))
-        #expect(alert.informativeText.contains("Screen Recording permission again"))
+        #expect(alert.informativeText.contains("If captures stop working after updating"))
+        #expect(alert.informativeText.contains("About → Permissions"))
+        #expect(alert.informativeText.contains("click “Re-authorize Screen Recording…”"))
         #expect(alert.buttons.map(\.title) == ["Copy Homebrew Command", "Open Release Page…", "Later"])
     }
 

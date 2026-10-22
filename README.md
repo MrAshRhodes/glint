@@ -35,9 +35,9 @@ Continue only if the command succeeds and reports `Glint-<version>.zip: OK` (or 
 
 After successful verification, extract the ZIP or open the DMG and drag `Glint.app` to `/Applications`. A matching checksum confirms agreement with the published checksum; it is not notarization or proof that the app is safe.
 
-The app is ad-hoc signed, not notarized. The Homebrew cask clears the quarantine flag for you. If you trust the release, have successfully verified the manual download, and macOS blocks its first launch, run `xattr -dr com.apple.quarantine /Applications/Glint.app`. This bypasses the app's Gatekeeper quarantine check; do not ignore a malware warning.
+Releases are signed with Glint's own certificate, not an Apple Developer ID, so they are not notarized. The Homebrew cask clears the quarantine flag for you. If you trust the release, have successfully verified the manual download, and macOS blocks its first launch, run `xattr -dr com.apple.quarantine /Applications/Glint.app`. This bypasses the app's Gatekeeper quarantine check; do not ignore a malware warning.
 
-Requires macOS 14 or later. On first launch grant **Screen Recording** permission (System Settings → Privacy & Security).
+Requires macOS 14 or later. On first launch grant **Screen Recording** permission (System Settings → Privacy & Security). Every release is signed with the same certificate, so macOS keeps the permission when you update.
 
 ## Updates
 
@@ -51,7 +51,9 @@ brew update && brew upgrade --cask glint
 
 Reopen Glint afterward. `brew update` refreshes Homebrew's package list; only `brew upgrade` installs the newer app. A release must also be published to the Homebrew tap before it appears there.
 
-For a manual installation, save your work and quit Glint, then download the latest ZIP or DMG and its matching `.sha256` file. Follow the [verification steps above](#install) before extracting or opening the download and replacing `/Applications/Glint.app`, then reopen Glint. Your separately stored preferences, presets and images remain in place. Ad-hoc signing means macOS may require Screen Recording permission again after an update. See the [update guide](https://mrashrhodes.github.io/glint/guide.html#updates).
+For a manual installation, save your work and quit Glint, then download the latest ZIP or DMG and its matching `.sha256` file. Follow the [verification steps above](#install) before extracting or opening the download and replacing `/Applications/Glint.app`, then reopen Glint. Your separately stored preferences, presets and images remain in place. See the [update guide](https://mrashrhodes.github.io/glint/guide.html#updates).
+
+Updates keep Glint's Screen Recording permission. **Updating from 1.2.0 or earlier** is the one exception: those releases were ad-hoc signed, so macOS needs the permission once more. Choose **Re-authorize Screen Recording…** in Preferences → About (Glint also opens its setup window if a capture fails for lack of access), allow Glint in System Settings, then relaunch Glint. If macOS cannot reset the old entry, Glint explains how to remove it and add it back manually. Later updates keep the permission ([#39](https://github.com/MrAshRhodes/glint/issues/39)).
 
 ## Features
 

@@ -145,7 +145,7 @@ enum UpdateChecker {
 
         Direct download: quit Glint, download the new ZIP or DMG, replace Glint.app in Applications, then reopen it.
 
-        Your preferences, presets and saved images stay in place. macOS may ask for Screen Recording permission again after an update.
+        Your preferences, presets and saved images stay in place. If captures stop working after updating, open Glint Preferences (About → Permissions) and click “\(PermissionsPane.reauthorizeTitle)”.
         """
         a.addButton(withTitle: "Copy Homebrew Command")
         a.addButton(withTitle: "Open Release Page…")

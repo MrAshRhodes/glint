@@ -45,7 +45,7 @@
           <pre class="code"><code>shasum -a 256 -c "Glint-&lt;version&gt;.dmg.sha256"</code></pre>
           <p>Continue only if the command succeeds and reports <code>Glint-&lt;version&gt;.zip: OK</code> (or <code>Glint-&lt;version&gt;.dmg: OK</code>). <strong>If verification fails for any reason, including a mismatch or a missing archive or checksum, stop. Do not install the app or clear quarantine.</strong> Download the matching pair again from the official release and verify again.</p>
           <p>After successful verification, extract the ZIP or open the DMG and move <strong>Glint.app</strong> to Applications. A matching checksum confirms agreement with the published checksum; it is not notarization or proof that the app is safe.</p>
-          <div class="callout"><p><strong>Signing status:</strong> Glint is currently ad-hoc signed, not Apple-notarized. macOS may block a manual download. The Homebrew cask removes this app's quarantine flag, bypassing its Gatekeeper quarantine check. Only install if you trust the project and its release. Do not ignore a malware warning.</p></div>
+          <div class="callout"><p><strong>Signing status:</strong> Glint releases are signed with the project's own certificate, so macOS keeps Screen Recording permission across updates. They are not Apple-notarized, so macOS may block a manual download. The Homebrew cask removes this app's quarantine flag, bypassing its Gatekeeper quarantine check. Only install if you trust the project and its release. Do not ignore a malware warning.</p></div>
           <p>For a manual download, consult <a href="https://support.apple.com/en-us/102445">Apple's guidance on opening apps safely</a>. You can also build Glint yourself from the source below.</p>
         </section>
         <section id="updates">
@@ -59,11 +59,11 @@
           <h3>If you installed from a ZIP or DMG</h3>
           <ol><li>Save your edits and quit Glint.</li><li><a href="https://github.com/MrAshRhodes/glint/releases/latest">Download the new release</a> from GitHub, including the ZIP or DMG and its matching <code>.sha256</code> file.</li><li>Follow the <a href="#install">manual-download verification steps</a> before extracting the ZIP or opening the DMG. Continue only if verification succeeds and reports <code>OK</code>.</li><li>Replace Glint.app in Applications with the verified new copy, then reopen it.</li></ol>
           <p>Replacing the app keeps your separately stored preferences, presets and image files. Do not delete those folders to update.</p>
-          <div class="callout"><p><strong>After an update:</strong> because the app is ad-hoc signed, macOS may ask for Screen Recording permission again. If capture stops working, revisit the permission settings and relaunch Glint.</p></div>
+          <div class="callout"><p><strong>After an update:</strong> every release is signed with the same certificate, so Screen Recording permission carries over. Updating from 1.2.0 or earlier is the one exception: those releases were ad-hoc signed, so macOS needs the permission once more. Choose <strong>Re-authorize Screen Recording…</strong> in Preferences → About (Glint also opens its setup window if a capture fails for lack of access), allow Glint in System Settings, then relaunch Glint. Later updates keep the permission.</p></div>
         </section>
         <section id="permissions">
           <h2>Permissions</h2>
-          <p>Screen capture requires <strong>Screen Recording</strong> access. In System Settings → Privacy &amp; Security, find Screen Recording (called Screen &amp; System Audio Recording on some macOS versions), enable Glint, and relaunch if asked.</p>
+          <p>Screen capture requires <strong>Screen Recording</strong> access. In System Settings → Privacy &amp; Security, find Screen Recording (called Screen &amp; System Audio Recording on some macOS versions), enable Glint, and relaunch if asked. Preferences → About shows whether access is enabled. If capture fails even though Glint looks enabled, see <a href="#troubleshooting">Troubleshooting</a>.</p>
           <p>Open existing images with <strong>Open Image…</strong> or <kbd>⌘ O</kbd>; screen access is not needed just to style an image file.</p>
         </section>
         <section id="capture">
@@ -117,7 +117,7 @@
         <section id="preferences">
           <h2>Preferences</h2>
           <p>Open Preferences with <kbd>⌘ ,</kbd>. General controls launch at login, menu bar and Dock visibility, sounds and notifications. Capture controls cursor visibility, remembering the last area and hiding Glint windows during capture.</p>
-          <p>Output controls capture actions and files. Editor controls the default preset, <strong>Remember settings</strong>, auto-balance and auto-redact. Presets adds, edits, renames, deletes, imports and exports presets and sets your default look; see <a href="#presets">Presets</a>. About shows the version, permissions and manual update check.</p>
+          <p>Output controls capture actions and files. Editor controls the default preset, <strong>Remember settings</strong>, auto-balance and auto-redact. Presets adds, edits, renames, deletes, imports and exports presets and sets your default look; see <a href="#presets">Presets</a>. About shows the version, Screen Recording permission (with <strong>Re-authorize Screen Recording…</strong>) and manual update check.</p>
         </section>
         <section id="automation">
           <h2>Automation</h2>
@@ -148,7 +148,7 @@ glint://open?file=%2FUsers%2Fyou%2FDesktop%2Fimage.png</code></pre>
         <section id="troubleshooting">
           <h2>Troubleshooting</h2>
           <h3>Capture is blocked or stopped after an update</h3>
-          <p>Check Screen Recording permission for Glint and relaunch. An ad-hoc signing change can mean you need to remove the old Glint entry in that permission list and add the current app again.</p>
+          <p>Choose <strong>Re-authorize Screen Recording…</strong> in Preferences → About, even if Glint still looks switched on under Screen Recording; Glint also opens its setup window if a capture fails for lack of access. It clears Glint's old entry in the permission list, the same as running <code>tccutil reset ScreenCapture io.github.mrashrhodes.glint</code>, and requests access again. Allow Glint in System Settings, then relaunch Glint. If macOS cannot reset the old entry, Glint explains how to remove it and add it back manually. This is needed once when updating from 1.2.0 or earlier; later updates keep the permission.</p>
           <h3>I cannot find the app window</h3>
           <p>Glint is a menu bar app. Look for its icon near the clock. Capture a region or choose Open Image… to open an editor.</p>
           <h3>Homebrew does not offer the release yet</h3>

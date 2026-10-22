@@ -745,7 +745,15 @@ private struct AboutTab: View {
 }
 
 struct PermissionsPane: View {
-    @StateObject private var state = Local<Bool>(ScreenRecordingPermission.isGranted)
+    static let reauthorizeTitle = "Re-authorize Screen Recording…"
+    static let reauthorizeCaption = "Already switched on in System Settings but captures still fail? This can happen after an update. Glint will clear its old entry and request access again."
+    static let accessHint = "Glint needs Screen Recording access to take screenshots. After switching it on, choose Quit & Reopen if macOS asks, or restart Glint yourself."
+
+    @StateObject private var state = Local<Bool>(ScreenRecordingPermission.refreshGrant())
+    @StateObject private var stale = Local<Bool>(ScreenRecordingPermission.needsReauthorization)
+    @StateObject private var requestedHere = Local<Bool>(false)
+    @StateObject private var working = Local<Bool>(false)
+    @StateObject private var status = Local<String?>(nil)
     private var granted: Bool { state.value }
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -759,16 +767,64 @@ struct PermissionsPane: View {
                 Spacer()
             }
             if !granted {
-                Text("Glint needs Screen Recording access to take screenshots. After enabling it you may need to restart Glint.")
+                Text(Self.accessHint)
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Request Access") { ScreenRecordingPermission.request(); state.value = ScreenRecordingPermission.isGranted }
+                if stale.value {
+                    Button(Self.reauthorizeTitle) { reauthorize() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(working.value)
+                    Text(Self.reauthorizeCaption)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("Open System Settings") { ScreenRecordingPermission.openSystemSettings() }
+                } else {
+                    HStack {
+                        Button("Request Access") {
+                            requestedHere.value = true
+                            ScreenRecordingPermission.request()
+                            refresh()
+                        }
+                        Button("Open System Settings") { ScreenRecordingPermission.openSystemSettings() }
+                    }
+                }
+                if let message = status.value {
+                    Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onReceive(timer) { _ in state.value = ScreenRecordingPermission.isGranted }
+        .onReceive(timer) { _ in refresh() }
+    }
+
+    private func refresh() {
+        state.value = ScreenRecordingPermission.refreshGrant()
+        // A request made from this pane is still waiting on the user, not a stale entry.
+        stale.value = !requestedHere.value && ScreenRecordingPermission.needsReauthorization(granted: state.value)
+    }
+
+    private func reauthorize() {
+        working.value = true
+        status.value = nil
+        Task { @MainActor in
+            let outcome = await ScreenRecordingPermission.reauthorize()
+            if outcome == .requestedAgain { requestedHere.value = true }
+            status.value = Self.message(for: outcome)
+            working.value = false
+            refresh()
+        }
+    }
+
+    static func message(for outcome: ScreenRecordingPermission.ReauthorizationOutcome) -> String? {
+        switch outcome {
+        case .alreadyGranted:
+            return nil
+        case .requestedAgain:
+            return "Glint’s old entry was cleared. Allow Screen Recording in System Settings, then choose Quit & Reopen if asked, or restart Glint yourself."
+        case .missingBundleIdentifier:
+            return "Glint is not running as an app, so it could not clear its old entry. In System Settings, remove Glint with “−”, add it again with “+”, then reopen Glint."
+        case .resetFailed:
+            return "Glint could not clear its old entry. In System Settings, remove Glint with “−”, add it again with “+”, then reopen Glint."
+        }
     }
 }
 
@@ -779,25 +835,21 @@ final class PermissionsWindow {
     static let shared = PermissionsWindow()
     private var window: NSWindow?
 
+    /// First launch always shows setup. Afterwards only a grant Glint saw before and has now lost
+    /// brings it back; a request or denial alone never does (captures still surface the window).
+    static func shouldPresentAtLaunch(granted: Bool, defaults: UserDefaults = .standard) -> Bool {
+        !defaults.bool(forKey: ShellKey.onboarded)
+            || ScreenRecordingPermission.lostRecordedGrant(granted: granted, defaults: defaults)
+    }
+
     func show() {
-        if window == nil {
-            let view = VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 12) {
-                    Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
-                    VStack(alignment: .leading) {
-                        Text("Welcome to Glint").font(.title2.bold())
-                        Text("Turn screenshots into polished images.").foregroundStyle(.secondary)
-                    }
-                }
-                PermissionsPane()
-                Divider()
-                Text("Capture area with ⌃⌥⌘4, a window with ⌃⌥⌘6, or the full screen with ⌃⌥⌘3. Glint lives in the menu bar.")
-                    .font(.callout)
-                HStack { Spacer(); Button("Done") { PermissionsWindow.shared.window?.close() }.keyboardShortcut(.defaultAction) }
-            }
-            .padding(20)
-            .frame(width: 420)
-            let w = NSWindow(contentViewController: NSHostingController(rootView: view))
+        let content = NSHostingController(rootView: Self.content(
+            needsReauthorization: ScreenRecordingPermission.needsReauthorization
+        ))
+        if let window {
+            if !window.isVisible { window.contentViewController = content }
+        } else {
+            let w = NSWindow(contentViewController: content)
             w.title = "Glint Setup"
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
@@ -807,5 +859,26 @@ final class PermissionsWindow {
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    private static func content(needsReauthorization: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
+                VStack(alignment: .leading) {
+                    Text(needsReauthorization ? "Screen Recording needs attention" : "Welcome to Glint").font(.title2.bold())
+                    Text(needsReauthorization ? "Glint can’t capture until macOS allows Screen Recording again."
+                                              : "Turn screenshots into polished images.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            PermissionsPane()
+            Divider()
+            Text("Capture area with ⌃⌥⌘4, a window with ⌃⌥⌘6, or the full screen with ⌃⌥⌘3. Glint lives in the menu bar.")
+                .font(.callout)
+            HStack { Spacer(); Button("Done") { PermissionsWindow.shared.window?.close() }.keyboardShortcut(.defaultAction) }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }
