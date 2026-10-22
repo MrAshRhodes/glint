@@ -136,7 +136,7 @@ Updates are manual: users quit Glint, run `brew update && brew upgrade --cask gl
 
 - Builds are signed ad-hoc (`codesign --sign -`) because there is no Developer ID certificate. macOS ties the Screen Recording permission to the code signature, and an ad-hoc signature changes with every build, so after rebuilding you may have to grant it again: remove Glint in System Settings > Privacy & Security > Screen & System Audio Recording, add it back, or run `tccutil reset ScreenCapture io.github.mrashrhodes.glint`.
 - With a certificate, set `GLINT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"` and the build also enables the hardened runtime and a secure timestamp. Notarization is not scripted.
-- A downloaded, ad-hoc signed build may be blocked by Gatekeeper. Clear the quarantine flag once: `xattr -dr com.apple.quarantine /Applications/Glint.app`.
+- Before installing or updating a downloaded build, follow the [manual-download verification steps](README.md#install) using the ZIP or DMG and its matching `.sha256` file from the same official release. Continue only when verification succeeds and reports `OK`; otherwise stop without installing or clearing quarantine. If you trust the verified release and Gatekeeper blocks its first launch, clear the quarantine flag once: `xattr -dr com.apple.quarantine /Applications/Glint.app`. This bypasses the app's Gatekeeper quarantine check; do not ignore a malware warning.
 
 ### Environment variables
 
