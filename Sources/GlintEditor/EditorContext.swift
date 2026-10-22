@@ -18,13 +18,14 @@ public struct EditorContext {
 
 /// UI-free rendering with the same settings resolution the editor uses.
 public enum EditorHeadless {
-    /// Settings the editor would start with (last used, falling back to the default preset).
+    /// Settings the editor would start with: the last-used settings when `rememberSettings` is on,
+    /// otherwise (or when nothing has been used yet) the default preset.
     public static func initialSettings(preferences: AppPreferences, presetStore: PresetStore? = nil) -> RenderSettings {
         var settings: RenderSettings
-        if let store = presetStore, let name = preferences.defaultPresetName, let preset = store.preset(named: name) {
-            settings = preset.settings
-        } else if let last = preferences.lastRenderSettings {
+        if preferences.rememberSettings, let last = preferences.lastRenderSettings {
             settings = last
+        } else if let store = presetStore, let name = preferences.defaultPresetName, let preset = store.preset(named: name) {
+            settings = preset.settings
         } else if let preset = presetStore?.defaultPreset {
             settings = preset.settings
         } else {

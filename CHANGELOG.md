@@ -14,6 +14,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 - **Add Preset…** in Preferences → Presets opens a **New Preset** sheet. Pick a starting point (your last-used settings, a saved preset, or a deleted built-in preset), each previewed on a built-in sample image, then name it and choose **Add**, or **Customize in Editor…** to fine-tune it in the Preset Designer. **Use My Image…** previews your own image instead; it is never stored in the preset. ([#33])
 - **Edit…** in Preferences → Presets opens the selected preset in the Preset Designer. Saving updates it in place, including a new name, and a default preset stays the default. Designing a preset does not change your last-used editor settings. ([#33])
 - GlintCore API: `PresetStore.uniqueName(_:)`, which returns the base name or the first unused numbered variant, such as "Preset 2". ([#33])
+- **Remember settings** in Preferences → Editor. When it is checked, the editor starts new screenshots with your last-used settings, including after restarting Glint; when it is unchecked, they start from the default preset. Its tooltip suggests saving a preset for a look you want to keep, and remembering never changes a saved preset. Until you change it, it keeps the previous behavior: checked unless you have chosen a default preset. ([#34])
+- GlintCore API: `AppPreferences.rememberSettings`. ([#34])
 
 ### Changed
 
@@ -121,3 +123,4 @@ First public release.
 [#22]: https://github.com/MrAshRhodes/glint/pull/22
 [#32]: https://github.com/MrAshRhodes/glint/pull/32
 [#33]: https://github.com/MrAshRhodes/glint/pull/33
+[#34]: https://github.com/MrAshRhodes/glint/pull/34

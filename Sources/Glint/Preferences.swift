@@ -9,6 +9,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class PrefsModel: ObservableObject {
+    static let rememberSettingsHelp = "Remember your last-used settings for your next screenshot. "
+        + "To keep a look you can return to anytime, save these settings as a preset."
+
     let prefs: AppPreferences
     let store: PresetStore
     private var presetEditors: [UUID: EditorWindowController] = [:]
@@ -322,6 +325,14 @@ private struct EditorTab: View {
         Form {
             Picker("Default preset", selection: presetName) {
                 ForEach(model.store.presets, id: \.id) { Text($0.name).tag($0.name) }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Remember settings", isOn: model.bind(\.rememberSettings))
+                    .help(PrefsModel.rememberSettingsHelp)
+                Text(model.prefs.rememberSettings
+                     ? "New screenshots start with your last-used settings."
+                     : "New screenshots start with the default preset.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Auto-balance (crop uniform borders)", isOn: model.bind(\.autoBalance))
             Toggle("Auto-redact sensitive info", isOn: model.bind(\.autoRedact))
