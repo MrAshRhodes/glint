@@ -56,6 +56,7 @@ final class CapturePipeline {
         let capturer = ScreenCapturer.shared
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
+        capturer.options.snapToEdges = prefs.snapToEdges
         let remember = defaults.object(forKey: ShellKey.rememberArea) as? Bool ?? true
         if !remember { capturer.lastArea = nil }
         let hidden = prefs.hideWindowsDuringCapture ? hideOwnWindows() : []

@@ -209,6 +209,7 @@ struct SelectionOverlayTests {
     @Test func mouseAndKeyboardEventsKeepImmediateSelectionSemantics() throws {
         let display = try #require(WindowEnumerator.displays().first)
         let session = SelectionSession(mode: .area, lastArea: nil)
+        session.useDisplays([display])
         let overlay = OverlayView(frame: NSRect(origin: .zero, size: display.frame.size), session: session,
                                   screenFrameCG: display.frame, scale: display.scale)
         let anchor = CGPoint(x: display.frame.minX + 80, y: display.frame.minY + 80)
@@ -235,7 +236,7 @@ struct SelectionOverlayTests {
         // Arrow events while dragging exercise nudging without warping the global pointer.
         overlay.keyDown(with: try key(124, shift: true))
         #expect(session.cursor == CGPoint(x: end.x + 10, y: end.y))
-        #expect(session.selection == CGRect(x: anchor.x + 10, y: anchor.y, width: 40, height: 20))
+        #expect(session.selection == CGRect(x: anchor.x + 10, y: anchor.y, width: 40, height: 40))
         overlay.keyDown(with: try key(125))
         #expect(session.cursor == CGPoint(x: end.x + 10, y: end.y + 1))
         overlay.keyDown(with: try key(123))
@@ -249,9 +250,12 @@ struct SelectionOverlayTests {
         #expect(session.cursor == CGPoint(x: display.frame.maxX, y: display.frame.maxY))
         let boundedSelection = try #require(session.selection)
         #expect(boundedSelection.intersection(display.frame) == boundedSelection)
+        // Releasing Shift before the mouse-up relaxes the square constraint; the drag then ends.
         overlay.mouseUp(with: try mouse(.leftMouseUp, outside))
+        let released = try #require(session.selection)
+        #expect(released.intersection(display.frame) == released)
         overlay.mouseDragged(with: try mouse(.leftMouseDragged, end))
-        #expect(session.selection == boundedSelection)
+        #expect(session.selection == released)
 
         overlay.keyDown(with: try key(49))
         #expect(session.mode == .window && session.selection == nil)

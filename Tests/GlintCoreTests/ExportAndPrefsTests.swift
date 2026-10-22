@@ -142,6 +142,42 @@ struct ExportAndPrefsTests {
         #expect(defaults.object(forKey: AppPreferences.Key.redactStyle) == nil)
     }
 
+    @Test func snappingDefaultsOffAndSharesPersistedStorage() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        #expect(!prefs.snapToEdges)
+        #expect(defaults.object(forKey: AppPreferences.Key.snapToEdges) == nil)
+        #expect(AppPreferences.Key.snapToEdges == "glint.snapToEdges")
+
+        prefs.snapToEdges = true
+        let reloaded = AppPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(reloaded.snapToEdges)
+        #expect(defaults.bool(forKey: AppPreferences.Key.snapToEdges))
+        reloaded.snapToEdges = false
+        #expect(!prefs.snapToEdges)
+        #expect(defaults.object(forKey: AppPreferences.Key.snapToEdges) as? Bool == false)
+
+        defaults.set(true, forKey: AppPreferences.Key.snapToEdges)
+        #expect(prefs.snapToEdges)
+    }
+
+    @Test func resetClearsSnappingAndRestoresDisabledDefault() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        prefs.snapToEdges = true
+        #expect(AppPreferences.Key.all.contains(AppPreferences.Key.snapToEdges))
+
+        prefs.resetToDefaults()
+
+        #expect(defaults.object(forKey: AppPreferences.Key.snapToEdges) == nil)
+        #expect(!prefs.snapToEdges)
+        #expect(!AppPreferences(defaults: defaults).snapToEdges)
+    }
+
     @Test func hotkeys() throws {
         let combo = HotkeyAction.captureArea.defaultCombo
         #expect(combo.displayString == "⌃⌥⌘4")

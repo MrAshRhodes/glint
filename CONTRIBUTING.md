@@ -190,6 +190,37 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 - Document public API with `///` comments and explain why, not what.
 - Do not add a third-party dependency without discussing it in an issue first.
 
+## Capture snapping and the content-detection gate
+
+The first stage of [#43](https://github.com/MrAshRhodes/glint/issues/43) supports window bounds and display edges only. Window rectangles are sampled front-to-back once per selection session, with covered edge segments removed before interaction. This is geometry, not recognition of arbitrary content. It requires no new permission and no analysis screenshot. Keep candidate building out of mouse-move handlers, use global CG display points rather than physical pixels, and preserve raw input when applying temporary snapping.
+
+### Offline content-edge investigation
+
+`Scripts/probe_content_edges.swift` is a standalone, synthetic-only feasibility probe, **not app code**. Run it with `Scripts/swiftw.sh Scripts/probe_content_edges.swift`; to measure optimized detector time, compile it with `xcrun swiftc -O Scripts/probe_content_edges.swift -o /tmp/glint-content-probe` and run that executable. It never captures the desktop or reads/writes images, history or clipboard.
+
+The baseline accepts axis-aligned contrast runs of at least 48 sample pixels with a grayscale step of at least 40/255, on bounded 512×320 inputs, capped at 64 candidates. These are proposed edge classes, not a general content detector. Ground truth labels the card/control boundaries as targets and decorative stripes/text as non-targets. One-to-one matching allows one sample pixel of coordinate/endpoint error:
+
+| Synthetic fixture | True positives | False positives | Missed target edges |
+| --- | ---: | ---: | ---: |
+| High-contrast card | 4 | 0 | 0 |
+| Low-contrast card | 0 | 0 | 4 |
+| Uniform image | 0 | 0 | 0 |
+| Decorative stripes | 0 | 40 | 0 |
+| Short text-like strokes | 0 | 0 | 0 |
+| Long rules/underlines | 0 | 20 | 0 |
+| Card moved between snapshots | 4 | 0 | 0 |
+| Small control below minimum length | 0 | 0 | 4 |
+
+An optimized local run on 2026-10-22 measured 0.30–0.36 ms for the first detector invocation per fixture and 0.30–0.32 ms warm medians (25 iterations). These timings exclude screen acquisition, downsampling and overlay rendering; they are **not** first-capture or pointer-responsiveness measurements. Aggregate precision is 8/68 (11.8%) and recall 8/16 (50%) on this deliberately mixed set. Real desktop accuracy is unmeasured. Raising confidence from these pixel runs alone cannot distinguish decoration from a meaningful boundary; low-contrast/small targets are missed, and moving content changes candidates between snapshots. **Content detection remains disabled**, with no target-choice UI.
+
+Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences. Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
+
+### Interactive release checks
+
+After `make test` and `make app`, check the same selection through area, area-to-clipboard, OCR-area and timed-area capture. Check live menu/Preferences synchronization, restart persistence and reset. Verify Command-click, including a first click on a secondary display, reaches the non-activating panel without moving it; starting a selection while the hotkey's Command is still held settles to the saved setting once released; stationary Command press/release updates the preview; Shift makes a square in each quadrant; Shift-arrow nudges by 10; and Space/Return/Esc/right-click keep their existing behavior. Compare preview and output at partially occluded edges, with no nearby windows, at display boundaries, and across negative-coordinate/mixed-Retina display arrangements.
+
+Profile both the first overlay and a warm overlay with snapping off/on. Record candidate preparation separately from input handling and drawing; synthetic geometry timings alone cannot establish that first-load lag ([#42](https://github.com/MrAshRhodes/glint/issues/42)) is unchanged. Do not enumerate windows, capture pixels or run a detector per pointer event.
+
 ## Product site
 
 The dependency-free site in `site/` is published to <https://mrashrhodes.github.io/glint/> by `.github/workflows/pages.yml` on changes to that directory on `main`, or by manual workflow dispatch. The Pages publishing source must be **GitHub Actions**. Only `site/` is uploaded; research, source and build outputs are not published to Pages.

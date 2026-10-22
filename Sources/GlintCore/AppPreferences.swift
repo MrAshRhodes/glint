@@ -118,6 +118,7 @@ public final class AppPreferences {
         public static let theme = "glint.theme"
         public static let closeAfterCopy = "glint.closeAfterCopy"
         public static let hideWindowsDuringCapture = "glint.hideWindowsDuringCapture"
+        public static let snapToEdges = "glint.snapToEdges"
         public static let fileNameTemplate = "glint.fileNameTemplate"
         public static let enableFileNameTemplate = "glint.enableFileNameTemplate"
         public static let exportFormat = "glint.exportFormat"
@@ -134,7 +135,7 @@ public final class AppPreferences {
             [saveDirectory, historyDirectory, saveHistory, saveRaw, saveOutput, copyToClipboardAfterCapture,
              openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions, defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
-             hideWindowsDuringCapture, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
+             hideWindowsDuringCapture, snapToEdges, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
              compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
         }
     }
@@ -216,6 +217,9 @@ public final class AppPreferences {
     public var closeAfterCopy: Bool { get { bool(Key.closeAfterCopy, true) } set { defaults.set(newValue, forKey: Key.closeAfterCopy) } }
     public var hideWindowsDuringCapture: Bool {
         get { bool(Key.hideWindowsDuringCapture, true) } set { defaults.set(newValue, forKey: Key.hideWindowsDuringCapture) }
+    }
+    public var snapToEdges: Bool {
+        get { bool(Key.snapToEdges, false) } set { defaults.set(newValue, forKey: Key.snapToEdges) }
     }
     public var autoBalance: Bool { get { bool(Key.autoBalance, true) } set { defaults.set(newValue, forKey: Key.autoBalance) } }
     public var autoRedact: Bool { get { bool(Key.autoRedact, false) } set { defaults.set(newValue, forKey: Key.autoRedact) } }
