@@ -478,4 +478,37 @@ struct EditorExportTests {
         let preview = try #require(model.preview)
         #expect(preview.image.width == 100 && preview.image.height == 80)
     }
+
+    @Test func solidRedactionReachesSaveClipboardAndDragPayloads() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let pasteboard = NSPasteboard(name: .init("glint.editor.redaction.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var services = EditorExportServices()
+        services.copy = { Exporter.copyToClipboard($0, pasteboard: pasteboard) }
+        services.dragDirectory = f.directory.appendingPathComponent("Drag")
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        controller.model.updateLive([Annotation(
+            kind: .redact(CGRect(x: 10, y: 20, width: 80, height: 40)),
+            style: AnnotationStyle(color: .black.with(alpha: 0.1), opacity: 0.1)
+        )])
+        controller.model.redactStyle = .blur
+        var saved: URL?
+        controller.onExported = { if let url = $0 { saved = url } }
+        controller.saveOutput()
+        let savedURL = try #require(saved)
+        let file = try #require(GlintImageIO.load(url: savedURL))
+        #expect(controller.copyToClipboard())
+        let clipboardData = try #require(pasteboard.data(forType: .png))
+        let clipboard = try #require(GlintImageIO.load(data: clipboardData))
+        let dragURL = try #require(controller.prepareDragFile())
+        let dragged = try #require(GlintImageIO.load(url: dragURL))
+        for output in [file, clipboard, dragged] {
+            let pixels = try #require(PixelBuffer(output))
+            for y in 20..<60 { for x in 10..<90 {
+                #expect(pixels.pixel(x, y) == (0, 0, 0, 255))
+            } }
+            #expect(pixels.pixel(0, 0) == (255, 255, 255, 255))
+        }
+    }
 }

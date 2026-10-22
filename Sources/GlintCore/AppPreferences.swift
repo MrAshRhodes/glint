@@ -127,6 +127,7 @@ public final class AppPreferences {
         public static let lastRenderSettings = "glint.lastRenderSettings"
         public static let annotationColor = "glint.annotationColor"
         public static let redactColor = "glint.redactColor"
+        /// Legacy key retained only so resetToDefaults clears it.
         public static let redactStyle = "glint.redactStyle"
         public static var all: [String] {
             [saveDirectory, historyDirectory, saveHistory, saveRaw, saveOutput, copyToClipboardAfterCapture,
@@ -220,10 +221,6 @@ public final class AppPreferences {
     public var autoRedactOptions: SensitiveInfoOptions {
         get { decode(Key.autoRedactOptions, as: SensitiveInfoOptions.self) ?? .default }
         set { encode(newValue, Key.autoRedactOptions) }
-    }
-    public var redactStyle: RedactionStyle {
-        get { defaults.string(forKey: Key.redactStyle).flatMap(RedactionStyle.init(rawValue:)) ?? .solid }
-        set { defaults.set(newValue.rawValue, forKey: Key.redactStyle) }
     }
     public var redactColor: RGBAColor {
         get { defaults.string(forKey: Key.redactColor).flatMap(RGBAColor.init(hex:)) ?? .black }

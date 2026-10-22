@@ -42,7 +42,7 @@ Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annota
 Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border
 Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/content rects (px, top-left)
 ```
-Pipeline: auto-balance crop → annotations baked into content (redactions destroy pixels) → rotate/flip →
+Pipeline: auto-balance crop → annotations baked into content (solid redactions replace covered pixels) → rotate/flip →
 inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
@@ -61,10 +61,17 @@ its input file is unchanged.
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)
 .blur(CGRect) .pixelate(CGRect) .redact(CGRect) .spotlight(CGRect) .emoji(center,String)`.
 `AnnotationStyle(color, fill?, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius)`.
-`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction`.
+`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid only), `.isObfuscation` (blur/pixelate).
 `AnnotationRenderer.draw(in ctx: CGContext, annotations:, imageSize:, source: CGImage?)` — `ctx` must map
 image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage?` (nil on failure).
-Blur/pixelate/redact sample the *source* pixels; `.redact` is always drawn fully opaque.
+Blur and pixelate sample the *source* pixels. They are obfuscation, not secure redaction: information may be
+recoverable, so do not use them for secrets. `.redact` replaces covered pixels with fully opaque solid color,
+regardless of color alpha or annotation opacity. Blur/pixelate also retain their existing opacity-independent
+rendering behavior. Flattened output does not erase original images or separately saved raw captures.
+
+`RedactionStyle` (`solid`, `blur`, `pixelate`) describes manual modes only, with `.displayName` and
+`.isObfuscation`. The editor's **Redact / Obfuscate** tool starts in Solid redaction mode for each image.
+The manual picker and repeated `3` shortcut can select obfuscation, with an unsafe-for-secrets warning.
 
 ## AutoBalance
 `AutoBalance.detectBorder(in:maxPixels:) -> BorderInfo?` (`color`, `perimeterFraction`, `margins`),
@@ -78,8 +85,15 @@ Blur/pixelate/redact sample the *source* pixels; `.redact` is always drawn fully
   `SensitiveInfoOptions(categories:, customWords:, caseSensitive:)` (+ `.default`, `.all`),
   `SensitiveInfoDetector(options:).matches(in: String) -> [SensitiveMatch]`,
   `.findings(in: [RecognizedLine]) -> [SensitiveFinding]` (rect + category), `Luhn.isValid(_:)`.
-- `AutoRedactOptions(detector:, style: .solid/.blur/.pixelate, color:, padding:)`;
+- `AutoRedactOptions(detector:, color:, padding:, recognizer:)`;
   `AutoRedact.run(_ image:, options:) async -> [Annotation]`; `AutoRedact.annotations(for lines:, options:)`.
+  Automatic redaction always generates solid `.redact` annotations, independent of the manual mode.
+  Detection is a first pass, not a guarantee; review the exported image before sharing.
+
+API migration: `AutoRedactOptions.style` and its initializer argument have been removed. Remove `style:`
+from automatic-redaction calls; create explicit `.blur` or `.pixelate` annotations only for manual
+obfuscation. `Annotation.isRedaction` no longer includes those kinds; use `.isObfuscation` when needed.
+Annotation case names and their serialized representations are unchanged.
 
 ## Export / paths
 - `ExportFormat`: `.png(interlaced:)` (`.plainPNG`), `.jpeg(quality:)`, `.heic(quality:)`, `.tiff`; `.fileExtension`.
@@ -98,6 +112,8 @@ Blur/pixelate/redact sample the *source* pixels; `.redact` is always drawn fully
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
 `fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `annotationColor`, `redactColor`;
 `AppPreferences.Key`, `resetToDefaults()`.
+The `AppPreferences.redactStyle` property has been removed. The legacy `glint.redactStyle` key is ignored
+by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`
 (`captureArea` ⌃⌥⌘4, `captureAreaToClipboard` ⌃⌥⌘5, `captureWindow` ⌃⌥⌘6, `captureFullscreen` ⌃⌥⌘3,
 `captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R); `HotkeyAction.defaultCombo`.

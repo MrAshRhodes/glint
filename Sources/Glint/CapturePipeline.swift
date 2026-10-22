@@ -132,7 +132,7 @@ final class CapturePipeline {
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
                 saveRaw: Bool, clipboardOnly: Bool = false) async {
         let redactionOptions = prefs.autoRedact
-            ? AutoRedactOptions(detector: prefs.autoRedactOptions, style: prefs.redactStyle, color: prefs.redactColor, padding: 3)
+            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, padding: 3)
             : nil
         services.sound()
         var rawURL = existingRaw

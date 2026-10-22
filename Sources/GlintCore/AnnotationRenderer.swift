@@ -120,7 +120,7 @@ public enum AnnotationRenderer {
     private static func draw(_ a: Annotation, in ctx: CGContext, imageSize: CGSize, source: CGImage?) {
         let s = a.style
         let opacity = CGFloat(min(max(s.opacity, 0), 1))
-        let needsLayer = opacity < 1 && !a.isRedaction
+        let needsLayer = opacity < 1 && !a.isRedaction && !a.isObfuscation
         if needsLayer {
             ctx.setAlpha(opacity)
             ctx.beginTransparencyLayer(auxiliaryInfo: nil)

@@ -101,13 +101,34 @@ struct SensitiveInfoTests {
     }
 
     @Test func autoRedactAnnotations() {
-        let line = RecognizedLine(text: "card 4111 1111 1111 1111", box: CGRect(x: 10, y: 10, width: 240, height: 20))
-        let opts = AutoRedactOptions(detector: SensitiveInfoOptions(categories: [.creditCard]), style: .blur, padding: 2)
+        let line = RecognizedLine(text: "4111 1111 1111 1111", box: CGRect(x: 10, y: 10, width: 240, height: 20))
+        let opts = AutoRedactOptions(detector: SensitiveInfoOptions(categories: [.creditCard]), color: .red, padding: 2)
         let a = AutoRedact.annotations(for: [line], options: opts, imageSize: CGSize(width: 300, height: 100))
         #expect(a.count == 1)
-        if case .blur(let r) = a[0].kind { #expect(r.width > 0 && r.minX >= 8) } else { Issue.record("expected blur") }
-        let solid = AutoRedact.annotations(for: [line], options: AutoRedactOptions(detector: opts.detector))
-        if case .redact = solid[0].kind {} else { Issue.record("expected redact") }
+        #expect(a.first?.kind == .redact(CGRect(x: 8, y: 8, width: 244, height: 24)))
+        #expect(a.first?.style.color == .red)
+        #expect(a.allSatisfy { $0.isRedaction && !$0.isObfuscation })
+
+        let clipped = AutoRedact.annotations(for: [line], options: opts, imageSize: CGSize(width: 100, height: 25))
+        #expect(clipped.first?.kind == .redact(CGRect(x: 8, y: 8, width: 92, height: 17)))
+        #expect(AutoRedact.annotations(for: [line], options: opts, imageSize: CGSize(width: 5, height: 5)).isEmpty)
+    }
+
+    @Test func automaticRedactionExportReplacesAllCoveredPixels() throws {
+        let source = TestImages.framed(width: 120, height: 80, margins: .init(top: 0, left: 0, bottom: 0, right: 0))
+        let line = RecognizedLine(text: "test@example.com", box: CGRect(x: 20, y: 20, width: 80, height: 40))
+        let options = AutoRedactOptions(detector: .init(categories: [.email]), color: .black.with(alpha: 0.1), padding: 3)
+        let annotations = AutoRedact.annotations(for: [line], options: options, imageSize: source.pixelSize)
+        #expect(annotations.count == 1)
+        let output = try #require(AnnotationRenderer.bake(source: source, annotations: annotations))
+        let decoded = try #require(GlintImageIO.load(data: Exporter.data(for: output, format: .plainPNG)))
+        let pixels = try #require(PixelBuffer(decoded))
+        let original = try #require(PixelBuffer(source))
+        for y in 0..<80 { for x in 0..<120 {
+            let expected: (UInt8, UInt8, UInt8, UInt8) = (17..<103).contains(x) && (17..<63).contains(y)
+                ? (0, 0, 0, 255) : original.pixel(x, y)
+            #expect(pixels.pixel(x, y) == expected)
+        } }
     }
 
     @Test func recognizesRenderedText() async throws {

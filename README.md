@@ -61,8 +61,8 @@ For a manual installation, save your work and quit Glint, then download the late
 - **Desktop wallpaper**: check **Use desktop wallpaper** in the Background controls to use your system wallpaper without importing a file. Preview and export share the same image; uncheck it to restore your previous background. See [wallpaper behavior and limitations](https://mrashrhodes.github.io/glint/guide.html#desktop-wallpaper).
 - **Auto-balance**: detects uniform borders and balances the margins.
 - **Aspect ratios**: auto, 1:1, 4:3, 3:2, 16:9, 9:16, 4:5, and social presets, plus custom.
-- **Annotations**: arrow, line, rectangle, ellipse, pen, highlighter, text, numbered counters, and redaction (blur, pixelate, solid). Undo/redo, z-order, per-object styling.
-- **Auto-redact**: on-device Vision OCR finds emails, phone numbers, credit cards (Luhn-checked), IP addresses, API keys and tokens, and redacts them. Redactions destroy the pixels on export.
+- **Annotations**: arrow, line, rectangle, ellipse, pen, highlighter, text, numbered counters, and a **Redact / Obfuscate** tool. Each image starts in Solid redaction mode. Blur and pixelate are obfuscation only: information may be recoverable, so they are unsafe for secrets. Undo/redo, z-order, per-object styling.
+- **Auto-redact**: on-device Vision OCR finds emails, phone numbers, credit cards (Luhn-checked), IP addresses, API keys and tokens, and covers detected regions with fully opaque solid fill, regardless of the manual tool mode. Solid redaction replaces the covered pixels in the exported image. Detection can miss information: review before sharing. Original images and saved raw captures are not erased.
 - **Presets**: save, apply and set a default look.
 - **Export**: PNG, JPEG, HEIC, TIFF; 1x/2x; clipboard; Save As; share sheet; drag out. Optional raw and output folders.
 - **Safe retry**: failed exports keep the image and annotations in the editor with a **Retry** action. If capture auto-redaction or rendering fails, choose **Retry** or **Discard Capture**. Recovery stays in memory while the editor or prompt is open; it never creates an unredacted backup or bypasses redaction.
