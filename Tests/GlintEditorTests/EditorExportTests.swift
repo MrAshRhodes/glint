@@ -22,7 +22,8 @@ struct EditorExportTests {
     @Test func failedCopyKeepsWindowOpenAndDoesNotCallExportCallback() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
-        services.copy = { _ in false }
+        var canCopy = false
+        services.copy = { _ in canCopy }
         var beeps = 0
         services.beep = { beeps += 1 }
         let controller = f.controller(services: services)
@@ -37,6 +38,13 @@ struct EditorExportTests {
         #expect(controller.model.statusMessage == "Copy failed")
         #expect(!controller.copyToClipboard())
         #expect(exports == 0 && closes == 0)
+        let retry = try #require(controller.actions.retryExport)
+        canCopy = true
+        retry()
+        #expect(exports == 1 && closes == 0)
+        #expect(controller.actions.retryExport == nil)
+        retry()
+        #expect(exports == 1)
     }
 
     @Test func successfulCopyClosesOnlyWhenConfigured() throws {
@@ -95,6 +103,7 @@ struct EditorExportTests {
         controller.saveOutput()
         #expect(exports == 0 && beeps == 1)
         #expect(controller.model.statusMessage?.hasPrefix("Save failed:") == true)
+        #expect(controller.actions.retryExport != nil)
     }
 
     @Test func closingEditorRemovesEveryDragPayloadButNotOtherFiles() throws {
@@ -128,6 +137,7 @@ struct EditorExportTests {
         #expect(controller.prepareDragFile() == nil)
         #expect(controller.model.statusMessage?.hasPrefix("Drag export failed:") == true)
         #expect(beeps == 1 && exports == 0)
+        #expect(controller.actions.retryExport != nil)
     }
 
     // MARK: Fail closed when annotations cannot be burned in
@@ -210,6 +220,247 @@ struct EditorExportTests {
         #expect(controller.model.statusMessage == "Drag export failed: \(notAppliedMessage)")
         let dragged = (try? FileManager.default.contentsOfDirectory(atPath: services.dragDirectory.path)) ?? []
         #expect(dragged.isEmpty)
+    }
+
+    // MARK: Retry without losing edits or weakening export checks
+
+    private func expectRedacted(_ image: CGImage, x: Int = 10, y: Int = 10) throws {
+        let pixels = try #require(PixelBuffer(image))
+        let pixel = pixels.pixel(x, y)
+        #expect(pixel.0 < 10 && pixel.1 < 10 && pixel.2 < 10 && pixel.3 == 255)
+    }
+
+    @Test(arguments: [false, true])
+    func copyRetryKeepsEditsAndUndoAndRespectsClosePreference(closeAfterCopy: Bool) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = closeAfterCopy
+        var services = EditorExportServices()
+        var copies: [CGImage] = [], beeps = 0
+        services.copy = { copies.append($0); return true }
+        services.beep = { beeps += 1 }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        let model = controller.model
+        model.undoManager.groupsByEvent = false
+        model.undoManager.beginUndoGrouping()
+        model.setAnnotations([redaction], actionName: "Redact")
+        model.undoManager.endUndoGrouping()
+        model.selection = [redaction.id]
+        model.renderer = failingBakeRenderer
+        var exports = 0, closes = 0
+        controller.onExported = { _ in exports += 1 }
+        controller.onClose = { closes += 1 }
+
+        controller.copyAndMaybeClose()
+        let firstRetry = try #require(controller.actions.retryExport)
+        firstRetry()
+        let secondRetry = try #require(controller.actions.retryExport)
+        secondRetry()
+        #expect(copies.isEmpty && exports == 0 && closes == 0 && beeps == 3)
+        #expect(model.image === f.context.image)
+        #expect(model.annotations == [redaction] && model.selection == [redaction.id])
+        #expect(model.canUndo && model.undoManager.undoActionName == "Redact")
+
+        var expanded = redaction
+        expanded.kind = .redact(CGRect(x: 0, y: 0, width: 100, height: 80))
+        model.undoManager.beginUndoGrouping()
+        model.setAnnotations([expanded], actionName: "Expand redaction")
+        model.undoManager.endUndoGrouping()
+        model.undoManager.undo()
+        #expect(model.annotations == [redaction])
+        model.undoManager.redo()
+        #expect(model.annotations == [expanded])
+
+        model.renderer = EditorModel.compositorRenderer
+        let finalRetry = try #require(controller.actions.retryExport)
+        finalRetry()
+        #expect(copies.count == 1 && exports == 1 && closes == (closeAfterCopy ? 1 : 0))
+        try expectRedacted(try #require(copies.first), x: 75, y: 60)
+        #expect(model.annotations == [expanded] && model.canUndo)
+        #expect(controller.actions.retryExport == nil)
+        firstRetry()
+        secondRetry()
+        finalRetry()
+        #expect(copies.count == 1 && exports == 1 && beeps == 3)
+    }
+
+    @Test func publicCopyRetryDoesNotCloseEvenWithCloseAfterCopyEnabled() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = true
+        var services = EditorExportServices()
+        var copies: [CGImage] = []
+        services.copy = { copies.append($0); return true }
+        services.beep = {}
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var closes = 0
+        controller.onClose = { closes += 1 }
+
+        #expect(!controller.copyToClipboard())
+        let retry = try #require(controller.actions.retryExport)
+        controller.model.renderer = EditorModel.compositorRenderer
+        retry()
+        #expect(copies.count == 1 && closes == 0)
+        try expectRedacted(try #require(copies.first))
+        #expect(controller.actions.retryExport == nil)
+    }
+
+    @Test func saveAsRetryKeepsChosenURLAndFormatThroughRenderAndWriteFailures() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.exportScale = .original
+        let target = f.directory.appendingPathComponent("Chosen/Keep this name.tiff")
+        var services = EditorExportServices()
+        var attempts: [(URL, ExportFormat)] = [], beeps = 0
+        var refuseWrite = true
+        services.write = { image, url, format, scale, backing in
+            attempts.append((url, format))
+            if refuseWrite { throw ExportTestFailure.refused }
+            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backing)
+        }
+        services.beep = { beeps += 1 }
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var exports: [URL?] = []
+        controller.onExported = { exports.append($0) }
+
+        // Save As passes its accepted panel URL and format to this same method.
+        controller.write(to: target, format: .tiff)
+        let firstRetry = try #require(controller.actions.retryExport)
+        firstRetry()
+        #expect(attempts.isEmpty && exports.isEmpty && beeps == 2)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(controller.model.annotations == [redaction])
+
+        f.preferences.compressToJPEG = true
+        f.preferences.saveDirectory = f.directory.appendingPathComponent("Different")
+        controller.model.renderer = EditorModel.compositorRenderer
+        let writeRetry = try #require(controller.actions.retryExport)
+        writeRetry()
+        #expect(attempts.count == 1 && exports.isEmpty && beeps == 3)
+        #expect(controller.actions.retryExport != nil)
+        refuseWrite = false
+        let finalRetry = try #require(controller.actions.retryExport)
+        finalRetry()
+        #expect(attempts.count == 2 && attempts.allSatisfy { $0.0 == target && $0.1 == .tiff })
+        #expect(exports == [target])
+        try expectRedacted(try #require(GlintImageIO.load(url: target)))
+        #expect(controller.model.statusMessage == "Saved Keep this name.tiff")
+        #expect(controller.actions.retryExport == nil)
+        firstRetry()
+        finalRetry()
+        #expect(attempts.count == 2 && exports.count == 1)
+    }
+
+    @Test func manualSaveRetryKeepsOriginalTargetAfterPreferencesChange() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.compressToJPEG = false
+        f.preferences.exportFormat = .plainPNG
+        var services = EditorExportServices()
+        var attempts: [(URL, ExportFormat)] = []
+        var refuseWrite = true
+        services.write = { _, url, format, _, _ in
+            attempts.append((url, format))
+            if refuseWrite { throw ExportTestFailure.refused }
+            return url
+        }
+        services.beep = {}
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        controller.saveOutput()
+        let first = try #require(attempts.first)
+
+        f.preferences.saveDirectory = f.directory.appendingPathComponent("Different")
+        f.preferences.compressToJPEG = true
+        refuseWrite = false
+        let retry = try #require(controller.actions.retryExport)
+        retry()
+        #expect(attempts.count == 2 && attempts[1].0 == first.0 && attempts[1].1 == first.1)
+        #expect(controller.actions.retryExport == nil)
+    }
+
+    @Test func shareRetryOnlyShowsPickerAfterAnnotationsAreBaked() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        var shared: [CGImage] = [], beeps = 0
+        services.share = { image, _ in shared.append(image) }
+        services.beep = { beeps += 1 }
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var exports = 0
+        controller.onExported = { _ in exports += 1 }
+
+        controller.actions.share()
+        #expect(controller.model.statusMessage == "Share failed: \(notAppliedMessage)")
+        let firstRetry = try #require(controller.actions.retryExport)
+        firstRetry()
+        #expect(shared.isEmpty && exports == 0 && beeps == 2)
+        #expect(controller.model.annotations == [redaction])
+        controller.model.renderer = EditorModel.compositorRenderer
+        let retry = try #require(controller.actions.retryExport)
+        retry()
+        #expect(shared.count == 1 && exports == 0)
+        try expectRedacted(try #require(shared.first))
+        #expect(controller.model.statusMessage == "Choose where to share")
+        #expect(controller.actions.retryExport == nil)
+        retry()
+        #expect(shared.count == 1)
+    }
+
+    @Test func dragRetryPreparesRedactedPayloadAndRequestsAnotherGesture() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        services.dragDirectory = f.directory.appendingPathComponent("Drag")
+        var payloads: [URL] = [], beeps = 0
+        services.write = { image, url, format, scale, backing in
+            let saved = try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backing)
+            payloads.append(saved)
+            return saved
+        }
+        services.beep = { beeps += 1 }
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var exports = 0
+        controller.onExported = { _ in exports += 1 }
+
+        #expect(controller.prepareDragFile() == nil)
+        let firstRetry = try #require(controller.actions.retryExport)
+        firstRetry()
+        #expect(payloads.isEmpty && exports == 0 && beeps == 2)
+        #expect(controller.model.annotations == [redaction])
+        controller.model.renderer = EditorModel.compositorRenderer
+        let retry = try #require(controller.actions.retryExport)
+        retry()
+        #expect(payloads.count == 1 && exports == 0)
+        let payload = try #require(payloads.first)
+        try expectRedacted(try #require(GlintImageIO.load(url: payload)))
+        #expect(controller.model.statusMessage == "Drag the thumbnail again to export.")
+        #expect(controller.actions.retryExport == nil)
+        retry()
+        #expect(payloads.count == 1)
+
+        // Starting the next drag must render again, not reuse the previously prepared file.
+        controller.model.renderer = failingBakeRenderer
+        #expect(controller.prepareDragFile() == nil)
+        #expect(payloads.count == 1 && exports == 0)
+        controller.window?.close()
+        #expect(controller.actions.retryExport == nil)
+        #expect(payloads.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    @Test func closingWindowInvalidatesPendingRetry() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        var copies = 0
+        services.copy = { _ in copies += 1; return true }
+        services.beep = {}
+        let controller = failingController(f, services: services)
+        #expect(!controller.copyToClipboard())
+        let retry = try #require(controller.actions.retryExport)
+        controller.window?.close()
+        #expect(controller.actions.retryExport == nil)
+        controller.model.renderer = EditorModel.compositorRenderer
+        retry()
+        #expect(copies == 0)
     }
 
     @Test func previewNeverShowsUnredactedPixelsWhenBakingFails() async throws {

@@ -48,6 +48,13 @@ inset band → window frame → rounded card + two-layer shadow → background �
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
 `RenderError.annotationsNotApplied` instead of returning the unredacted source, and every export path
 (editor copy/save/share/drag, direct capture export, `--render`) aborts with an error.
+The editor retains the image and annotations and offers **Retry** for the failed action, rendering again
+with the current edits. Save retries keep the chosen destination and format; after retrying a drag export,
+drag the thumbnail again to choose a destination. Capture auto-redaction and rendering failures offer
+**Retry** or **Discard Capture**, retaining the same capture in memory and preserving required redactions.
+Retries do not recapture the screen, repeat a raw-history save, or create a raw recovery file. This is
+in-memory recovery, not protection against quitting or a crash. The CLI still exits with an error;
+its input file is unchanged.
 
 ## Annotations
 `Annotation(id,z,kind,style)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)

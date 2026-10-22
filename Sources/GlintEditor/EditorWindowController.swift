@@ -8,6 +8,12 @@ struct EditorExportServices {
     var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
         try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
     }
+    var share: @MainActor (CGImage, NSView) -> Void = { image, content in
+        let ns = NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
+        let picker = NSSharingServicePicker(items: [ns])
+        let anchor = CGRect(x: content.bounds.maxX - 200, y: 0, width: 80, height: 50)
+        picker.show(relativeTo: anchor, of: content, preferredEdge: .minY)
+    }
     var beep: () -> Void = { NSSound.beep() }
     var dragDirectory: URL = (
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -33,9 +39,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     let model: EditorModel
     private let exportServices: EditorExportServices
-    private let actions = EditorActions()
+    let actions = EditorActions()
     private let canvas: CanvasView
     private var dragFiles: Set<URL> = []
+    private var retryID: UUID?
 
     public convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
         self.init(context: context, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
@@ -120,15 +127,21 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     /// Copies the composed output (annotations burned in) to the clipboard.
     @discardableResult
     public func copyToClipboard() -> Bool {
+        copyToClipboard(closeAfterSuccess: false)
+    }
+
+    private func copyToClipboard(closeAfterSuccess: Bool) -> Bool {
         canvas.endEditing()
-        guard let image = renderForExport(failure: "Copy failed") else { return false }
+        let retry: (EditorWindowController) -> Void = { _ = $0.copyToClipboard(closeAfterSuccess: closeAfterSuccess) }
+        guard let image = renderForExport(failure: "Copy failed", retry: retry) else { return false }
         if exportServices.copy(image) {
+            clearRetry()
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
+            if closeAfterSuccess, model.preferences.closeAfterCopy { window?.close() }
             return true
         } else {
-            model.statusMessage = "Copy failed"
-            exportServices.beep()
+            offerRetry(failure: "Copy failed", retry: retry)
             return false
         }
     }
@@ -143,14 +156,30 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     // MARK: Actions
 
     /// Renders the final output, or reports the failure and returns nil so nothing unredacted is exported.
-    private func renderForExport(failure: String) -> CGImage? {
+    private func renderForExport(failure: String, retry: @escaping (EditorWindowController) -> Void) -> CGImage? {
         do {
             return try model.renderFinal()
         } catch {
-            model.statusMessage = "\(failure): \(error.localizedDescription)"
-            exportServices.beep()
+            offerRetry(failure: "\(failure): \(error.localizedDescription)", retry: retry)
             return nil
         }
+    }
+
+    private func offerRetry(failure: String, retry: @escaping (EditorWindowController) -> Void) {
+        model.statusMessage = failure
+        let id = UUID()
+        retryID = id
+        actions.retryExport = { [weak self] in
+            guard let self, self.retryID == id else { return }
+            self.clearRetry()
+            retry(self)
+        }
+        exportServices.beep()
+    }
+
+    private func clearRetry() {
+        retryID = nil
+        actions.retryExport = nil
     }
 
     private func currentFormat() -> ExportFormat {
@@ -158,21 +187,22 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         return p.compressToJPEG ? .jpeg(quality: p.jpegQuality) : p.exportFormat
     }
 
-    private func write(to url: URL, format: ExportFormat) {
+    func write(to url: URL, format: ExportFormat) {
         canvas.endEditing()
-        guard let image = renderForExport(failure: "Save failed") else { return }
+        let retry: (EditorWindowController) -> Void = { $0.write(to: url, format: format) }
+        guard let image = renderForExport(failure: "Save failed", retry: retry) else { return }
         do {
             _ = try exportServices.write(image, url, format, model.preferences.exportScale, model.backingScale)
+            clearRetry()
             model.statusMessage = "Saved \(url.lastPathComponent)"
             onExported?(url)
         } catch {
-            model.statusMessage = "Save failed: \(error.localizedDescription)"
-            exportServices.beep()
+            offerRetry(failure: "Save failed: \(error.localizedDescription)", retry: retry)
         }
     }
 
     func copyAndMaybeClose() {
-        if copyToClipboard(), model.preferences.closeAfterCopy { window?.close() }
+        _ = copyToClipboard(closeAfterSuccess: true)
     }
 
     private func saveAs() {
@@ -199,11 +229,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private func share() {
         guard let content = window?.contentView else { return }
         canvas.endEditing()
-        guard let image = renderForExport(failure: "Share failed") else { return }
-        let ns = NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
-        let picker = NSSharingServicePicker(items: [ns])
-        let anchor = CGRect(x: content.bounds.maxX - 200, y: 0, width: 80, height: 50)
-        picker.show(relativeTo: anchor, of: content, preferredEdge: .minY)
+        guard let image = renderForExport(failure: "Share failed", retry: { $0.share() }) else { return }
+        clearRetry()
+        model.statusMessage = "Choose where to share"
+        exportServices.share(image, content)
     }
 
     private func openRaw() {
@@ -215,15 +244,21 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         canvas.endEditing()
         let dir = exportServices.dragDirectory
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
-        guard let image = renderForExport(failure: "Drag export failed") else { return nil }
+        let retry: (EditorWindowController) -> Void = { controller in
+            if controller.prepareDragFile() != nil {
+                controller.model.statusMessage = "Drag the thumbnail again to export."
+            }
+        }
+        guard let image = renderForExport(failure: "Drag export failed", retry: retry) else { return nil }
         let url = FileNaming.uniqueURL(directory: dir, baseName: name, ext: "png")
         do {
             _ = try exportServices.write(image, url, .plainPNG, model.preferences.exportScale, model.backingScale)
             dragFiles.insert(url)
+            clearRetry()
+            model.statusMessage = "Drag the thumbnail to export"
             return url
         } catch {
-            model.statusMessage = "Drag export failed: \(error.localizedDescription)"
-            exportServices.beep()
+            offerRetry(failure: "Drag export failed: \(error.localizedDescription)", retry: retry)
             return nil
         }
     }
@@ -278,6 +313,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     // MARK: NSWindowDelegate
 
     public func windowWillClose(_ notification: Notification) {
+        clearRetry()
         canvas.endEditing()
         for url in dragFiles { try? FileManager.default.removeItem(at: url) }
         dragFiles.removeAll()
