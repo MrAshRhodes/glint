@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Testing
 @testable import GlintCore
 @testable import GlintEditor
@@ -567,5 +568,71 @@ struct EditorExportTests {
             } }
             #expect(pixels.pixel(0, 0) == (255, 255, 255, 255))
         }
+    }
+
+    @Test(arguments: [RedactionStyle.solid, .pixelate], [false, true])
+    func secureStylesAgreeAcrossPreviewAndAllOutputs(mode: RedactionStyle, decorated: Bool) async throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let pasteboard = NSPasteboard(name: .init("glint.editor.secure-styles.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var shared: CGImage?
+        var services = EditorExportServices()
+        services.copy = { Exporter.copyToClipboard($0, pasteboard: pasteboard) }
+        services.share = { image, _ in shared = image }
+        services.dragDirectory = f.directory.appendingPathComponent("Drag")
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        let region = CGRect(x: 10.25, y: 20.5, width: 79.5, height: 39.25)
+        let style = AnnotationStyle(
+            color: RGBAColor(r: 0.8, g: 0.1, b: 0.3, a: 0.05),
+            opacity: 0.05, intensity: 8,
+            redactionPattern: decorated ? .checkerboard : .plain,
+            redactionSecondaryColor: RGBAColor(r: 0.1, g: 0.3, b: 0.8, a: 0),
+            pixelateHighlight: decorated
+        )
+        controller.model.updateLive([Annotation(kind: mode == .solid ? .redact(region) : .pixelate(region), style: style)])
+        // Output follows stored annotations, not the next drawing mode or its defaults.
+        controller.model.redactStyle = .blur
+        controller.model.defaultStyle = AnnotationStyle(color: .white)
+        let expected = try controller.model.renderFinal()
+        let expectedPixels = try #require(PixelBuffer(expected))
+        func matches(_ image: CGImage) -> Bool {
+            guard image.width == expected.width, image.height == expected.height,
+                  let pixels = PixelBuffer(image) else { return false }
+            return (0..<image.height).allSatisfy { y in
+                (0..<image.width).allSatisfy { x in pixels.pixel(x, y) == expectedPixels.pixel(x, y) }
+            }
+        }
+        for _ in 0..<200 {
+            if let preview = controller.model.preview, matches(preview.image) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(matches(try #require(controller.model.preview).image))
+
+        var saved: URL?
+        controller.onExported = { if let url = $0 { saved = url } }
+        controller.saveOutput()
+        let savedURL = try #require(saved)
+        #expect(controller.copyToClipboard())
+        let clipboardData = try #require(pasteboard.data(forType: .png))
+        let dragURL = try #require(controller.prepareDragFile())
+        controller.actions.share()
+        #expect(matches(try #require(shared)))
+        for data in [try Data(contentsOf: savedURL), clipboardData, try Data(contentsOf: dragURL)] {
+            let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+            #expect(CGImageSourceGetCount(source) == 1)
+            let image = try #require(GlintImageIO.load(data: data))
+            #expect(matches(image))
+        }
+
+        var colors = Set<UInt32>()
+        for y in 20..<60 { for x in 10..<90 {
+            let pixel = expectedPixels.pixel(x, y)
+            #expect(pixel.3 == 255)
+            colors.insert(UInt32(pixel.0) << 16 | UInt32(pixel.1) << 8 | UInt32(pixel.2))
+        } }
+        if mode == .pixelate || decorated { #expect(colors.count > 1) }
+        else { #expect(colors.count == 1) }
+        #expect(expectedPixels.pixel(0, 0) == (255, 255, 255, 255))
     }
 }

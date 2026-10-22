@@ -60,7 +60,7 @@ struct AnnotationTests {
         #expect(!sameRegion(out, noise, CGRect(x: 60, y: 58, width: 50, height: 14)))
     }
 
-    @Test func obfuscationStillIgnoresAnnotationOpacity() throws {
+    @Test func privacyToolsStillIgnoreAnnotationOpacity() throws {
         let region = CGRect(x: 20, y: 10, width: 60, height: 40)
         for kind in [AnnotationKind.blur(region), .pixelate(region)] {
             let opaque = try flat([Annotation(kind: kind, style: AnnotationStyle(opacity: 1))])

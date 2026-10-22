@@ -1,6 +1,10 @@
 import CoreGraphics
 import Foundation
 
+public enum RedactionPattern: String, Codable, CaseIterable, Sendable {
+    case plain, checkerboard
+}
+
 public struct AnnotationStyle: Codable, Equatable, Hashable, Sendable {
     public var color: RGBAColor
     public var fill: RGBAColor?
@@ -10,17 +14,51 @@ public struct AnnotationStyle: Codable, Equatable, Hashable, Sendable {
     public var fontName: String
     public var fontSize: Double
     public var bold: Bool
-    /// Blur radius (blur) or cell size (pixelate), image pixels.
+    /// Blur radius or redaction pattern cell size, in image pixels.
     public var intensity: Double
     public var dashed: Bool
     public var cornerRadius: Double
+    public var redactionPattern: RedactionPattern
+    public var redactionSecondaryColor: RGBAColor
+    /// Uses `color` for accent tiles in the otherwise neutral, source-independent mosaic.
+    public var pixelateHighlight: Bool
 
     public init(color: RGBAColor = .red, fill: RGBAColor? = nil, strokeWidth: Double = 5, opacity: Double = 1,
                 fontName: String = "Helvetica Neue", fontSize: Double = 30, bold: Bool = true,
-                intensity: Double = 12, dashed: Bool = false, cornerRadius: Double = 0) {
+                intensity: Double = 12, dashed: Bool = false, cornerRadius: Double = 0,
+                redactionPattern: RedactionPattern = .plain,
+                redactionSecondaryColor: RGBAColor = RGBAColor(r: 0.85, g: 0.85, b: 0.85),
+                pixelateHighlight: Bool = false) {
         self.color = color; self.fill = fill; self.strokeWidth = strokeWidth; self.opacity = opacity
         self.fontName = fontName; self.fontSize = fontSize; self.bold = bold; self.intensity = intensity
         self.dashed = dashed; self.cornerRadius = cornerRadius
+        self.redactionPattern = redactionPattern; self.redactionSecondaryColor = redactionSecondaryColor
+        self.pixelateHighlight = pixelateHighlight
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case color, fill, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius
+        case redactionPattern, redactionSecondaryColor, pixelateHighlight
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            color: try c.decode(RGBAColor.self, forKey: .color),
+            fill: try c.decodeIfPresent(RGBAColor.self, forKey: .fill),
+            strokeWidth: try c.decode(Double.self, forKey: .strokeWidth),
+            opacity: try c.decode(Double.self, forKey: .opacity),
+            fontName: try c.decode(String.self, forKey: .fontName),
+            fontSize: try c.decode(Double.self, forKey: .fontSize),
+            bold: try c.decode(Bool.self, forKey: .bold),
+            intensity: try c.decode(Double.self, forKey: .intensity),
+            dashed: try c.decode(Bool.self, forKey: .dashed),
+            cornerRadius: try c.decode(Double.self, forKey: .cornerRadius),
+            redactionPattern: try c.decodeIfPresent(RedactionPattern.self, forKey: .redactionPattern) ?? .plain,
+            redactionSecondaryColor: try c.decodeIfPresent(RGBAColor.self, forKey: .redactionSecondaryColor)
+                ?? RGBAColor(r: 0.85, g: 0.85, b: 0.85),
+            pixelateHighlight: try c.decodeIfPresent(Bool.self, forKey: .pixelateHighlight) ?? false
+        )
     }
 }
 
@@ -37,9 +75,9 @@ public enum AnnotationKind: Codable, Equatable, Hashable, Sendable {
     case counter(center: CGPoint, number: Int)
     /// Source-derived obfuscation, unsafe for secrets.
     case blur(CGRect)
-    /// Source-derived obfuscation, unsafe for secrets.
+    /// Fully opaque decorative mosaic, independent of source pixels.
     case pixelate(CGRect)
-    /// Solid, always fully opaque box.
+    /// Plain or checkerboard box, always fully opaque.
     case redact(CGRect)
     /// Dims everything outside the rect.
     case spotlight(CGRect)
@@ -58,12 +96,12 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
     }
 
     public var isRedaction: Bool {
-        if case .redact = kind { return true }
-        return false
+        switch kind { case .redact, .pixelate: return true; default: return false }
     }
 
     public var isObfuscation: Bool {
-        switch kind { case .blur, .pixelate: return true; default: return false }
+        if case .blur = kind { return true }
+        return false
     }
 
     public var boundingBox: CGRect {

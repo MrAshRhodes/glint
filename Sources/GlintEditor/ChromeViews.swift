@@ -26,6 +26,20 @@ func colorBinding(_ get: @escaping () -> RGBAColor, _ set: @escaping (RGBAColor)
 
 // MARK: - Top tool strip
 
+struct RedactionModePicker: View {
+    @ObservedObject var model: EditorModel
+
+    var body: some View {
+        Picker("Redaction style", selection: Binding(get: { model.currentRedactStyle }, set: { model.setRedactStyle($0) })) {
+            ForEach(RedactionStyle.allCases, id: \.self) { Text($0.displayName).tag($0) }
+        }
+        .pickerStyle(.menu)
+        .accessibilityLabel("Redaction style")
+        .accessibilityValue(model.currentRedactStyle.displayName)
+        .help("Choose Solid, Blur, or Pixelate. Also changes selected redaction regions. Blur is unsafe for secrets.")
+    }
+}
+
 struct ToolStripView: View {
     @ObservedObject var model: EditorModel
 
@@ -51,12 +65,25 @@ struct ToolStripView: View {
             Button { model.undoManager.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!model.canRedo).help("Redo (⇧⌘Z)").accessibilityLabel("Redo")
             Divider().frame(height: 18)
-            ColorPicker("Annotation colour", selection: colorBinding({ model.selectedAnnotations.first?.style.color ?? model.defaultStyle.color }) { c in
-                model.updateStyle(key: "color") { $0.color = c }
-            }, supportsOpacity: false)
-                .labelsHidden()
-                .help("Annotation colour")
-            if let v = model.variantDescription() {
+            if model.activeRedactionModes.contains(.solid) || model.activeRedactionModes.contains(.pixelate) {
+                ColorPicker("Redaction colour", selection: colorBinding({
+                    let mode: RedactionStyle = model.activeRedactionModes.contains(.solid) ? .solid : .pixelate
+                    return model.redactionAppearance(for: mode).color
+                }) { model.setRedactColor($0) }, supportsOpacity: false)
+                    .labelsHidden()
+                    .help("Redaction colour, used by Solid and highlighted Pixelate")
+            } else if model.activeRedactionModes.isEmpty {
+                ColorPicker("Annotation colour", selection: colorBinding({ model.selectedAnnotations.first?.style.color ?? model.defaultStyle.color }) { c in
+                    model.updateStyle(key: "color") { $0.color = c }
+                }, supportsOpacity: false)
+                    .labelsHidden()
+                    .help("Annotation colour")
+            }
+            if model.tool == .redact || !model.activeRedactionModes.isEmpty {
+                RedactionModePicker(model: model)
+                    .labelsHidden()
+                    .fixedSize()
+            } else if let v = model.variantDescription() {
                 Text(v).font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(.quaternary))
             }
