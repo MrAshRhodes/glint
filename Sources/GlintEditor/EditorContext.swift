@@ -35,12 +35,13 @@ public enum EditorHeadless {
     }
 
     /// Composes the capture with the current preferences (and auto-redaction when enabled).
+    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     @MainActor
     public static func render(context: EditorContext, preferences: AppPreferences,
                               wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() },
                               onWallpaperFailure: (DesktopWallpaperError) -> Void = {
                                   FileHandle.standardError.write(Data("warning: \($0.localizedDescription)\n".utf8))
-                              }) -> CGImage {
+                              }) throws -> CGImage {
         let settings = initialSettings(preferences: preferences)
         var wallpaper: CGImage?
         if settings.usesDesktopWallpaper {
@@ -56,7 +57,7 @@ public enum EditorHeadless {
             options.padding = 3 * Double(context.backingScale)
             annotations = AutoRedact.annotations(for: lines, options: options, imageSize: context.image.pixelSize)
         }
-        return Compositor.render(image: context.image, settings: settings, annotations: annotations,
+        return try Compositor.render(image: context.image, settings: settings, annotations: annotations,
                                  backingScale: context.backingScale, wallpaper: wallpaper)
     }
 }

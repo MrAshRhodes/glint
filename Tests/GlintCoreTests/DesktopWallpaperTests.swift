@@ -69,18 +69,18 @@ struct DesktopWallpaperTests {
         #expect(wallpaper.width == 40 && wallpaper.height == 80)
     }
 
-    @Test func wallpaperOverridesOnlyWhenEnabledAndAvailable() {
+    @Test func wallpaperOverridesOnlyWhenEnabledAndAvailable() throws {
         let content = TestImages.solid(100, 50, .white)
         let wallpaper = TestImages.solid(200, 100, .red)
         var settings = RenderSettings(padding: 20, cornerRadius: 0, shadow: .none,
                                       background: .solid(.black), autoBalance: false, usesDesktopWallpaper: true)
-        let enabled = Compositor.render(image: content, settings: settings, wallpaper: wallpaper)
+        let enabled = try Compositor.render(image: content, settings: settings, wallpaper: wallpaper)
         #expect(TestImages.pixel(enabled, 1, 1) == TestImages.pixel(wallpaper, 1, 1))
         #expect(TestImages.pixel(enabled, 70, 45).g == 255)
-        let unavailable = Compositor.render(image: content, settings: settings)
+        let unavailable = try Compositor.render(image: content, settings: settings)
         #expect(TestImages.pixel(unavailable, 1, 1).r == 0)
         settings.usesDesktopWallpaper = false
-        let disabled = Compositor.render(image: content, settings: settings, wallpaper: wallpaper)
+        let disabled = try Compositor.render(image: content, settings: settings, wallpaper: wallpaper)
         #expect(PixelBuffer(disabled)?.data == PixelBuffer(unavailable)?.data)
     }
 
@@ -96,11 +96,11 @@ struct DesktopWallpaperTests {
                                       watermark: WatermarkSettings(enabled: true, text: "Example"),
                                       autoBalance: false, usesDesktopWallpaper: true)
         let annotations = [Annotation(kind: .redact(CGRect(x: 20, y: 20, width: 20, height: 10)))]
-        let result = Compositor.renderDetailed(image: content, settings: settings, annotations: annotations,
+        let result = try Compositor.renderDetailed(image: content, settings: settings, annotations: annotations,
                                                backingScale: 2, wallpaper: wallpaper)
         settings.usesDesktopWallpaper = false
         settings.background = .image(path: "", fit: .fill)
-        let baseline = Compositor.renderDetailed(image: content, settings: settings, annotations: annotations,
+        let baseline = try Compositor.renderDetailed(image: content, settings: settings, annotations: annotations,
                                                  backingScale: 2, backgroundImage: wallpaper)
         #expect(result.layout == baseline.layout)
         #expect(try #require(PixelBuffer(result.image)).data == #require(PixelBuffer(baseline.image)).data)

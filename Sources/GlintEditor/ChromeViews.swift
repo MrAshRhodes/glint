@@ -4,6 +4,7 @@ import SwiftUI
 
 /// Actions the SwiftUI chrome triggers on the window controller.
 final class EditorActions: ObservableObject {
+    @Published var retryExport: (() -> Void)?
     var copy: () -> Void = {}
     var save: () -> Void = {}
     var saveAs: () -> Void = {}
@@ -71,15 +72,29 @@ struct ToolStripView: View {
 
 struct BottomBarView: View {
     @ObservedObject var model: EditorModel
-    let actions: EditorActions
+    @ObservedObject var actions: EditorActions
+
+    private var status: String { model.statusMessage ?? "Drag the thumbnail to export" }
 
     var body: some View {
         HStack(spacing: 10) {
             DragThumbnail(model: model, actions: actions)
                 .frame(width: 64, height: 36)
                 .help("Drag the image into another app or Finder")
-            Text(model.statusMessage ?? "Drag the thumbnail to export")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status)
+                    .help(status)
+                if actions.retryExport != nil {
+                    Text("Edits kept while this window is open.")
+                        .help("Your image and edits are kept while this window is open. Retry uses your current edits.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            if actions.retryExport != nil {
+                Button("Retry") { actions.retryExport?() }
+                    .buttonStyle(.bordered)
+                    .help("Retry the export using your current edits")
+            }
             Spacer()
             if model.rawURL != nil {
                 Button("Open Raw") { actions.openRaw() }

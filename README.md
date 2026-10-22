@@ -65,6 +65,7 @@ For a manual installation, save your work and quit Glint, then download the late
 - **Auto-redact**: on-device Vision OCR finds emails, phone numbers, credit cards (Luhn-checked), IP addresses, API keys and tokens, and redacts them. Redactions destroy the pixels on export.
 - **Presets**: save, apply and set a default look.
 - **Export**: PNG, JPEG, HEIC, TIFF; 1x/2x; clipboard; Save As; share sheet; drag out. Optional raw and output folders.
+- **Safe retry**: failed exports keep the image and annotations in the editor with a **Retry** action. If capture auto-redaction or rendering fails, choose **Retry** or **Discard Capture**. Recovery stays in memory while the editor or prompt is open; it never creates an unredacted backup or bypasses redaction.
 - **Automation**: `glint://capture-area`, `capture-window`, `capture-fullscreen`, `capture-text`, `open?file=…`, and a CLI:
 
 ```sh

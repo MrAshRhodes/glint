@@ -117,7 +117,7 @@ struct EditorModelTests {
         let annotation = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 100, height: 80)), style: AnnotationStyle(color: .black))
         model.updateLive([annotation])
         model.editingID = annotation.id
-        let rendered = model.renderFinal()
+        let rendered = try model.renderFinal()
         #expect(rendered.width == 100 && rendered.height == 80)
         let bitmap = try #require(GlintBitmap.makeContext(width: 100, height: 80))
         bitmap.draw(rendered, in: CGRect(x: 0, y: 0, width: 100, height: 80))
