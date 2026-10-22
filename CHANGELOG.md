@@ -12,6 +12,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 - This changelog, covering every release since 1.0.0. GitHub release notes now come from the release's section here.
 
+### Changed
+
+- Make editor sharing easier to discover with a labeled **Drag to share** preview tile and a visible **Copy ⌘C** shortcut. ([#27])
+
 ## [1.1.1] - 2026-10-22
 
 Security release. All users should update. Despite the patch version, this release includes behavior and public API changes; automation and GlintCore users should review the **Changed** and **Removed** sections.
@@ -111,3 +115,4 @@ First public release.
 [#20]: https://github.com/MrAshRhodes/glint/pull/20
 [#21]: https://github.com/MrAshRhodes/glint/pull/21
 [#22]: https://github.com/MrAshRhodes/glint/pull/22
+[#27]: https://github.com/MrAshRhodes/glint/issues/27

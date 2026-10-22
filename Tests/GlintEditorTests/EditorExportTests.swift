@@ -16,9 +16,66 @@ private let redaction = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 50, h
 
 private let notAppliedMessage = RenderError.annotationsNotApplied.localizedDescription
 
+private func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
+    NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: modifiers,
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: 0
+    )!
+}
+
 @Suite("Editor export actions")
 @MainActor
 struct EditorExportTests {
+    @Test func commandCShortcutCopiesImageAndIsConsumed() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = false
+        var services = EditorExportServices()
+        var copies = 0
+        services.copy = { _ in copies += 1; return true }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+
+        #expect(controller.handleShortcut(keyEvent("c", modifiers: .command)))
+        #expect(copies == 1)
+        #expect(controller.model.statusMessage == "Copied to clipboard")
+    }
+
+    @Test func modifiedCommandCShortcutIsNotConsumed() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        var copies = 0
+        services.copy = { _ in copies += 1; return true }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+
+        #expect(!controller.handleShortcut(keyEvent("c", modifiers: [.command, .option])))
+        #expect(copies == 0)
+    }
+
+    @Test func textFirstResponderBypassesImageCopyShortcut() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        var copies = 0
+        services.copy = { _ in copies += 1; return true }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        let window = try #require(controller.window as? EditorWindow)
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+        window.contentView?.addSubview(textView)
+        #expect(window.makeFirstResponder(textView))
+
+        _ = window.performKeyEquivalent(with: keyEvent("c", modifiers: .command))
+        #expect(copies == 0)
+    }
+
     @Test func failedCopyKeepsWindowOpenAndDoesNotCallExportCallback() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
@@ -433,7 +490,7 @@ struct EditorExportTests {
         #expect(payloads.count == 1 && exports == 0)
         let payload = try #require(payloads.first)
         try expectRedacted(try #require(GlintImageIO.load(url: payload)))
-        #expect(controller.model.statusMessage == "Drag the thumbnail again to export.")
+        #expect(controller.model.statusMessage == "Drag to share again.")
         #expect(controller.actions.retryExport == nil)
         retry()
         #expect(payloads.count == 1)
