@@ -8,6 +8,14 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- **Re-authorize Screen Recording…** in Preferences → About clears Glint's stale Screen Recording entry and requests access again; allow Glint in System Settings, then relaunch Glint. If the reset fails, Glint explains the manual recovery steps. If Glint has seen Screen Recording granted and it later goes missing, Glint opens its setup window at launch; otherwise it opens when a capture fails for lack of access. ([#39])
+
+### Fixed
+
+- Updates no longer reset Screen Recording permission. Releases were ad-hoc signed, and macOS tied the permission to each build's signature; releases are now signed with a persistent certificate, so macOS keeps the grant. They are still not notarized by Apple. **Action needed once:** when updating from 1.2.0 or earlier, grant Screen Recording one more time with **Re-authorize Screen Recording…**; later updates keep it. ([#39])
+
 ## [1.2.0] - 2026-10-22
 
 ### Added
@@ -134,3 +142,4 @@ First public release.
 [#33]: https://github.com/MrAshRhodes/glint/pull/33
 [#34]: https://github.com/MrAshRhodes/glint/pull/34
 [#37]: https://github.com/MrAshRhodes/glint/pull/37
+[#39]: https://github.com/MrAshRhodes/glint/issues/39

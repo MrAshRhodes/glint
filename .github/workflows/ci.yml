@@ -41,8 +41,40 @@ jobs:
           node --test .github/scripts/changelog.test.cjs
           node .github/scripts/changelog.cjs check
 
-      # Exercises the same path as a release: build, bundle, ad-hoc sign and verify Glint.app.
+      # Releases are signed with one persistent certificate so that macOS keeps Screen Recording
+      # permission across updates (#39). The next steps prove it with a throwaway certificate:
+      # Glint.app is built and signed the way a release is, then rebuilt with another build
+      # number; the rebuild must have a new cdhash yet satisfy the first build's designated
+      # requirement (and ad-hoc copies of the same builds must not).
+      - name: Create a throwaway signing certificate
+        run: |
+          Scripts/make_signing_cert.sh --out "$RUNNER_TEMP/glint-signing-cert" \
+            --requirement-file "$RUNNER_TEMP/glint-signing-cert/designated-requirement.txt"
+
+      - name: Import the throwaway signing identity
+        id: signing
+        run: |
+          cert_dir="$RUNNER_TEMP/glint-signing-cert"
+          GLINT_SIGNING_P12_PASSWORD="$(cat "$cert_dir/glint-signing.p12.password")" \
+            Scripts/import_signing_identity.sh --p12 "$cert_dir/glint-signing.p12" > /dev/null
+
       - name: Assemble Glint.app
         env:
           SWIFTW_BUILD_SYSTEM: native
+          GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          GLINT_REQUIRE_STABLE_SIGNATURE: '1'
+          GLINT_REQUIREMENT_FILE: ${{ runner.temp }}/glint-signing-cert/designated-requirement.txt
         run: make app
+
+      - name: Check that updates keep Screen Recording permission
+        env:
+          SWIFTW_BUILD_SYSTEM: native
+          GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          GLINT_REQUIREMENT_FILE: ${{ runner.temp }}/glint-signing-cert/designated-requirement.txt
+        run: Scripts/check_signing_continuity.sh --previous dist/Glint.app
+
+      - name: Remove the throwaway signing keychain
+        if: always() && steps.signing.outputs.keychain != ''
+        env:
+          KEYCHAIN: ${{ steps.signing.outputs.keychain }}
+        run: Scripts/import_signing_identity.sh --cleanup "$KEYCHAIN"

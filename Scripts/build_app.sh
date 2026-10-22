@@ -15,14 +15,23 @@
 #   --configuration C     release (default) or debug.
 #
 # Environment:
-#   GLINT_SIGN_IDENTITY   codesign identity. Default "-" (ad-hoc). A real identity also
-#                         turns on the hardened runtime and a secure timestamp.
+#   GLINT_SIGN_IDENTITY   codesign identity (name or SHA-1). Default "-" (ad-hoc). A real
+#                         identity also turns on the hardened runtime and a secure timestamp.
+#   GLINT_REQUIRE_STABLE_SIGNATURE
+#                         1 = fail unless the app is signed with a certificate (not ad-hoc) and,
+#                         when packaging/signing/designated-requirement.txt (or
+#                         $GLINT_REQUIREMENT_FILE) exists, satisfies that requirement
+#                         (Scripts/verify_signature.sh --require-stable). Releases set this.
 #   SWIFTW_BUILD_SYSTEM   SwiftPM build system. Default "native": per-architecture --triple
 #                         builds merged with lipo behave the same on every toolchain there
 #                         (see Scripts/swiftw.sh).
 #
-# The bundle is signed ad-hoc by default (there is no Developer ID certificate), which means
-# macOS keys privacy permissions such as Screen Recording to this exact build.
+# macOS keys privacy permissions such as Screen Recording to the app's designated requirement.
+# Releases are signed with the persistent "Glint Release Signing" certificate
+# (Scripts/make_signing_cert.sh, packaging/signing/README.md), whose requirement every later
+# release satisfies, so permissions survive updates. Local builds are signed ad-hoc unless
+# GLINT_SIGN_IDENTITY is set; an ad-hoc requirement pins one build's cdhash, so permissions have
+# to be granted again after every rebuild.
 
 set -euo pipefail
 
@@ -49,7 +58,8 @@ usage() {
 Usage: Scripts/build_app.sh [--universal] [--require-universal] [--version X.Y.Z]
                             [--build-number N] [--configuration release|debug]
 
-Builds the Glint SwiftPM product and assembles dist/Glint.app (ad-hoc signed).
+Builds the Glint SwiftPM product and assembles dist/Glint.app, signed ad-hoc unless
+GLINT_SIGN_IDENTITY names a certificate (releases use "Glint Release Signing").
 
   --universal           arm64 + x86_64 slices merged with lipo (falls back to arm64 only
                         if the x86_64 build fails)
@@ -58,7 +68,8 @@ Builds the Glint SwiftPM product and assembles dist/Glint.app (ad-hoc signed).
   --build-number N      CFBundleVersion (default: $GITHUB_RUN_NUMBER, git commit count, or 1)
   --configuration C     release (default) or debug
 
-Environment: GLINT_SIGN_IDENTITY (default "-", ad-hoc), SWIFTW_BUILD_SYSTEM (default native).
+Environment: GLINT_SIGN_IDENTITY (default "-", ad-hoc), GLINT_REQUIRE_STABLE_SIGNATURE=1
+(fail on an ad-hoc signature), SWIFTW_BUILD_SYSTEM (default native).
 EOF
 }
 
@@ -127,6 +138,15 @@ build_re='^[0-9]+(\.[0-9]+){0,2}$'
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST_SRC")" == "$PRODUCT" ]] \
   || die "CFBundleExecutable in Resources/Info.plist must be $PRODUCT"
 MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PLIST_SRC")"
+
+SIGN_IDENTITY="${GLINT_SIGN_IDENTITY:--}"
+REQUIRE_STABLE=0
+case "${GLINT_REQUIRE_STABLE_SIGNATURE:-}" in
+  1 | true | yes) REQUIRE_STABLE=1 ;;
+esac
+if ((REQUIRE_STABLE)) && [[ "$SIGN_IDENTITY" == "-" ]]; then
+  die "GLINT_REQUIRE_STABLE_SIGNATURE is set but GLINT_SIGN_IDENTITY is empty or ad-hoc: an ad-hoc release makes every user re-grant Screen Recording after updating (#39). Import the release identity (Scripts/import_signing_identity.sh) and pass its SHA-1."
+fi
 
 export SWIFTW_BUILD_SYSTEM="${SWIFTW_BUILD_SYSTEM:-native}"
 
@@ -211,11 +231,10 @@ for bundle in "$RESOURCE_DIR"/*.bundle; do
 done
 log "Copied $bundles SwiftPM resource bundle(s)"
 
-SIGN_IDENTITY="${GLINT_SIGN_IDENTITY:--}"
 sign_flags=(--force --deep --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS")
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   sign_flags+=(--timestamp=none)
-  log "Signing ad-hoc"
+  log "Signing ad-hoc (privacy permissions such as Screen Recording must be re-granted after every rebuild)"
 else
   sign_flags+=(--options runtime --timestamp)
   log "Signing with '$SIGN_IDENTITY' (hardened runtime)"
@@ -223,6 +242,10 @@ fi
 xattr -cr "$APP"
 codesign "${sign_flags[@]}" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+log "Designated requirement: $(codesign --display --requirements - "$APP" 2>&1 | sed -n 's/^[# ]*designated => //p')"
+if ((REQUIRE_STABLE)); then
+  "$ROOT/Scripts/verify_signature.sh" "$APP" --require-stable
+fi
 
 archs="$(lipo -archs "$APP/Contents/MacOS/$PRODUCT")"
 if ((UNIVERSAL)) && [[ -z "$X86_DIR" ]]; then

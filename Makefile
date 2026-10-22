@@ -4,6 +4,11 @@
 #   VERSION      app/release version         (default: contents of the VERSION file)
 #   CONFIG       release | debug for app/universal/run/install   (default: release)
 #   INSTALL_DIR  where `make install` copies Glint.app           (default: /Applications)
+#   SIGNING_ARGS extra options for `make signing-cert`, e.g. SIGNING_ARGS=--set-github-secrets
+#
+# Local builds are signed ad-hoc, so macOS asks for Screen Recording again after every rebuild.
+# Set GLINT_SIGN_IDENTITY to a code-signing identity to keep the grant; releases are signed with
+# the persistent "Glint Release Signing" certificate (see packaging/signing/README.md).
 #
 # SwiftPM is run through Scripts/swiftw.sh, which adds what a Command Line Tools-only
 # machine needs. The SWIFTW_* environment variables it reads are documented there.
@@ -20,7 +25,7 @@ APP := dist/Glint.app
 ZIP := dist/Glint-$(VERSION).zip
 VERSION_ARG := $(if $(VERSION),--version $(VERSION),)
 
-.PHONY: help build release test app universal run zip dmg install icon tap prepare-release clean
+.PHONY: help build release test app universal run zip dmg install icon tap prepare-release signing-cert clean
 
 help: ## Show this help
 	@echo "Usage: make <target> [VERSION=x.y.z] [CONFIG=release|debug] [INSTALL_DIR=/Applications]"
@@ -36,7 +41,7 @@ release: ## Optimized build of every target
 test: ## Run the test suite (Swift Testing)
 	$(SWIFTW) test
 
-app: ## Assemble dist/Glint.app for this Mac and sign it ad-hoc
+app: ## Assemble dist/Glint.app for this Mac (signed ad-hoc unless GLINT_SIGN_IDENTITY is set)
 	Scripts/build_app.sh $(VERSION_ARG) --configuration $(CONFIG)
 
 universal: ## Assemble a universal (arm64 + x86_64) dist/Glint.app
@@ -71,6 +76,9 @@ prepare-release: ## Set VERSION and move Unreleased changelog entries under it (
 	@if [[ "$(origin VERSION)" == file ]]; then echo "error: pass the new version, e.g. make prepare-release VERSION=1.2.3" >&2; exit 1; fi
 	node .github/scripts/changelog.cjs release "$(VERSION)"
 	printf '%s\n' "$(VERSION)" > VERSION
+
+signing-cert: ## Create the release signing certificate, once (Scripts/make_signing_cert.sh)
+	Scripts/make_signing_cert.sh $(SIGNING_ARGS)
 
 clean: ## Remove .build and dist
 	rm -rf .build dist

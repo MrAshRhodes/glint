@@ -81,8 +81,12 @@ public final class ScreenCapturer {
     // MARK: Internals
 
     private func requirePermission() async throws {
-        guard ScreenRecordingPermission.isGranted else {
-            ScreenRecordingPermission.ensure()
+        let granted = ScreenRecordingPermission.refreshGrant()
+        guard granted else {
+            // A stale entry is recovered from the app's permissions window, not by reopening Settings.
+            if !ScreenRecordingPermission.needsReauthorization(granted: granted) {
+                ScreenRecordingPermission.ensure()
+            }
             throw CaptureError.permissionDenied
         }
     }

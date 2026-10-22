@@ -36,8 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ScreenCapturer.shared.options.hideCursor = cursor
             }
         }
-        if !UserDefaults.standard.bool(forKey: ShellKey.onboarded) || !ScreenRecordingPermission.isGranted
-            && UserDefaults.standard.object(forKey: ShellKey.onboarded) == nil {
+        if PermissionsWindow.shouldPresentAtLaunch(granted: ScreenRecordingPermission.refreshGrant()) {
             PermissionsWindow.shared.show()
         }
     }

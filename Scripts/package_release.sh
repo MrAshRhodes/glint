@@ -19,6 +19,11 @@
 #   glint.rb                                       (Homebrew cask for the zip, when it is built)
 #
 # Every requested format has to succeed, otherwise the script exits non-zero.
+#
+# Environment: GLINT_SIGN_IDENTITY and GLINT_REQUIRE_STABLE_SIGNATURE (see build_app.sh). With
+# GLINT_REQUIRE_STABLE_SIGNATURE=1 the app and the app unpacked from the zip must carry the stable
+# "Glint Release Signing" signature (Scripts/verify_signature.sh --require-stable), so macOS keeps
+# Screen Recording permission across the update. Releases set both.
 
 set -euo pipefail
 
@@ -48,6 +53,8 @@ Builds a universal dist/Glint.app and packages it:
   --build-number N      CFBundleVersion (default: $GITHUB_RUN_NUMBER, git commit count, or 1)
   --require-universal   fail instead of shipping an arm64-only app
   --skip-build          package the existing dist/Glint.app
+
+Environment: GLINT_SIGN_IDENTITY, GLINT_REQUIRE_STABLE_SIGNATURE=1 (fail on an ad-hoc signature).
 EOF
 }
 
@@ -105,6 +112,21 @@ for format in "${format_list[@]}"; do
 done
 ((WANT_ZIP || WANT_DMG)) || die "no formats requested"
 
+REQUIRE_STABLE=0
+case "${GLINT_REQUIRE_STABLE_SIGNATURE:-}" in
+  1 | true | yes) REQUIRE_STABLE=1 ;;
+esac
+if ((REQUIRE_STABLE)) && [[ "${GLINT_SIGN_IDENTITY:--}" == "-" ]]; then
+  die "GLINT_REQUIRE_STABLE_SIGNATURE is set but GLINT_SIGN_IDENTITY is empty or ad-hoc: an ad-hoc release makes every user re-grant Screen Recording after updating (#39)"
+fi
+
+# verify_stable APP: the release signature check (see Scripts/verify_signature.sh).
+verify_stable() {
+  if ((REQUIRE_STABLE)); then
+    "$ROOT/Scripts/verify_signature.sh" "$1" --require-stable
+  fi
+}
+
 ZIP="$DIST/Glint-$VERSION.zip"
 DMG="$DIST/Glint-$VERSION.dmg"
 STAGE="$DIST/dmg-stage"
@@ -127,6 +149,7 @@ built_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 [[ "$built_version" == "$VERSION" ]] \
   || die "$APP is version $built_version, expected $VERSION (rebuild without --skip-build)"
 codesign --verify --deep --strict "$APP" || die "$APP has an invalid code signature"
+verify_stable "$APP"
 
 archs="$(lipo -archs "$APP/Contents/MacOS/Glint")"
 if ((REQUIRE_UNIVERSAL)) && [[ " $archs " != *" x86_64 "* || " $archs " != *" arm64 "* ]]; then
@@ -156,6 +179,7 @@ if ((WANT_ZIP)); then
   unzip -q "$ZIP" -d "$VERIFY_DIR"
   codesign --verify --deep --strict "$VERIFY_DIR/Glint.app" \
     || die "the app extracted from ${ZIP#"$ROOT"/} fails signature verification"
+  verify_stable "$VERIFY_DIR/Glint.app"
   rm -rf "$VERIFY_DIR"
 fi
 
