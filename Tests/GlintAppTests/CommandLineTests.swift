@@ -9,6 +9,12 @@ struct CommandLineTests {
         #expect(CommandLine_.run(["Glint", argument]) == 0)
     }
 
+    @Test func helpDescribesAggregateOnlyDiagnostics() {
+        #expect(CommandLine_.usage.contains(
+            "--diagnose                      Print capture permission, counts and status only, then exit"
+        ))
+    }
+
     @Test func noOptionsStartsGUI() {
         #expect(CommandLine_.run(["Glint"]) == nil)
     }
