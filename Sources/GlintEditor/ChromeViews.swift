@@ -75,13 +75,11 @@ struct BottomBarView: View {
     @ObservedObject var model: EditorModel
     @ObservedObject var actions: EditorActions
 
-    private var status: String { model.statusMessage ?? "Drag the thumbnail to export" }
+    private var status: String { model.statusMessage ?? "Ready to export" }
 
     var body: some View {
         HStack(spacing: 10) {
-            DragThumbnail(model: model, actions: actions)
-                .frame(width: 64, height: 36)
-                .help("Drag the image into another app or Finder")
+            DragShareTile(model: model, actions: actions)
             VStack(alignment: .leading, spacing: 2) {
                 Text(status)
                     .help(status)
@@ -90,13 +88,16 @@ struct BottomBarView: View {
                         .help("Your image and edits are kept while this window is open. Retry uses your current edits.")
                 }
             }
-            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(-1)
             if actions.retryExport != nil {
                 Button("Retry") { actions.retryExport?() }
                     .buttonStyle(.bordered)
                     .help("Retry the export using your current edits")
             }
-            Spacer()
             if model.rawURL != nil {
                 Button("Open Raw") { actions.openRaw() }
                     .help("Open the original, unstyled capture")
@@ -104,16 +105,54 @@ struct BottomBarView: View {
             Button { actions.share() } label: { Label("Share", systemImage: "square.and.arrow.up") }
             Button("Save As…") { actions.saveAs() }
             Button("Save") { actions.save() }.help("Save (⌘S)")
-            Button("Copy") { actions.copy() }
+            Button { actions.copy() } label: {
+                HStack(spacing: 5) {
+                    Text("Copy")
+                    Text("⌘C")
+                        .font(.caption)
+                        .opacity(0.8)
+                }
+            }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .help("Copy image (⌘C)")
+                .accessibilityLabel("Copy image")
+                .accessibilityHint("Keyboard shortcut Command-C")
             Button { actions.close() } label: { Image(systemName: "xmark") }
                 .help("Close (⌘W)").accessibilityLabel("Close")
         }
         .padding(.horizontal, 12)
         .frame(height: 50)
         .background(.bar)
+    }
+}
+
+struct DragShareTile: View {
+    let model: EditorModel
+    let actions: EditorActions
+
+    var body: some View {
+        ZStack {
+            DragThumbnail(model: model, actions: actions)
+            HStack(spacing: 8) {
+                Color.clear.frame(width: 52)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Drag to share")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("To an app or Finder")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "hand.draw")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 7)
+            .allowsHitTesting(false)
+        }
+        .frame(width: 176, height: 38)
+        .help("Drag the image into another app or Finder")
     }
 }
 
@@ -137,9 +176,17 @@ final class DragSourceView: NSView, NSDraggingSource {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let r = bounds.insetBy(dx: 1, dy: 1)
+        let tile = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let tilePath = NSBezierPath(roundedRect: tile, xRadius: 7, yRadius: 7)
+        NSColor.controlBackgroundColor.setFill()
+        tilePath.fill()
+        NSColor.separatorColor.setStroke()
+        tilePath.lineWidth = 1
+        tilePath.stroke()
+
+        let r = NSRect(x: 5, y: 5, width: 50, height: max(bounds.height - 10, 1))
         NSColor.quaternaryLabelColor.setFill()
-        NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
+        NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
         guard let img = previewImage else { return }
         let ns = NSImage(cgImage: img, size: CGSize(width: img.width, height: img.height))
         let aspect = CGFloat(img.width) / CGFloat(max(img.height, 1))
@@ -152,6 +199,10 @@ final class DragSourceView: NSView, NSDraggingSource {
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let url = fileProvider() else { return }
         let item = NSDraggingItem(pasteboardWriter: url as NSURL)
@@ -162,5 +213,5 @@ final class DragSourceView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
     override func accessibilityRole() -> NSAccessibility.Role? { .image }
-    override func accessibilityLabel() -> String? { "Rendered image. Drag to export." }
+    override func accessibilityLabel() -> String? { "Drag to share. To an app or Finder." }
 }
