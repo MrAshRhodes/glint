@@ -16,6 +16,9 @@ final class CapturePipeline {
             try await TextRecognizer.recognize(in: $0, options: $1)
         }
         var bake: (CGImage, [Annotation]) -> CGImage? = { AnnotationRenderer.bake(source: $0, annotations: $1) }
+        var render: (CGImage, RenderSettings, CGFloat, CGImage?) throws -> CGImage = {
+            try Compositor.render(image: $0, settings: $1, backingScale: $2, wallpaper: $3)
+        }
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
         var sound: @MainActor () -> Void = { Notifier.playSound() }
         var addRecent: (URL) -> Void = { RecentFiles.add($0) }
@@ -178,7 +181,13 @@ final class CapturePipeline {
             case .failure(let error): wallpaperProblem = error.localizedDescription
             }
         }
-        let rendered = Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
+        let rendered: CGImage
+        do {
+            rendered = try services.render(image, settings, scale, wallpaper)
+        } catch {
+            services.notify("Screenshot not exported", error.localizedDescription, nil)
+            return
+        }
         var saved: URL?
         var failures: [String] = []
         if prefs.saveOutput && !clipboardOnly {

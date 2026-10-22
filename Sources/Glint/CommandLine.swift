@@ -85,7 +85,13 @@ enum CommandLine_ {
                 FileHandle.standardError.write(Data("warning: \(error.localizedDescription)\n".utf8))
             }
         }
-        let result = Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
+        let result: CGImage
+        do {
+            result = try Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
+        } catch {
+            FileHandle.standardError.write(Data("cannot render image: \(error.localizedDescription)\n".utf8))
+            return 1
+        }
         let format: ExportFormat
         switch output.pathExtension.lowercased() {
         case "jpg", "jpeg": format = .jpeg(quality: 0.9)

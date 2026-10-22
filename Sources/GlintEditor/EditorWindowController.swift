@@ -121,7 +121,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     @discardableResult
     public func copyToClipboard() -> Bool {
         canvas.endEditing()
-        let image = model.renderFinal()
+        guard let image = renderForExport(failure: "Copy failed") else { return false }
         if exportServices.copy(image) {
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
@@ -142,6 +142,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     // MARK: Actions
 
+    /// Renders the final output, or reports the failure and returns nil so nothing unredacted is exported.
+    private func renderForExport(failure: String) -> CGImage? {
+        do {
+            return try model.renderFinal()
+        } catch {
+            model.statusMessage = "\(failure): \(error.localizedDescription)"
+            exportServices.beep()
+            return nil
+        }
+    }
+
     private func currentFormat() -> ExportFormat {
         let p = model.preferences
         return p.compressToJPEG ? .jpeg(quality: p.jpegQuality) : p.exportFormat
@@ -149,7 +160,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     private func write(to url: URL, format: ExportFormat) {
         canvas.endEditing()
-        let image = model.renderFinal()
+        guard let image = renderForExport(failure: "Save failed") else { return }
         do {
             _ = try exportServices.write(image, url, format, model.preferences.exportScale, model.backingScale)
             model.statusMessage = "Saved \(url.lastPathComponent)"
@@ -188,7 +199,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private func share() {
         guard let content = window?.contentView else { return }
         canvas.endEditing()
-        let image = model.renderFinal()
+        guard let image = renderForExport(failure: "Share failed") else { return }
         let ns = NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
         let picker = NSSharingServicePicker(items: [ns])
         let anchor = CGRect(x: content.bounds.maxX - 200, y: 0, width: 80, height: 50)
@@ -204,9 +215,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         canvas.endEditing()
         let dir = exportServices.dragDirectory
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
+        guard let image = renderForExport(failure: "Drag export failed") else { return nil }
         let url = FileNaming.uniqueURL(directory: dir, baseName: name, ext: "png")
         do {
-            _ = try exportServices.write(model.renderFinal(), url, .plainPNG, model.preferences.exportScale, model.backingScale)
+            _ = try exportServices.write(image, url, .plainPNG, model.preferences.exportScale, model.backingScale)
             dragFiles.insert(url)
             return url
         } catch {

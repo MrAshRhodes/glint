@@ -24,6 +24,7 @@ private final class CaptureFixture {
     var copySucceeds = true
     var failRecognition = false
     var failBake = false
+    var failRender = false
     var lines: [RecognizedLine] = []
 
     init() throws {
@@ -66,6 +67,10 @@ private final class CaptureFixture {
         }
         services.bake = { [self] image, annotations in
             failBake ? nil : AnnotationRenderer.bake(source: image, annotations: annotations)
+        }
+        services.render = { [self] image, settings, backingScale, wallpaper in
+            if failRender { throw RenderError.annotationsNotApplied }
+            return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
         services.addRecent = { [self] in recent.append($0) }
@@ -238,6 +243,25 @@ struct CapturePipelineTests {
         #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
         #expect(f.notifications.map(\.title) == ["Auto-redaction failed"])
         #expect(f.notifications.first?.body.contains("redactions could not be applied") == true)
+    }
+
+    @Test func failedRenderNeverSavesOrCopies() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.copyToClipboardAfterCapture = true
+        f.failRender = true
+        await f.run()
+        #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty)
+        #expect(f.notifications.map(\.title) == ["Screenshot not exported"])
+        #expect(f.notifications.first?.body == RenderError.annotationsNotApplied.localizedDescription)
+        #expect(f.notifications.first?.url == nil)
+    }
+
+    @Test func failedRenderInClipboardOnlyModeNeverCopies() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.failRender = true
+        await f.run(clipboardOnly: true)
+        #expect(f.writes.isEmpty && f.copies == 0 && f.copiedImage == nil)
+        #expect(f.notifications.map(\.title) == ["Screenshot not exported"])
     }
 
     @Test func successfulRedactionIsBakedIntoExport() async throws {
