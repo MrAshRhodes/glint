@@ -27,6 +27,7 @@ make run        # assemble dist/Glint.app and open it
 | `make install` | Builds and copies `Glint.app` to `INSTALL_DIR` (default `/Applications`; quit a running Glint first). |
 | `make zip` / `make dmg` | Release packaging into `dist/`: a universal build, the archive and its `.sha256`. |
 | `make tap` | Renders the Homebrew cask to `dist/glint.rb`. |
+| `make prepare-release VERSION=X.Y.Z` | Writes `VERSION` and moves the changelog's Unreleased entries into a dated `X.Y.Z` section, updating the comparison links. |
 | `make icon` | Redraws `Resources/AppIcon.icns` and `docs/assets/icon-1024.png`. |
 | `make clean` | Removes `.build` and `dist`. |
 
@@ -115,9 +116,9 @@ Run `node --test .github/scripts/site.test.cjs` (Node.js 20+) for asset/link int
 
 ### Cutting a release
 
-1. Update `VERSION` and the [changelog](CHANGELOG.md). Move the Unreleased entries into a new `## [X.Y.Z] - YYYY-MM-DD` section using the release date, keep an Unreleased section for future changes, and update the version comparison links. Merge to `main` and wait for CI to pass.
-2. Push a tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
-3. `.github/workflows/release.yml` builds the universal app, creates the GitHub release with generated notes, and attaches the zip, the dmg and their checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases and do not touch the Homebrew tap.
+1. On a branch from `main`, run `make prepare-release VERSION=X.Y.Z`. It moves the Unreleased entries in the [changelog](CHANGELOG.md) into a new `## [X.Y.Z] - YYYY-MM-DD` section dated today, leaves an empty Unreleased section, updates the version comparison links and writes `VERSION`. It refuses an empty Unreleased section, an existing version or a version older than the latest release. Review the result (adjust the date if the release happens on another day), open the usual issue-linked pull request, merge it to `main` and wait for CI to pass. CI runs `node .github/scripts/changelog.cjs check`, which validates the sections, dates, ordering and links.
+2. Tag the merged commit and push the tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
+3. `.github/workflows/release.yml` first checks that `CHANGELOG.md` at the tag has a `## [1.2.3]` section and stops before building if it does not; to recover, delete the tag (`git push origin :refs/tags/v1.2.3 && git tag -d v1.2.3`), complete step 1 and tag again. It then builds the universal app, creates the GitHub release with that changelog section followed by `.github/release-notes-header.md` as its notes, and attaches the zip, the dmg and their checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases, use the Unreleased entries as notes when they have no section of their own, and do not touch the Homebrew tap. Preview the notes with `node .github/scripts/changelog.cjs notes 1.2.3`.
 4. Update the tap. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow does it. Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
 
 Published releases are immutable. The cask pins the sha256 of the release zip, and every build differs byte for byte, so replacing an asset would break `brew install` for everyone. The workflow therefore never overwrites an existing release: a re-run only retries the tap update, and `--from-release` always hashes the zip that is actually published. To rebuild a broken release, delete the release and its tag first, or cut a new version.
@@ -154,8 +155,8 @@ Every change to `main` needs an issue and a pull request, including documentatio
 1. Create or choose an issue in `MrAshRhodes/glint` that describes the change.
 2. Create a focused branch from `main`, for example `feat/123-short-description`.
 3. Open a pull request to `main` and put `Fixes #123` in its description, outside comments and code blocks. `Closes` and `Resolves` also work, as do same-repository issue URLs. A PR number, nonexistent issue or issue in another repository does not count. Existing closed issues are allowed for follow-up work.
-4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy (Node.js 20+).
-5. Record notable user-visible changes under Unreleased in the [changelog](CHANGELOG.md), grouped as Added, Changed, Deprecated, Removed, Fixed, or Security. Call out breaking changes and any action users need to take.
+4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy and `node --test .github/scripts/changelog.test.cjs` when changing the changelog tooling (Node.js 20+).
+5. Record notable user-visible changes under Unreleased in the [changelog](CHANGELOG.md), grouped as Added, Changed, Deprecated, Removed, Fixed, or Security. Call out breaking changes and any action users need to take. These entries become the release notes, and CI fails if the changelog is malformed, for example when a `[#123]` reference has no link definition at the bottom of the file.
 6. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
 
 The issue-link check runs again when a PR is opened, reopened, updated, marked ready or its description is edited. It reads the current description and verifies the referenced issues with a read-only token. Do not rename either required job without updating branch protection.

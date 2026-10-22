@@ -42,4 +42,4 @@ Glint does not install updates automatically. Save your work and quit Glint firs
 
 **Manual download:** download the ZIP or DMG and its matching `.sha256` file from this release. Follow the verification steps in **Install** above before extracting or opening the download and replacing Glint.app in Applications, then reopen it. Preferences, presets and saved images are stored separately. macOS may ask for Screen Recording permission again because the app is ad-hoc signed.
 
-[Product site](https://mrashrhodes.github.io/glint/) · [User and update guide](https://mrashrhodes.github.io/glint/guide.html#updates)
+[Changelog](https://github.com/MrAshRhodes/glint/blob/v@VERSION@/CHANGELOG.md) · [Product site](https://mrashrhodes.github.io/glint/) · [User and update guide](https://mrashrhodes.github.io/glint/guide.html#updates)

@@ -20,12 +20,12 @@ APP := dist/Glint.app
 ZIP := dist/Glint-$(VERSION).zip
 VERSION_ARG := $(if $(VERSION),--version $(VERSION),)
 
-.PHONY: help build release test app universal run zip dmg install icon tap clean
+.PHONY: help build release test app universal run zip dmg install icon tap prepare-release clean
 
 help: ## Show this help
 	@echo "Usage: make <target> [VERSION=x.y.z] [CONFIG=release|debug] [INSTALL_DIR=/Applications]"
 	@echo
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Debug build of every target
 	$(SWIFTW) build
@@ -66,6 +66,11 @@ $(ZIP):
 
 tap: $(ZIP) ## Render the Homebrew cask to dist/glint.rb (publish it with Scripts/update_tap.sh)
 	Scripts/render_cask.sh $(VERSION_ARG) --zip $(ZIP) --output dist/glint.rb
+
+prepare-release: ## Set VERSION and move Unreleased changelog entries under it (VERSION=x.y.z)
+	@if [[ "$(origin VERSION)" == file ]]; then echo "error: pass the new version, e.g. make prepare-release VERSION=1.2.3" >&2; exit 1; fi
+	node .github/scripts/changelog.cjs release "$(VERSION)"
+	printf '%s\n' "$(VERSION)" > VERSION
 
 clean: ## Remove .build and dist
 	rm -rf .build dist

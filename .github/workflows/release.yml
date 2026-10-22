@@ -1,8 +1,9 @@
 name: Release
 
-# Pushing a tag such as v1.2.3 builds a universal Glint.app, publishes the GitHub release and,
-# when the TAP_GITHUB_TOKEN secret exists, updates the Homebrew cask. A published release is never
-# rebuilt or overwritten, because the cask pins the sha256 of its zip.
+# Pushing a tag such as v1.2.3 builds a universal Glint.app, publishes the GitHub release with
+# that version's CHANGELOG.md section as its notes and, when the TAP_GITHUB_TOKEN secret exists,
+# updates the Homebrew cask. A published release is never rebuilt or overwritten, because the cask
+# pins the sha256 of its zip.
 on:
   push:
     tags: ['v*']
@@ -58,6 +59,21 @@ jobs:
             echo "exists=$exists"
           } >> "$GITHUB_OUTPUT"
 
+      # Fails in seconds, before the build, if CHANGELOG.md at the tag has no section for this
+      # version. Pre-releases may use the Unreleased entries instead.
+      - name: Check the changelog
+        if: steps.version.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then
+            flags+=(--allow-unreleased)
+          fi
+          node .github/scripts/changelog.cjs check
+          node .github/scripts/changelog.cjs notes "$VERSION" ${flags[@]+"${flags[@]}"} > "$RUNNER_TEMP/changelog.md"
+
       - name: Show the toolchain
         if: steps.version.outputs.exists != 'true'
         run: |
@@ -87,10 +103,19 @@ jobs:
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease)
           fi
+          # The changelog section comes first, then the install and update instructions.
+          {
+            if [[ -s "$RUNNER_TEMP/changelog.md" ]]; then
+              echo "## What's changed"
+              echo
+              cat "$RUNNER_TEMP/changelog.md"
+              echo
+            fi
+            sed "s/@VERSION@/$VERSION/g" .github/release-notes-header.md
+          } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --title "Glint $VERSION" \
-            --generate-notes \
-            --notes "$(sed "s/@VERSION@/$VERSION/g" .github/release-notes-header.md)" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             ${flags[@]+"${flags[@]}"}
 
       - name: Check for a Homebrew tap token
