@@ -129,6 +129,8 @@ glint://preferences
 glint://preset?name=Clean
 glint://open?file=%2FUsers%2Fyou%2FDesktop%2Fimage.png</code></pre>
           <p>Percent-encode spaces and other special characters in query values. From Terminal, use <code>open 'glint://capture-area'</code>. Capture actions still require screen permission.</p>
+          <p><strong>Every capture URL also requires confirmation in Glint</strong>, including Capture Text and Repeat Last Area. Nothing is captured, saved or copied until you choose <strong>Allow Capture</strong>. Cancel leaves the screen uncaptured. Approval applies to that request only; there is no “always allow” option, so capture URLs cannot run unattended. After approval, your normal capture settings apply, including raw history and clipboard output where enabled.</p>
+          <p>Capture URLs received while confirmation or capture is in progress are rejected rather than queued; send a new request afterward. Menu and hotkey captures do not gain an extra prompt. Opening images, choosing presets, opening preferences and command-line rendering are unchanged.</p>
           <h3>Command-line rendering</h3>
           <pre class="code"><code>/Applications/Glint.app/Contents/MacOS/Glint \
   --render input.png output.png \

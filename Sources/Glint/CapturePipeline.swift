@@ -38,13 +38,15 @@ final class CapturePipeline {
     private lazy var quickAccess = QuickAccessPanel()
     var onStatusTitle: ((String?) -> Void)?
 
+    var isBusy: Bool { busy }
+
     init(prefs: AppPreferences, presetStore: PresetStore, services: Services = Services()) {
         self.prefs = prefs
         self.presetStore = presetStore
         self.services = services
     }
 
-    enum Mode { case area, window, fullscreen, repeatLast, text, areaToClipboard, timer(Int) }
+    enum Mode: Equatable { case area, window, fullscreen, repeatLast, text, areaToClipboard, timer(Int) }
 
     // MARK: capture entry
 

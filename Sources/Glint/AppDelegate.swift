@@ -7,6 +7,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let prefs = AppPreferences.shared
     let presetStore = PresetStore()
     lazy var pipeline = CapturePipeline(prefs: prefs, presetStore: presetStore)
+    lazy var urlCaptureHandler: URLCaptureHandler = {
+        let pipeline = pipeline
+        return URLCaptureHandler(services: .init(
+            isCaptureBusy: { pipeline.isBusy },
+            startCapture: { pipeline.start($0) }
+        ))
+    }()
     private var statusItem: NSStatusItem?
     private let menu = NSMenu()
 
@@ -65,13 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func handle(url: URL) {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let action = (url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))).lowercased()
+        if urlCaptureHandler.handle(action: action) { return }
         func param(_ name: String) -> String? { comps?.queryItems?.first { $0.name == name }?.value }
         switch action {
-        case "capture-area": pipeline.start(.area)
-        case "capture-window": pipeline.start(.window)
-        case "capture-fullscreen": pipeline.start(.fullscreen)
-        case "capture-text": pipeline.start(.text)
-        case "repeat-last": pipeline.start(.repeatLast)
         case "open":
             if let file = param("file") { pipeline.openFile(URL(fileURLWithPath: (file as NSString).expandingTildeInPath)) }
         case "preset":
