@@ -111,7 +111,9 @@ Annotation case names and their serialized representations are unchanged.
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
 `defaultPresetName`, `hotkeys`, `hideDockIcon`, `launchAtLogin` (value only; app registers the login item),
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
-`fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `annotationColor`, `redactColor`;
+`fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether the editor
+starts from `lastRenderSettings` instead of the default preset; until set, on unless `defaultPresetName` is set),
+`annotationColor`, `redactColor`;
 `AppPreferences.Key`, `resetToDefaults()`.
 The `AppPreferences.redactStyle` property has been removed. The legacy `glint.redactStyle` key is ignored
 by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.

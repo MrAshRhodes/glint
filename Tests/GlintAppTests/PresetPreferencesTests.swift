@@ -135,6 +135,22 @@ struct PresetPreferencesTests {
         #expect(PresetStore(url: fixture.store.url).preset(named: saved.name) == saved)
     }
 
+    @Test func rememberSettingsCheckboxPersistsAndItsTooltipSuggestsAPreset() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let model = PrefsModel(prefs: fixture.prefs, store: fixture.store)
+        let remember = model.bind(\.rememberSettings)
+        #expect(remember.wrappedValue)
+
+        remember.wrappedValue = false
+        #expect(!AppPreferences(defaults: UserDefaults(suiteName: fixture.suite)!).rememberSettings)
+        remember.wrappedValue = true
+        #expect(AppPreferences(defaults: UserDefaults(suiteName: fixture.suite)!).rememberSettings)
+
+        #expect(PrefsModel.rememberSettingsHelp.contains("Remember your last-used settings"))
+        #expect(PrefsModel.rememberSettingsHelp.contains("save these settings as a preset"))
+    }
+
     private struct Fixture {
         let suite = "PresetPreferencesTests-\(UUID().uuidString)"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
