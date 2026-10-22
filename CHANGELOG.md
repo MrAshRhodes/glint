@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-22
+
 ### Added
 
 - A style-label menu for choosing Solid, Blur, or Pixelate, an optional two-colour checkerboard for Solid, and an optional solid-colour highlight for the Pixelate mosaic. ([#45])
@@ -140,7 +142,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/MrAshRhodes/glint/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/MrAshRhodes/glint/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/MrAshRhodes/glint/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/MrAshRhodes/glint/compare/v1.1.0...v1.1.1
