@@ -171,19 +171,31 @@ public struct SensitiveInfoDetector: Sendable {
 
 // MARK: - Auto redact
 
-public enum RedactionStyle: String, Codable, CaseIterable, Sendable { case solid, blur, pixelate }
+/// Modes for manual editing. Only solid fill is redaction; the other modes are obfuscation.
+public enum RedactionStyle: String, Codable, CaseIterable, Sendable {
+    case solid, blur, pixelate
+
+    public var displayName: String {
+        switch self {
+        case .solid: return "Solid redaction"
+        case .blur: return "Blur (obfuscation)"
+        case .pixelate: return "Pixelate (obfuscation)"
+        }
+    }
+
+    public var isObfuscation: Bool { self != .solid }
+}
 
 public struct AutoRedactOptions: Sendable {
     public var detector: SensitiveInfoOptions
-    public var style: RedactionStyle
     public var color: RGBAColor
     /// Extra margin around each box, pixels.
     public var padding: Double
     public var recognizer: TextRecognizer.Options
 
-    public init(detector: SensitiveInfoOptions = .default, style: RedactionStyle = .solid,
+    public init(detector: SensitiveInfoOptions = .default,
                 color: RGBAColor = .black, padding: Double = 3, recognizer: TextRecognizer.Options = .init()) {
-        self.detector = detector; self.style = style; self.color = color; self.padding = padding
+        self.detector = detector; self.color = color; self.padding = padding
         self.recognizer = recognizer
     }
 }
@@ -195,6 +207,7 @@ public enum AutoRedact {
         return annotations(for: lines, options: options, imageSize: image.pixelSize)
     }
 
+    /// Creates fully opaque solid redactions, never source-derived obfuscation.
     public static func annotations(for lines: [RecognizedLine], options: AutoRedactOptions = AutoRedactOptions(),
                                    imageSize: CGSize? = nil) -> [Annotation] {
         let findings = SensitiveInfoDetector(options: options.detector).findings(in: lines)
@@ -203,13 +216,7 @@ public enum AutoRedact {
             var rect = f.rect.insetBy(dx: -options.padding, dy: -options.padding)
             if let bounds { rect = rect.intersection(bounds) }
             guard !rect.isNull, rect.width > 0, rect.height > 0 else { return nil }
-            let kind: AnnotationKind
-            switch options.style {
-            case .solid: kind = .redact(rect)
-            case .blur: kind = .blur(rect)
-            case .pixelate: kind = .pixelate(rect)
-            }
-            return Annotation(z: index, kind: kind, style: AnnotationStyle(color: options.color, intensity: 14))
+            return Annotation(z: index, kind: .redact(rect), style: AnnotationStyle(color: options.color))
         }
     }
 }

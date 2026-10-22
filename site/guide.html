@@ -82,12 +82,13 @@
         <section id="annotations">
           <h2>Annotations</h2>
           <p>Use arrows and lines to point things out, rectangles and ellipses to frame an area, and pen or highlighter to draw freely. Add text and numbered counters for instructions.</p>
-          <p>Select an annotation to change its styling or layer order. Undo and redo let you revise without starting over. Use the redaction tool, rather than a translucent highlighter, for private information.</p>
+          <p>Select an annotation to change its styling or layer order. Undo and redo let you revise without starting over. Use <strong>Solid redaction</strong>, rather than blur, pixelate or a translucent highlighter, for private information.</p>
         </section>
         <section id="redaction">
           <h2>Redaction &amp; privacy</h2>
-          <p>Manual redaction can blur, pixelate or cover a region with solid color. Exporting renders those changes into the output image.</p>
-          <p>Optional <strong>Auto-redact</strong> uses on-device text recognition to find patterns such as email addresses, phone numbers, credit card numbers, IP addresses and common API tokens. It is off by default.</p>
+          <p>The <strong>Redact / Obfuscate</strong> tool starts in <strong>Solid redaction</strong> mode for every image. Drag to cover a region with fully opaque solid color; exporting replaces the covered pixels in the output image. Use the manual mode picker or press <kbd>3</kbd> again to cycle modes.</p>
+          <p><strong>Blur and pixelate are obfuscation, not secure redaction.</strong> Information may be recoverable from these effects, so they are unsafe for secrets. The editor labels these modes as obfuscation and warns when you use or select them. Manual mode is not remembered for the next image.</p>
+          <p>Optional <strong>Auto-redact</strong> uses on-device text recognition to find patterns such as email addresses, phone numbers, credit card numbers, IP addresses and common API tokens. It is off by default and always uses solid fill, regardless of the manual mode. You can choose detection categories, custom words and the solid color, but not blur or pixelate.</p>
           <div class="callout"><p><strong>Review before you share.</strong> Detection is not a guarantee and can miss information. Use solid redaction for sensitive details and inspect the exported image. If raw history is enabled, the untouched capture may still contain the information you removed from the styled output.</p></div>
           <p>Glint does not upload your screenshots. The manual update check contacts GitHub; opening web links or sharing an image uses the destination you select.</p>
         </section>

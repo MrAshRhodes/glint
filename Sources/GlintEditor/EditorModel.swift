@@ -10,7 +10,7 @@ enum EditorTool: String, CaseIterable {
         case .select: return "Select"
         case .text: return "Text"
         case .arrow: return "Arrow"
-        case .redact: return "Redact"
+        case .redact: return "Redact / Obfuscate"
         case .shape: return "Shape"
         case .pen: return "Pen"
         case .highlighter: return "Highlighter"
@@ -49,7 +49,7 @@ enum EditorTool: String, CaseIterable {
         case .select: return "Click to select, drag to move, Delete removes"
         case .text: return "Click to add text (press 1 again to change size)"
         case .arrow: return "Drag to draw an arrow (press 2 again for a plain line); hold Shift for 45°"
-        case .redact: return "Drag to hide content (press 3 again to change style)"
+        case .redact: return "Use solid redaction for secrets; blur/pixelate only obscure (press 3 to change mode)"
         case .shape: return "Drag to draw a shape (press 4 again to change shape); hold Shift for squares"
         case .pen: return "Draw freehand"
         case .highlighter: return "Highlight with a translucent stroke"
@@ -108,7 +108,7 @@ final class EditorModel: ObservableObject {
     @Published var tool: EditorTool = .select
     @Published var shapeVariant: ShapeVariant = .rectangle
     @Published var arrowIsLine = false
-    @Published var redactStyle: RedactionStyle
+    @Published var redactStyle: RedactionStyle = .solid
     @Published var textSize: TextSizeVariant = .normal
     @Published var defaultStyle: AnnotationStyle
     @Published var editingID: UUID? {
@@ -128,6 +128,7 @@ final class EditorModel: ObservableObject {
     var previewTarget = CGSize(width: 1800, height: 1200)
 
     private var backgroundCache: [String: CGImage] = [:]
+    private let recognizeText: (CGImage) async throws -> [RecognizedLine]
     private let wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError>
     private var wallpaperImage: CGImage?
     private var rendering = false
@@ -139,6 +140,7 @@ final class EditorModel: ObservableObject {
     private var autoRedactIDs: Set<UUID> = []
 
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore,
+         recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
          wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
         self.image = context.image
         self.backingScale = max(context.backingScale, 1)
@@ -146,9 +148,9 @@ final class EditorModel: ObservableObject {
         self.source = context.source
         self.preferences = preferences
         self.presetStore = presetStore
+        self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
         self.settings = EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore)
-        self.redactStyle = preferences.redactStyle
         self.redactOptions = preferences.autoRedactOptions
         self.redactColor = preferences.redactColor
         var style = AnnotationStyle(color: preferences.annotationColor)
@@ -168,6 +170,10 @@ final class EditorModel: ObservableObject {
     }
 
     var selectedAnnotations: [Annotation] { annotations.filter { selection.contains($0.id) } }
+
+    var showsObfuscationWarning: Bool {
+        (tool == .redact && redactStyle.isObfuscation) || selectedAnnotations.contains { $0.isObfuscation }
+    }
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
@@ -386,7 +392,7 @@ final class EditorModel: ObservableObject {
     /// Edits style of the selection (or only the defaults when nothing is selected).
     func updateStyle(key: String, _ change: (inout AnnotationStyle) -> Void) {
         change(&defaultStyle)
-        if key == "color", !selectedAnnotations.contains(where: { $0.isRedaction }) {
+        if key == "color", !selectedAnnotations.contains(where: { $0.isRedaction || $0.isObfuscation }) {
             preferences.annotationColor = defaultStyle.color
         }
         guard !selection.isEmpty else { return }
@@ -419,7 +425,6 @@ final class EditorModel: ObservableObject {
             case .redact:
                 let all = RedactionStyle.allCases
                 redactStyle = all[(all.firstIndex(of: redactStyle)! + 1) % all.count]
-                preferences.redactStyle = redactStyle
             default: break
             }
         } else {
@@ -433,7 +438,7 @@ final class EditorModel: ObservableObject {
         case .text: return "\(Int(textSize.rawValue)) pt"
         case .arrow: return arrowIsLine ? "Line" : "Arrow"
         case .shape: return shapeVariant.rawValue.capitalized
-        case .redact: return redactStyle.rawValue.capitalized
+        case .redact: return redactStyle.displayName
         default: return nil
         }
     }
@@ -494,13 +499,12 @@ final class EditorModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         preferences.autoRedactOptions = redactOptions
-        preferences.redactStyle = redactStyle
-        guard let lines = try? await TextRecognizer.recognize(in: image) else {
+        guard let lines = try? await recognizeText(image) else {
             lastRedactSummary = "Text recognition failed."
             return
         }
         ocrLines = lines
-        var options = AutoRedactOptions(detector: redactOptions, style: redactStyle, color: redactColor,
+        var options = AutoRedactOptions(detector: redactOptions, color: redactColor,
                                         padding: 3 * pixelScale)
         options.recognizer = TextRecognizer.Options()
         let findings = SensitiveInfoDetector(options: redactOptions).findings(in: lines)

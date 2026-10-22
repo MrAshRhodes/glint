@@ -240,18 +240,25 @@ struct CapturePipelineTests {
         #expect(f.notifications.first?.body.contains("redactions could not be applied") == true)
     }
 
-    @Test func successfulRedactionIsBakedIntoExport() async throws {
+    @Test(arguments: RedactionStyle.allCases)
+    func successfulRedactionIsBakedIntoExportDespiteLegacyStyle(_ legacyStyle: RedactionStyle) async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.defaults.set(legacyStyle.rawValue, forKey: AppPreferences.Key.redactStyle)
         f.preferences.autoRedact = true
+        f.preferences.copyToClipboardAfterCapture = true
         f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
         await f.run()
         let url = try #require(f.recent.first)
         let image = try #require(GlintImageIO.load(url: url))
-        let context = try #require(GlintBitmap.makeContext(width: image.width, height: image.height))
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-        let middle = 20 * context.bytesPerRow + 50 * 4
-        #expect(bytes[middle] == 0 && bytes[middle + 1] == 0 && bytes[middle + 2] == 0)
+        let copied = try #require(f.copiedImage)
+        for output in [image, copied] {
+            let pixels = try #require(PixelBuffer(output))
+            for y in 7..<33 { for x in 7..<93 {
+                #expect(pixels.pixel(x, y) == (0, 0, 0, 255))
+            } }
+            #expect(pixels.pixel(0, 0) == (255, 255, 255, 255))
+        }
+        #expect(f.copies == 1)
         #expect(f.notifications.map(\.title) == ["Screenshot saved"])
     }
 

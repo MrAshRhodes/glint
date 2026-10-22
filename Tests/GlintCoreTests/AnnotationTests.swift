@@ -17,7 +17,7 @@ struct AnnotationTests {
 
     @Test func solidRedactionDestroysPixelsEvenWithLowOpacity() {
         let region = CGRect(x: 20, y: 10, width: 50, height: 30)
-        var style = AnnotationStyle(color: RGBAColor(hex: "#9C129E")!)
+        var style = AnnotationStyle(color: RGBAColor(hex: "#9C129E")!.with(alpha: 0.1))
         style.opacity = 0.2
         let out = flat([Annotation(kind: .redact(region), style: style)])
         let p = PixelBuffer(out)!
@@ -51,13 +51,22 @@ struct AnnotationTests {
         #expect(!sameRegion(out, noise, region))
     }
 
-    @Test func redactionReadsSourceNotOtherAnnotations() {
+    @Test func obfuscationReadsSourceNotOtherAnnotations() {
         // blur over a text-like block must be derived from the source, then survive a later arrow elsewhere
         let anns = [Annotation(z: 1, kind: .blur(CGRect(x: 0, y: 0, width: 40, height: 40))),
                     Annotation(z: 2, kind: .arrow(from: CGPoint(x: 60, y: 60), to: CGPoint(x: 110, y: 70)))]
         let out = flat(anns)
         #expect(!sameRegion(out, noise, CGRect(x: 0, y: 0, width: 40, height: 40)))
         #expect(!sameRegion(out, noise, CGRect(x: 60, y: 58, width: 50, height: 14)))
+    }
+
+    @Test func obfuscationStillIgnoresAnnotationOpacity() {
+        let region = CGRect(x: 20, y: 10, width: 60, height: 40)
+        for kind in [AnnotationKind.blur(region), .pixelate(region)] {
+            let opaque = flat([Annotation(kind: kind, style: AnnotationStyle(opacity: 1))])
+            let faint = flat([Annotation(kind: kind, style: AnnotationStyle(opacity: 0.1))])
+            #expect(sameRegion(opaque, faint, CGRect(x: 0, y: 0, width: 120, height: 80)))
+        }
     }
 
     @Test func redactionOnlyExportContainsNoOriginalPixels() throws {

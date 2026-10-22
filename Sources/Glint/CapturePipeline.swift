@@ -133,7 +133,7 @@ final class CapturePipeline {
         }
         var working = image
         if prefs.autoRedact {
-            var opts = AutoRedactOptions(detector: prefs.autoRedactOptions, style: prefs.redactStyle, color: prefs.redactColor)
+            var opts = AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor)
             opts.padding = 3
             do {
                 let lines = try await services.recognize(image, opts.recognizer)

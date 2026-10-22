@@ -1,5 +1,5 @@
 import CoreGraphics
-import GlintCore
+@testable import GlintCore
 import Testing
 @testable import GlintEditor
 
@@ -123,5 +123,91 @@ struct EditorModelTests {
         bitmap.draw(rendered, in: CGRect(x: 0, y: 0, width: 100, height: 80))
         let bytes = try #require(bitmap.data).assumingMemoryBound(to: UInt8.self)
         #expect(bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 255)
+    }
+
+    @Test(arguments: RedactionStyle.allCases)
+    func manualModeStartsSolidAndNeverPersists(_ legacyStyle: RedactionStyle) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.defaults.set(legacyStyle.rawValue, forKey: AppPreferences.Key.redactStyle)
+        let model = f.model()
+        model.pressToolKey(.redact)
+        #expect(model.redactStyle == .solid && !model.showsObfuscationWarning)
+        #expect(EditorTool.redact.title == "Redact / Obfuscate" && EditorTool.redact.keyHint == "3")
+        #expect(model.variantDescription() == "Solid redaction")
+        for (mode, label) in [(RedactionStyle.blur, "Blur (obfuscation)"),
+                              (.pixelate, "Pixelate (obfuscation)"), (.solid, "Solid redaction")] {
+            model.pressToolKey(.redact)
+            #expect(model.redactStyle == mode && model.variantDescription() == label)
+            #expect(model.showsObfuscationWarning == mode.isObfuscation)
+        }
+        model.redactStyle = .pixelate
+        #expect(f.model().redactStyle == .solid)
+        #expect(f.preferences.defaults.string(forKey: AppPreferences.Key.redactStyle) == legacyStyle.rawValue)
+    }
+
+    @Test func selectedObfuscationWarnsWithoutChangingColorPreferences() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let model = f.model()
+        let region = CGRect(x: 10, y: 10, width: 20, height: 20)
+        let originalColor = f.preferences.annotationColor
+        for kind in [AnnotationKind.blur(region), .pixelate(region), .redact(region)] {
+            let annotation = model.makeAnnotation(kind)
+            let shape = model.makeAnnotation(.rectangle(region))
+            model.updateLive([annotation, shape])
+            model.selection = [annotation.id, shape.id]
+            #expect(model.tool == .select)
+            #expect(model.showsObfuscationWarning == annotation.isObfuscation)
+            model.undoManager.beginUndoGrouping()
+            model.updateStyle(key: "color") { $0.color = .black }
+            model.undoManager.endUndoGrouping()
+            #expect(f.preferences.annotationColor == originalColor)
+        }
+        model.selection = []
+        #expect(!model.showsObfuscationWarning)
+        model.updateStyle(key: "color") { $0.color = .black }
+        #expect(f.preferences.annotationColor == .black)
+    }
+
+    @Test(arguments: RedactionStyle.allCases)
+    func automaticRedactionIgnoresManualModeAndSupportsUndo(_ manualMode: RedactionStyle) async throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 20, width: 80, height: 40))]
+        let model = EditorModel(context: f.context, preferences: f.preferences, presetStore: f.presets,
+                                recognizeText: { _ in lines })
+        model.undoManager.groupsByEvent = false
+        model.redactStyle = manualMode
+        model.undoManager.beginUndoGrouping()
+        await model.runAutoRedact()
+        model.undoManager.endUndoGrouping()
+        let annotations = model.annotations
+        #expect(annotations.count == 1 && annotations.allSatisfy { $0.isRedaction && !$0.isObfuscation })
+        #expect(model.redactStyle == manualMode && !model.isBusy)
+        let pixels = try #require(PixelBuffer(model.renderFinal()))
+        for y in 14..<66 { for x in 4..<96 {
+            #expect(pixels.pixel(x, y) == (0, 0, 0, 255))
+        } }
+        model.undoManager.undo()
+        #expect(model.annotations.isEmpty)
+        model.undoManager.redo()
+        #expect(model.annotations == annotations)
+        model.undoManager.beginUndoGrouping()
+        await model.runAutoRedact()
+        model.undoManager.endUndoGrouping()
+        #expect(model.annotations.count == 1 && model.annotations.allSatisfy(\.isRedaction))
+    }
+
+    @Test(arguments: RedactionStyle.allCases)
+    func headlessRedactionIgnoresLegacyStyle(_ legacyStyle: RedactionStyle) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.defaults.set(legacyStyle.rawValue, forKey: AppPreferences.Key.redactStyle)
+        f.preferences.autoRedact = true
+        let output = EditorHeadless.render(context: f.context, preferences: f.preferences, recognizeText: { _ in
+            [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 20, width: 80, height: 40))]
+        })
+        let pixels = try #require(PixelBuffer(output))
+        for y in 14..<66 { for x in 4..<96 {
+            #expect(pixels.pixel(x, y) == (0, 0, 0, 255))
+        } }
+        #expect(pixels.pixel(0, 0) == (255, 255, 255, 255))
     }
 }

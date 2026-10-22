@@ -133,6 +133,15 @@ struct ExportAndPrefsTests {
         #expect(q.autoBalance && q.theme == .system)
     }
 
+    @Test func resetClearsLegacyRedactionStyle() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("blur", forKey: AppPreferences.Key.redactStyle)
+        AppPreferences(defaults: defaults).resetToDefaults()
+        #expect(defaults.object(forKey: AppPreferences.Key.redactStyle) == nil)
+    }
+
     @Test func hotkeys() throws {
         let combo = HotkeyAction.captureArea.defaultCombo
         #expect(combo.displayString == "⌃⌥⌘4")

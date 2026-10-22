@@ -35,7 +35,9 @@ public enum AnnotationKind: Codable, Equatable, Hashable, Sendable {
     /// `origin` = top-left of the text box; `maxWidth` 0 = no wrapping.
     case text(origin: CGPoint, string: String, maxWidth: Double)
     case counter(center: CGPoint, number: Int)
+    /// Source-derived obfuscation, unsafe for secrets.
     case blur(CGRect)
+    /// Source-derived obfuscation, unsafe for secrets.
     case pixelate(CGRect)
     /// Solid, always fully opaque box.
     case redact(CGRect)
@@ -56,7 +58,12 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
     }
 
     public var isRedaction: Bool {
-        switch kind { case .blur, .pixelate, .redact: return true; default: return false }
+        if case .redact = kind { return true }
+        return false
+    }
+
+    public var isObfuscation: Bool {
+        switch kind { case .blur, .pixelate: return true; default: return false }
     }
 
     public var boundingBox: CGRect {

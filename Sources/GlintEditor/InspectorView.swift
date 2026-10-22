@@ -146,12 +146,25 @@ struct InspectorView: View {
         let scale = Double(model.backingScale)
         let sel = model.selectedAnnotations
         let isText = sel.isEmpty ? model.tool == .text : sel.allSatisfy { $0.kind.isText }
-        let hasBlur = sel.contains { if case .blur = $0.kind { return true }; if case .pixelate = $0.kind { return true }; return false }
-        let hasSolidRedact = sel.contains { if case .redact = $0.kind { return true }; return false } || (sel.isEmpty && model.tool == .redact)
+        let hasBlur = sel.contains { $0.isObfuscation }
+        let isDrawingObfuscation = sel.isEmpty && model.tool == .redact && model.redactStyle.isObfuscation
+        let hasSolidRedact = sel.contains { $0.isRedaction }
+            || (sel.isEmpty && model.tool == .redact && model.redactStyle == .solid)
         let hasShape = sel.contains { if case .rectangle = $0.kind { return true }; if case .ellipse = $0.kind { return true }; return false }
             || (sel.isEmpty && model.tool == .shape)
         return Section(title: sel.isEmpty ? "New \(model.tool.title.lowercased()) style" : "Selection (\(sel.count))") {
-            if !hasBlur && !hasSolidRedact {
+            if model.tool == .redact {
+                Picker("Manual mode", selection: $model.redactStyle) {
+                    ForEach(RedactionStyle.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }.pickerStyle(.menu)
+            }
+            if model.showsObfuscationWarning {
+                Label("Blur and pixelate are obfuscation, not secure redaction. Information may be recoverable. Use Solid redaction for secrets.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !hasBlur && !hasSolidRedact && !isDrawingObfuscation {
                 SliderRow(title: isText ? "Font size" : "Stroke", value: Binding(
                     get: { (isText ? currentStyle.fontSize : currentStyle.strokeWidth) / scale },
                     set: { v in model.updateStyle(key: "size") { if isText { $0.fontSize = v * scale } else { $0.strokeWidth = v * scale } } }),
@@ -398,9 +411,8 @@ struct InspectorView: View {
                     model.redactOptions.customWords = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                     model.preferences.autoRedactOptions = model.redactOptions
                 })).textFieldStyle(.roundedBorder).font(.system(size: 11))
-            Picker("Style", selection: $model.redactStyle) {
-                ForEach(RedactionStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden()
+            Text("Auto-redact always uses solid fill. Review the image before sharing; detection can miss information.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 ColorPicker("Colour", selection: colorBinding({ model.redactColor }) { model.setRedactColor($0) }, supportsOpacity: false)
                     .font(.system(size: 12))

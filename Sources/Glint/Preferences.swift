@@ -309,10 +309,9 @@ private struct EditorTab: View {
             Toggle("Auto-balance (crop uniform borders)", isOn: model.bind(\.autoBalance))
             Toggle("Auto-redact sensitive info", isOn: model.bind(\.autoRedact))
             if model.prefs.autoRedact {
-                Section("Redact") {
-                    Picker("Style", selection: model.bind(\.redactStyle)) {
-                        ForEach(RedactionStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                    }
+                Section("Auto-redact") {
+                    Text("Always uses solid fill. Review the image before sharing; detection can miss information.")
+                        .font(.caption).foregroundStyle(.secondary)
                     ForEach(SensitiveCategory.allCases, id: \.self) { cat in
                         Toggle(cat.displayName, isOn: Binding(
                             get: { model.prefs.autoRedactOptions.categories.contains(cat) },
