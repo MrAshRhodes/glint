@@ -37,7 +37,14 @@
           <pre class="code"><code>brew install --cask MrAshRhodes/tap/glint</code></pre>
           <p>This adds the tap if needed and installs Glint in Applications.</p>
           <h3>With a download</h3>
-          <p>Open the <a href="https://github.com/MrAshRhodes/glint/releases/latest">latest release</a>. Download the versioned ZIP, extract it and move <strong>Glint.app</strong> to Applications. Alternatively, open the DMG and drag the app into Applications. Each archive has a matching SHA-256 checksum.</p>
+          <p>Open the <a href="https://github.com/MrAshRhodes/glint/releases/latest">latest release</a>. Download <code>Glint-&lt;version&gt;.zip</code> and its matching <code>Glint-&lt;version&gt;.zip.sha256</code> from the same release. For a DMG instead, download <code>Glint-&lt;version&gt;.dmg</code> and <code>Glint-&lt;version&gt;.dmg.sha256</code>. Keep the pair in the same folder without renaming either file.</p>
+          <p>Before extracting the ZIP or opening the DMG, open Terminal and change to that folder (for example, <code>cd ~/Downloads</code>). Replace <code>&lt;version&gt;</code> with the downloaded release's version and run <strong>only the command for your chosen format</strong>:</p>
+          <p><strong>ZIP:</strong></p>
+          <pre class="code"><code>shasum -a 256 -c "Glint-&lt;version&gt;.zip.sha256"</code></pre>
+          <p><strong>DMG (instead of ZIP):</strong></p>
+          <pre class="code"><code>shasum -a 256 -c "Glint-&lt;version&gt;.dmg.sha256"</code></pre>
+          <p>Continue only if the command succeeds and reports <code>Glint-&lt;version&gt;.zip: OK</code> (or <code>Glint-&lt;version&gt;.dmg: OK</code>). <strong>If verification fails for any reason, including a mismatch or a missing archive or checksum, stop. Do not install the app or clear quarantine.</strong> Download the matching pair again from the official release and verify again.</p>
+          <p>After successful verification, extract the ZIP or open the DMG and move <strong>Glint.app</strong> to Applications. A matching checksum confirms agreement with the published checksum; it is not notarization or proof that the app is safe.</p>
           <div class="callout"><p><strong>Signing status:</strong> Glint is currently ad-hoc signed, not Apple-notarized. macOS may block a manual download. The Homebrew cask removes this app's quarantine flag, bypassing its Gatekeeper quarantine check. Only install if you trust the project and its release. Do not ignore a malware warning.</p></div>
           <p>For a manual download, consult <a href="https://support.apple.com/en-us/102445">Apple's guidance on opening apps safely</a>. You can also build Glint yourself from the source below.</p>
         </section>
@@ -50,7 +57,7 @@
           <p><code>brew update</code> refreshes Homebrew and its taps; it does <strong>not</strong> install a newer Glint. The <code>brew upgrade</code> part does that. Keep using Homebrew for an app it manages rather than replacing the app manually.</p>
           <p>If Glint reports a new release but Homebrew says it is already current, the tap may still be catching up. Try again after the release's tap update has finished. You can inspect the available version with <code>brew info --cask glint</code>.</p>
           <h3>If you installed from a ZIP or DMG</h3>
-          <ol><li>Save your edits and quit Glint.</li><li><a href="https://github.com/MrAshRhodes/glint/releases/latest">Download the new release</a> from GitHub.</li><li>Replace Glint.app in Applications with the new copy, then reopen it.</li></ol>
+          <ol><li>Save your edits and quit Glint.</li><li><a href="https://github.com/MrAshRhodes/glint/releases/latest">Download the new release</a> from GitHub, including the ZIP or DMG and its matching <code>.sha256</code> file.</li><li>Follow the <a href="#install">manual-download verification steps</a> before extracting the ZIP or opening the DMG. Continue only if verification succeeds and reports <code>OK</code>.</li><li>Replace Glint.app in Applications with the verified new copy, then reopen it.</li></ol>
           <p>Replacing the app keeps your separately stored preferences, presets and image files. Do not delete those folders to update.</p>
           <div class="callout"><p><strong>After an update:</strong> because the app is ad-hoc signed, macOS may ask for Screen Recording permission again. If capture stops working, revisit the permission settings and relaunch Glint.</p></div>
         </section>
@@ -130,6 +137,7 @@ glint://open?file=%2FUsers%2Fyou%2FDesktop%2Fimage.png</code></pre>
 /Applications/Glint.app/Contents/MacOS/Glint --version
 /Applications/Glint.app/Contents/MacOS/Glint --diagnose</code></pre>
           <p>Use <code>--help</code> for the command reference. The output extension selects the file format. These commands operate on local files; they do not upload an image.</p>
+          <p><code>--diagnose</code> checks Screen Recording permission without requesting access and prints only permission state, aggregate display/window/application counts, and fixed status messages. It does not print window titles, app identities, process/window/display identifiers, or per-display details. Aggregate counts still describe your desktop activity, so review reports before sharing.</p>
         </section>
         <section id="troubleshooting">
           <h2>Troubleshooting</h2>

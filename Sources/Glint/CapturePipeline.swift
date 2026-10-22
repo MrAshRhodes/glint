@@ -12,6 +12,10 @@ final class CapturePipeline {
             try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
         }
         var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+        var copyText: @MainActor (String) -> Void = {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString($0, forType: .string)
+        }
         var recognize: (CGImage, TextRecognizer.Options) async throws -> [RecognizedLine] = {
             try await TextRecognizer.recognize(in: $0, options: $1)
         }
@@ -99,20 +103,19 @@ final class CapturePipeline {
         return visible
     }
 
-    private func recognizeText(in image: CGImage) async {
+    func recognizeText(in image: CGImage) async {
         do {
-            let lines = try await TextRecognizer.recognize(in: image)
+            let lines = try await services.recognize(image, TextRecognizer.Options())
             let text = lines.map(\.text).joined(separator: "\n")
             guard !text.isEmpty else {
-                Notifier.post(title: "No text found", body: "Nothing was recognised in the selected area.")
+                services.notify("No text found", "Nothing was recognised in the selected area.", nil)
                 return
             }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            Notifier.playSound()
-            Notifier.post(title: "Text copied", body: String(text.prefix(120)))
+            services.copyText(text)
+            services.sound()
+            services.notify("Text copied", "Recognized text copied to clipboard", nil)
         } catch {
-            Notifier.post(title: "Text recognition failed", body: error.localizedDescription)
+            services.notify("Text recognition failed", error.localizedDescription, nil)
         }
     }
 

@@ -17,6 +17,8 @@ private final class CaptureFixture {
     var recent: [URL] = []
     var copies = 0
     var copiedImage: CGImage?
+    var copiedTexts: [String] = []
+    var sounds = 0
     var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
     var wallpaperReads = 0
     var failWrite = false
@@ -66,6 +68,7 @@ private final class CaptureFixture {
             return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
         }
         services.copy = { [self] image in copies += 1; copiedImage = image; return copySucceeds }
+        services.copyText = { [self] in copiedTexts.append($0) }
         services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
         services.recognize = { [self] image, _ in
             recognizedImages.append(image)
@@ -106,6 +109,46 @@ private final class CaptureFixture {
 @Suite("Capture export outcomes")
 @MainActor
 struct CapturePipelineTests {
+    @Test(arguments: [
+        "demo-password-4826",
+        "recovery-code-1234\n" + String(repeating: "token-", count: 30) + "\ncaf\u{00E9} \u{1F511}"
+    ])
+    func captureTextKeepsRecognizedContentOutOfNotifications(text: String) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.lines = text.components(separatedBy: "\n").map { RecognizedLine(text: $0, box: .zero) }
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts == [text])
+        #expect(f.sounds == 1)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "Text copied")
+        #expect(notification.body == "Recognized text copied to clipboard")
+        #expect(notification.url == nil)
+    }
+
+    @Test func captureTextWithNoTextDoesNotCopyOrReportSuccess() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts.isEmpty && f.sounds == 0)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "No text found")
+        #expect(notification.body == "Nothing was recognised in the selected area.")
+        #expect(notification.url == nil)
+    }
+
+    @Test func captureTextRecognitionFailureDoesNotCopyOrReportSuccess() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.failRecognition = true
+        await f.pipeline().recognizeText(in: f.image)
+        #expect(f.copiedTexts.isEmpty && f.sounds == 0)
+        #expect(f.notifications.count == 1)
+        let notification = try #require(f.notifications.first)
+        #expect(notification.title == "Text recognition failed")
+        #expect(notification.body == TestFailure.recognition.localizedDescription)
+        #expect(notification.url == nil)
+    }
+
     @Test func savesAutomaticOutputAndRecordsOnlySuccessfulFile() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         f.preferences.exportFormat = .jpeg(quality: 0.7)
