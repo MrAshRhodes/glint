@@ -117,7 +117,7 @@ struct EditorModelTests {
         let annotation = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 100, height: 80)), style: AnnotationStyle(color: .black))
         model.updateLive([annotation])
         model.editingID = annotation.id
-        let rendered = model.renderFinal()
+        let rendered = try model.renderFinal()
         #expect(rendered.width == 100 && rendered.height == 80)
         let bitmap = try #require(GlintBitmap.makeContext(width: 100, height: 80))
         bitmap.draw(rendered, in: CGRect(x: 0, y: 0, width: 100, height: 80))
@@ -201,7 +201,7 @@ struct EditorModelTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.defaults.set(legacyStyle.rawValue, forKey: AppPreferences.Key.redactStyle)
         f.preferences.autoRedact = true
-        let output = EditorHeadless.render(context: f.context, preferences: f.preferences, recognizeText: { _ in
+        let output = try EditorHeadless.render(context: f.context, preferences: f.preferences, recognizeText: { _ in
             [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 20, width: 80, height: 40))]
         })
         let pixels = try #require(PixelBuffer(output))

@@ -139,6 +139,16 @@ final class EditorModel: ObservableObject {
     private var styleEditDate = Date.distantPast
     private var autoRedactIDs: Set<UUID> = []
 
+    typealias Renderer = @Sendable (_ image: CGImage, _ settings: RenderSettings, _ annotations: [Annotation],
+                                    _ backingScale: CGFloat, _ backgroundImage: CGImage?,
+                                    _ wallpaper: CGImage?) throws -> RenderResult
+    static let compositorRenderer: Renderer = { image, settings, annotations, scale, background, wallpaper in
+        try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
+                                      backgroundImage: background, wallpaper: wallpaper)
+    }
+    /// Composes previews and final output; replaceable so tests can force render failures.
+    var renderer: Renderer = EditorModel.compositorRenderer
+
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
          wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
@@ -239,9 +249,17 @@ final class EditorModel: ObservableObject {
         let wallpaper = wallpaperImage
         let img = image, scale = backingScale
         let anns = annotations.filter { $0.id != editingID }
+        let renderer = self.renderer
         Task.detached(priority: .userInitiated) { [weak self] in
-            let r = Compositor.renderDetailed(image: img, settings: s, annotations: anns, backingScale: scale,
-                                              backgroundImage: bg, wallpaper: wallpaper)
+            let r: RenderResult
+            do {
+                r = try renderer(img, s, anns, scale, bg, wallpaper)
+            } catch {
+                // Fail closed: never fall back to unannotated pixels; keep the last good preview.
+                let message = error.localizedDescription
+                await MainActor.run { self?.failRender(message) }
+                return
+            }
             var region = CGRect(origin: .zero, size: img.pixelSize)
             if let b = r.border { region = AutoBalance.balanceCropRect(imageSize: img.pixelSize, border: b) }
             let p = Preview(image: r.image, layout: r.layout,
@@ -256,6 +274,12 @@ final class EditorModel: ObservableObject {
         if dirty { kick() }
     }
 
+    private func failRender(_ message: String) {
+        statusMessage = message
+        rendering = false
+        if dirty { kick() }
+    }
+
     func updatePreviewTarget(_ size: CGSize) {
         guard size.width > 10, size.height > 10 else { return }
         let old = previewTarget
@@ -266,9 +290,9 @@ final class EditorModel: ObservableObject {
     }
 
     /// Full-resolution output with every annotation burned in.
-    func renderFinal() -> CGImage {
-        Compositor.render(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
-                          backgroundImage: backgroundImage(for: settings), wallpaper: wallpaperImage)
+    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
+    func renderFinal() throws -> CGImage {
+        try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage).image
     }
 
     // MARK: Annotation editing

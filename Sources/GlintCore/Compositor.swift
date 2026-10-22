@@ -20,18 +20,46 @@ public struct RenderResult {
     public var border: BorderInfo?
 }
 
+/// Why a render could not produce a safe output.
+public enum RenderError: Error, LocalizedError, Equatable {
+    /// The annotations (including redactions) could not be burned into the image. Exporting the
+    /// unannotated source instead could leak redacted content, so the render fails closed.
+    case annotationsNotApplied
+
+    public var errorDescription: String? {
+        switch self {
+        case .annotationsNotApplied:
+            return "Annotations and redactions could not be applied to the image, so it was not exported."
+        }
+    }
+}
+
 public enum Compositor {
+    /// Burns `annotations` into `source`, cropped to `region` with `fill` outside the source.
+    typealias Baker = (_ source: CGImage, _ annotations: [Annotation], _ region: CGRect?, _ fill: RGBAColor) -> CGImage?
+
+    static let defaultBaker: Baker = { AnnotationRenderer.bake(source: $0, annotations: $1, region: $2, fill: $3) }
+
     /// Output image of the full "beautify" pipeline. Deterministic for identical inputs.
+    /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
     public static func render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                               backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                              wallpaper: CGImage? = nil) -> CGImage {
-        renderDetailed(image: image, settings: settings, annotations: annotations,
-                       backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper).image
+                              wallpaper: CGImage? = nil) throws -> CGImage {
+        try renderDetailed(image: image, settings: settings, annotations: annotations,
+                           backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper).image
     }
 
+    /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
     public static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                       backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                                      wallpaper: CGImage? = nil) -> RenderResult {
+                                      wallpaper: CGImage? = nil) throws -> RenderResult {
+        try renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
+                           backgroundImage: backgroundImage, wallpaper: wallpaper, bake: defaultBaker)
+    }
+
+    static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
+                               backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
+                               wallpaper: CGImage? = nil, bake: Baker) throws -> RenderResult {
         let source = image.glintSRGB()
 
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
@@ -43,8 +71,13 @@ public enum Compositor {
         }
         var content = source
         if region != nil || !annotations.isEmpty {
-            content = AnnotationRenderer.bake(source: source, annotations: annotations, region: region,
-                                              fill: border?.color ?? .clear) ?? source
+            if let baked = bake(source, annotations, region, border?.color ?? .clear) {
+                content = baked
+            } else if !annotations.isEmpty {
+                // Fail closed: never fall back to the source when annotations (e.g. redactions) exist.
+                throw RenderError.annotationsNotApplied
+            }
+            // Without annotations only the auto-balance crop is lost, so the source is a safe fallback.
         }
 
         // 2. orientation

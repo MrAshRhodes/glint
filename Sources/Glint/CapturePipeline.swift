@@ -12,11 +12,19 @@ final class CapturePipeline {
             try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
         }
         var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+        var copyText: @MainActor (String) -> Void = {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString($0, forType: .string)
+        }
         var recognize: (CGImage, TextRecognizer.Options) async throws -> [RecognizedLine] = {
             try await TextRecognizer.recognize(in: $0, options: $1)
         }
         var bake: (CGImage, [Annotation]) -> CGImage? = { AnnotationRenderer.bake(source: $0, annotations: $1) }
+        var render: (CGImage, RenderSettings, CGFloat, CGImage?) throws -> CGImage = {
+            try Compositor.render(image: $0, settings: $1, backingScale: $2, wallpaper: $3)
+        }
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
+        var requestRetry: @MainActor (String, String) -> Bool = { CaptureRecovery.requestRetry(title: $0, message: $1) }
         var sound: @MainActor () -> Void = { Notifier.playSound() }
         var addRecent: (URL) -> Void = { RecentFiles.add($0) }
         var wallpaper: @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }
@@ -95,20 +103,19 @@ final class CapturePipeline {
         return visible
     }
 
-    private func recognizeText(in image: CGImage) async {
+    func recognizeText(in image: CGImage) async {
         do {
-            let lines = try await TextRecognizer.recognize(in: image)
+            let lines = try await services.recognize(image, TextRecognizer.Options())
             let text = lines.map(\.text).joined(separator: "\n")
             guard !text.isEmpty else {
-                Notifier.post(title: "No text found", body: "Nothing was recognised in the selected area.")
+                services.notify("No text found", "Nothing was recognised in the selected area.", nil)
                 return
             }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            Notifier.playSound()
-            Notifier.post(title: "Text copied", body: String(text.prefix(120)))
+            services.copyText(text)
+            services.sound()
+            services.notify("Text copied", "Recognized text copied to clipboard", nil)
         } catch {
-            Notifier.post(title: "Text recognition failed", body: error.localizedDescription)
+            services.notify("Text recognition failed", error.localizedDescription, nil)
         }
     }
 
@@ -122,6 +129,9 @@ final class CapturePipeline {
 
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
                 saveRaw: Bool, clipboardOnly: Bool = false) async {
+        let redactionOptions = prefs.autoRedact
+            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, padding: 3)
+            : nil
         services.sound()
         var rawURL = existingRaw
         if saveRaw, prefs.saveRaw, let url = prefs.outputPaths.rawURL() {
@@ -132,22 +142,29 @@ final class CapturePipeline {
             }
         }
         var working = image
-        if prefs.autoRedact {
-            var opts = AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor)
-            opts.padding = 3
-            do {
-                let lines = try await services.recognize(image, opts.recognizer)
-                let redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
-                if !redactions.isEmpty {
-                    guard let redacted = services.bake(image, redactions) else {
-                        services.notify("Auto-redaction failed", "The image was not exported because redactions could not be applied.", nil)
-                        return
-                    }
-                    working = redacted
+        if let opts = redactionOptions {
+            let redactions: [Annotation]
+            while true {
+                do {
+                    let lines = try await services.recognize(image, opts.recognizer)
+                    redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
+                    break
+                } catch {
+                    let message = "The image was not exported because text recognition failed: \(error.localizedDescription)"
+                    services.notify("Auto-redaction failed", message, nil)
+                    guard services.requestRetry("Auto-redaction failed", message) else { return }
                 }
-            } catch {
-                services.notify("Auto-redaction failed", "The image was not exported because text recognition failed: \(error.localizedDescription)", nil)
-                return
+            }
+            if !redactions.isEmpty {
+                while true {
+                    if let redacted = services.bake(image, redactions) {
+                        working = redacted
+                        break
+                    }
+                    let message = "The image was not exported because redactions could not be applied."
+                    services.notify("Auto-redaction failed", message, nil)
+                    guard services.requestRetry("Auto-redaction failed", message) else { return }
+                }
             }
         }
         if prefs.openEditorAfterCapture && !clipboardOnly {
@@ -178,7 +195,16 @@ final class CapturePipeline {
             case .failure(let error): wallpaperProblem = error.localizedDescription
             }
         }
-        let rendered = Compositor.render(image: image, settings: settings, backingScale: scale, wallpaper: wallpaper)
+        let rendered: CGImage
+        while true {
+            do {
+                rendered = try services.render(image, settings, scale, wallpaper)
+                break
+            } catch {
+                services.notify("Screenshot not exported", error.localizedDescription, nil)
+                guard services.requestRetry("Screenshot not exported", error.localizedDescription) else { return }
+            }
+        }
         var saved: URL?
         var failures: [String] = []
         if prefs.saveOutput && !clipboardOnly {

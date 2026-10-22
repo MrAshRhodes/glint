@@ -9,10 +9,9 @@ enum SwatchRenderer {
         if let c = cache[id] { return c }
         let blank = GlintBitmap.makeContext(width: 64, height: 64)?.makeImage()
         var out = NSImage(size: CGSize(width: 32, height: 32))
-        if let blank {
-            let s = RenderSettings(padding: 0, inset: 0, cornerRadius: 0, shadow: .none, background: style,
-                                   aspectRatio: .auto, autoBalance: false)
-            let r = Compositor.render(image: blank, settings: s, backingScale: 1)
+        let s = RenderSettings(padding: 0, inset: 0, cornerRadius: 0, shadow: .none, background: style,
+                               aspectRatio: .auto, autoBalance: false)
+        if let blank, let r = try? Compositor.render(image: blank, settings: s, backingScale: 1) {
             out = NSImage(cgImage: r, size: CGSize(width: 32, height: 32))
         }
         cache[id] = out
