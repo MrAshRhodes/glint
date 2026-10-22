@@ -31,6 +31,7 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
   border, windowFrame, tilt, rotation, flipHorizontal, flipVertical, watermark, autoBalance, outputScale`.
   `RenderSettings.default`.
 - `Preset(id,name,settings)`; `PresetStore(url:)` (`presets`, `defaultPresetID`, `add/update/delete/rename`,
+  `uniqueName(_:)` (`base`, else first unused `base 2`, `base 3`, …),
   `load()/save()`, `exportPresets(to:)`, `importPresets(from:) -> Int`, `PresetStore.defaultURL` =
   `~/Library/Application Support/Glint/presets.json`, `Preset.builtIn`).
 

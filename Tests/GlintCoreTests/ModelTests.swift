@@ -89,6 +89,15 @@ struct ModelTests {
         #expect(PresetStore.defaultURL.path.hasSuffix("Application Support/Glint/presets.json"))
     }
 
+    @Test func presetUniqueName() {
+        let store = PresetStore(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("glint-test-\(UUID().uuidString)/presets.json"))
+        #expect(store.uniqueName("Fresh") == "Fresh")
+        #expect(store.uniqueName("Clean") == "Clean 2")
+        store.add(name: "Clean 2", settings: .default)
+        #expect(store.uniqueName("Clean") == "Clean 3")
+    }
+
     @Test func annotationCodableAndGeometry() throws {
         let a = Annotation(z: 3, kind: .arrow(from: CGPoint(x: 1, y: 2), to: CGPoint(x: 30, y: 40)))
         let decoded = try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(a))

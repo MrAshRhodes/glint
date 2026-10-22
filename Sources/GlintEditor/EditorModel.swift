@@ -90,14 +90,18 @@ final class EditorModel: ObservableObject {
     let source: String?
     let preferences: AppPreferences
     let presetStore: PresetStore
+    /// Set when the editor only designs a preset; the image is a throwaway preview.
+    let design: PresetDesign?
     let undoManager = UndoManager()
 
     @Published var settings: RenderSettings {
         didSet {
             guard settings != oldValue else { return }
             if settings.usesDesktopWallpaper != oldValue.usesDesktopWallpaper { refreshWallpaper() }
-            preferences.lastRenderSettings = settings
-            preferences.autoBalance = settings.autoBalance
+            if design == nil {
+                preferences.lastRenderSettings = settings
+                preferences.autoBalance = settings.autoBalance
+            }
             requestRender()
         }
     }
@@ -123,6 +127,8 @@ final class EditorModel: ObservableObject {
     @Published var redactColor: RGBAColor
     @Published var isBusy = false
     @Published var lastRedactSummary: String?
+    @Published var designName: String
+    @Published var designMakeDefault = false
 
     /// Desired preview size in device pixels (set by the canvas).
     var previewTarget = CGSize(width: 1800, height: 1200)
@@ -149,7 +155,7 @@ final class EditorModel: ObservableObject {
     /// Composes previews and final output; replaceable so tests can force render failures.
     var renderer: Renderer = EditorModel.compositorRenderer
 
-    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore,
+    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
          wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
         self.image = context.image
@@ -158,9 +164,11 @@ final class EditorModel: ObservableObject {
         self.source = context.source
         self.preferences = preferences
         self.presetStore = presetStore
+        self.design = design
+        self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
-        self.settings = EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore)
+        self.settings = design?.settings ?? EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore)
         self.redactOptions = preferences.autoRedactOptions
         self.redactColor = preferences.redactColor
         var style = AnnotationStyle(color: preferences.annotationColor)
@@ -168,9 +176,10 @@ final class EditorModel: ObservableObject {
         style.fontSize = TextSizeVariant.normal.rawValue * Double(max(context.backingScale, 1))
         self.defaultStyle = style
         self.presets = presetStore.presets
+        self.designMakeDefault = designIsDefault
         refreshWallpaper()
         requestRender()
-        if preferences.autoRedact { Task { await self.runAutoRedact(announce: false) } }
+        if preferences.autoRedact, design == nil { Task { await self.runAutoRedact(announce: false) } }
     }
 
     // MARK: State helpers

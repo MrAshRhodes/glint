@@ -1,13 +1,17 @@
 import AppKit
+import Combine
 import GlintCapture
 import GlintCore
+import GlintEditor
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class PrefsModel: ObservableObject {
     let prefs: AppPreferences
     let store: PresetStore
+    private var presetEditors: [UUID: EditorWindowController] = [:]
     init(prefs: AppPreferences, store: PresetStore) { self.prefs = prefs; self.store = store }
 
     func bind<T>(_ kp: ReferenceWritableKeyPath<AppPreferences, T>, then: (() -> Void)? = nil) -> Binding<T> {
@@ -16,6 +20,19 @@ final class PrefsModel: ObservableObject {
     }
 
     func changed() { NotificationCenter.default.post(name: .glintPreferencesChanged, object: nil) }
+
+    func openPresetDesigner(_ design: PresetDesign, onSaved: @escaping (Preset) -> Void) {
+        let id = UUID()
+        let editor = EditorWindowController(design: design, preferences: prefs, presetStore: store)
+        presetEditors[id] = editor
+        editor.onClose = { [weak self] in self?.presetEditors[id] = nil }
+        editor.onPresetSaved = { [weak self] preset in
+            self?.objectWillChange.send()
+            self?.changed()
+            onSaved(preset)
+        }
+        editor.showEditor()
+    }
 }
 
 @MainActor
@@ -332,13 +349,106 @@ private struct EditorTab: View {
 
 // MARK: - Presets
 
+struct PresetStartingPoint: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    let settings: RenderSettings
+
+    static func choices(lastUsed: RenderSettings?, presets: [Preset]) -> [PresetStartingPoint] {
+        var choices: [PresetStartingPoint] = []
+        if let lastUsed {
+            choices.append(PresetStartingPoint(id: "last-used", name: "Last used",
+                                              detail: "Your latest editor settings", settings: lastUsed))
+        }
+        choices += presets.map {
+            PresetStartingPoint(id: $0.id.uuidString, name: $0.name, detail: "Saved preset", settings: $0.settings)
+        }
+        choices += Preset.builtIn.filter { builtIn in !presets.contains { $0.id == builtIn.id } }.map {
+            PresetStartingPoint(id: $0.id.uuidString, name: $0.name, detail: "Built-in", settings: $0.settings)
+        }
+        return choices
+    }
+}
+
+@MainActor
+final class NewPresetModel: ObservableObject {
+    let choices: [PresetStartingPoint]
+    let store: PresetStore
+    @Published var selectedID: String
+    @Published var name: String
+    @Published var image: CGImage
+    @Published var imageName = "Built-in sample image"
+    @Published var imageRevision = 0
+    @Published var errorMessage: String?
+    private(set) var backingScale: CGFloat = 2
+
+    init(prefs: AppPreferences, store: PresetStore) {
+        self.store = store
+        choices = PresetStartingPoint.choices(lastUsed: prefs.lastRenderSettings, presets: store.presets)
+        selectedID = choices[0].id
+        name = store.uniqueName("My preset")
+        image = SampleImage.make()
+    }
+
+    var selected: PresetStartingPoint? { choices.first { $0.id == selectedID } }
+    var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var validationMessage: String? {
+        if trimmedName.isEmpty { return "Enter a name for your preset." }
+        if store.preset(named: trimmedName) != nil { return "A preset with this name already exists." }
+        if selected == nil { return "Choose a starting point." }
+        return nil
+    }
+
+    func design() throws -> PresetDesign {
+        if let message = validationMessage { throw CreationError(message: message) }
+        guard let selected else { throw CreationError(message: "Choose a starting point.") }
+        return PresetDesign(image: image, backingScale: backingScale, settings: selected.settings, name: trimmedName)
+    }
+
+    func add() throws -> Preset {
+        let design = try design()
+        let previousDefault = store.defaultPresetID
+        let preset = store.add(name: design.name, settings: design.settings)
+        do {
+            try store.save()
+        } catch {
+            store.delete(id: preset.id)
+            store.defaultPresetID = previousDefault
+            throw error
+        }
+        return preset
+    }
+
+    func useImage(at url: URL) throws {
+        guard let loaded = NSImage(contentsOf: url),
+              let pixels = loaded.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw CreationError(message: "This file could not be opened as an image.")
+        }
+        image = pixels
+        backingScale = loaded.size.width > 0 ? CGFloat(pixels.width) / loaded.size.width : 1
+        imageName = url.lastPathComponent
+        imageRevision += 1
+        errorMessage = nil
+    }
+
+    private struct CreationError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+}
+
 private struct PresetsTab: View {
     @ObservedObject var model: PrefsModel
     @StateObject private var sel = Local<UUID?>(nil)
     @StateObject private var ticker = Local<Int>(0)
+    @StateObject private var adding = Local<Bool>(false)
+    @StateObject private var error = Local<String?>(nil)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text("Create a reusable look with a sample image, no screenshot needed.")
+                .font(.callout).foregroundStyle(.secondary)
             List(selection: $sel.value) {
                 ForEach(model.store.presets, id: \.id) { p in
                     HStack {
@@ -349,10 +459,10 @@ private struct PresetsTab: View {
             }
             .id(ticker.value)
             HStack {
-                Button("Add from last used") {
-                    _ = model.store.add(name: uniqueName("My preset"), settings: model.prefs.lastRenderSettings ?? .default)
-                    commit()
-                }
+                Button("Add Preset…") { adding.value = true }
+                    .help("Choose a starting look and preview it on a sample image")
+                Button("Edit…") { edit() }.disabled(sel.value == nil)
+                Spacer()
                 Button("Set default") {
                     if let id = sel.value {
                         model.store.setDefault(id: id)
@@ -360,6 +470,8 @@ private struct PresetsTab: View {
                         commit()
                     }
                 }.disabled(sel.value == nil)
+            }
+            HStack {
                 Button("Rename…") { rename() }.disabled(sel.value == nil)
                 Button("Delete") { if let id = sel.value { model.store.delete(id: id); sel.value = nil; commit() } }
                     .disabled(sel.value == nil || model.store.presets.count <= 1)
@@ -367,17 +479,47 @@ private struct PresetsTab: View {
                 Button("Import…") { importPresets() }
                 Button("Export…") { exportPresets() }
             }
+            if let message = error.value {
+                Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
         }
         .padding(8)
+        .sheet(isPresented: $adding.value) {
+            NewPresetSheet(model: model, onSaved: saved, onCustomize: openDesigner)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glintPreferencesChanged)) { _ in
+            ticker.value += 1
+            model.objectWillChange.send()
+        }
     }
 
-    private func uniqueName(_ base: String) -> String {
-        var n = base, i = 2
-        while model.store.preset(named: n) != nil { n = "\(base) \(i)"; i += 1 }
-        return n
+    private func saved(_ preset: Preset) {
+        sel.value = preset.id
+        error.value = nil
+        model.objectWillChange.send()
+        model.changed()
     }
 
-    private func commit() { try? model.store.save(); ticker.value += 1; model.changed() }
+    private func openDesigner(_ design: PresetDesign) {
+        model.openPresetDesigner(design, onSaved: saved)
+    }
+
+    private func edit() {
+        guard let id = sel.value, let preset = model.store.presets.first(where: { $0.id == id }) else { return }
+        openDesigner(PresetDesign(image: SampleImage.make(), backingScale: 2, settings: preset.settings,
+                                  name: preset.name, editingID: preset.id))
+    }
+
+    private func commit() {
+        do {
+            try model.store.save()
+            error.value = nil
+        } catch {
+            self.error.value = "Could not save presets: \(error.localizedDescription)"
+        }
+        ticker.value += 1
+        model.changed()
+    }
 
     private func rename() {
         guard let id = sel.value, let p = model.store.presets.first(where: { $0.id == id }) else { return }
@@ -404,6 +546,166 @@ private struct PresetsTab: View {
         let p = NSSavePanel()
         p.nameFieldStringValue = "glint-presets.json"
         if p.runModal() == .OK, let u = p.url { try? model.store.exportPresets(to: u) }
+    }
+}
+
+private struct NewPresetSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var draft: NewPresetModel
+    let onSaved: (Preset) -> Void
+    let onCustomize: (PresetDesign) -> Void
+
+    init(model: PrefsModel, onSaved: @escaping (Preset) -> Void, onCustomize: @escaping (PresetDesign) -> Void) {
+        _draft = StateObject(wrappedValue: NewPresetModel(prefs: model.prefs, store: model.store))
+        self.onSaved = onSaved
+        self.onCustomize = onCustomize
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New Preset").font(.title2.bold())
+            Text("Choose a starting point. Add it as-is or customize the look in the editor.")
+                .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(draft.choices) { choice in
+                        startingPoint(choice)
+                    }
+                }
+                .padding(2)
+            }
+            .frame(height: 280)
+            HStack {
+                Text(draft.imageName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                Button("Use My Image…") { chooseImage() }
+                    .help("Use your own preview image; it is never stored in the preset")
+            }
+            HStack {
+                Text("Name")
+                TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Preset name")
+            }
+            if let message = draft.errorMessage ?? draft.validationMessage {
+                Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            } else {
+                Text("Only the look is saved. Your last-used editor settings stay unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Customize in Editor…") {
+                    do {
+                        let design = try draft.design()
+                        dismiss()
+                        onCustomize(design)
+                    } catch { draft.errorMessage = error.localizedDescription }
+                }
+                .disabled(draft.validationMessage != nil)
+                Button("Add") {
+                    do {
+                        let preset = try draft.add()
+                        onSaved(preset)
+                        dismiss()
+                    } catch { draft.errorMessage = "Could not save preset: \(error.localizedDescription)" }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.validationMessage != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+    }
+
+    private func startingPoint(_ choice: PresetStartingPoint) -> some View {
+        let selected = choice.id == draft.selectedID
+        return Button {
+            draft.selectedID = choice.id
+            draft.errorMessage = nil
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                PresetThumbnail(settings: choice.settings, image: draft.image, backingScale: draft.backingScale)
+                    .id("\(choice.id)-\(draft.imageRevision)")
+                    .frame(height: 96)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(choice.name).font(.callout.weight(.medium)).lineLimit(1)
+                        Text(choice.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                }
+            }
+            .padding(10)
+            .background(selected ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(
+                selected ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: selected ? 2 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(choice.name), \(choice.detail)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(choice.name)
+    }
+
+    private func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try draft.useImage(at: url) } catch { draft.errorMessage = error.localizedDescription }
+    }
+}
+
+private struct PresetThumbnail: View {
+    let settings: RenderSettings
+    let image: CGImage
+    let backingScale: CGFloat
+    @StateObject private var rendered = Local<CGImage?>(nil)
+    @StateObject private var finished = Local<Bool>(false)
+    @StateObject private var error = Local<String?>(nil)
+
+    var body: some View {
+        Group {
+            if let image = rendered.value {
+                Image(decorative: image, scale: 1).resizable().scaledToFit()
+            } else if finished.value {
+                Label("Preview unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(error.value ?? "Customize in the editor to inspect this look.")
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task {
+            let settings = settings, image = image, scale = backingScale
+            let wallpaper: CGImage?
+            if settings.usesDesktopWallpaper {
+                switch DesktopWallpaper.current() {
+                case .success(let image): wallpaper = image
+                case .failure(let problem):
+                    error.value = problem.localizedDescription
+                    finished.value = true
+                    return
+                }
+            } else {
+                wallpaper = nil
+            }
+            let result = await Task.detached(priority: .userInitiated) {
+                PresetPreview.render(settings: settings, image: image, backingScale: scale,
+                                     fitting: CGSize(width: 420, height: 192), wallpaper: wallpaper)
+            }.value
+            guard !Task.isCancelled else { return }
+            rendered.value = result
+            finished.value = true
+        }
     }
 }
 

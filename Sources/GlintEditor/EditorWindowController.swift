@@ -36,6 +36,8 @@ final class EditorWindow: NSWindow {
 public final class EditorWindowController: NSWindowController, NSWindowDelegate {
     public var onClose: (() -> Void)?
     public var onExported: ((URL?) -> Void)?
+    /// Preset designer only: called after the preset is saved and persisted, before the window closes.
+    public var onPresetSaved: ((Preset) -> Void)?
 
     let model: EditorModel
     private let exportServices: EditorExportServices
@@ -43,13 +45,29 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private let canvas: CanvasView
     private var dragFiles: Set<URL> = []
     private var retryID: UUID?
+    private var presetSaved = false
 
     public convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
         self.init(context: context, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
     }
 
-    init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, exportServices: EditorExportServices) {
-        let model = EditorModel(context: context, preferences: preferences, presetStore: presetStore)
+    /// Opens the editor purely to design a preset on a preview image; it exports nothing.
+    public convenience init(design: PresetDesign, preferences: AppPreferences, presetStore: PresetStore) {
+        self.init(design: design, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
+    }
+
+    convenience init(design: PresetDesign, preferences: AppPreferences, presetStore: PresetStore, exportServices: EditorExportServices) {
+        let context = EditorContext(image: design.image, backingScale: design.backingScale, rawURL: nil, source: nil)
+        let model = EditorModel(context: context, preferences: preferences, presetStore: presetStore, design: design)
+        self.init(model: model, title: "Glint — \(model.designTitle)", exportServices: exportServices)
+    }
+
+    convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, exportServices: EditorExportServices) {
+        self.init(model: EditorModel(context: context, preferences: preferences, presetStore: presetStore),
+                  title: context.source.map { "Glint — \($0)" } ?? "Glint", exportServices: exportServices)
+    }
+
+    private init(model: EditorModel, title: String, exportServices: EditorExportServices) {
         self.model = model
         self.exportServices = exportServices
         self.canvas = CanvasView(model: model)
@@ -57,7 +75,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let window = EditorWindow(contentRect: NSRect(x: 0, y: 0, width: 1261, height: 704),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
-        window.title = context.source.map { "Glint — \($0)" } ?? "Glint"
+        window.title = title
         window.minSize = NSSize(width: 960, height: 560)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("")
@@ -72,6 +90,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.share = { [weak self] in self?.share() }
         actions.openRaw = { [weak self] in self?.openRaw() }
         actions.close = { [weak self] in self?.window?.close() }
+        actions.savePreset = { [weak self] in self?.savePresetAndClose() }
         actions.dragFileURL = { [weak self] in self?.prepareDragFile() }
     }
 
@@ -84,9 +103,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let root = NSView()
         window.contentView = root
 
-        let toolbar = NSHostingView(rootView: ToolStripView(model: model))
+        let designing = model.isDesigningPreset
+        let toolbar: NSView = designing ? NSHostingView(rootView: PresetDesignHeaderView(model: model))
+            : NSHostingView(rootView: ToolStripView(model: model))
         let inspector = NSHostingView(rootView: InspectorView(model: model))
-        let bottom = NSHostingView(rootView: BottomBarView(model: model, actions: actions))
+        let bottom: NSView = designing ? NSHostingView(rootView: PresetDesignBarView(model: model, actions: actions))
+            : NSHostingView(rootView: BottomBarView(model: model, actions: actions))
         for v in [toolbar, inspector, bottom, canvas] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
@@ -157,6 +179,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// Renders the final output, or reports the failure and returns nil so nothing unredacted is exported.
     private func renderForExport(failure: String, retry: @escaping (EditorWindowController) -> Void) -> CGImage? {
+        guard !model.isDesigningPreset else { return nil }
         do {
             return try model.renderFinal()
         } catch {
@@ -263,11 +286,52 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
+    // MARK: Preset designer
+
+    /// Saves the designed preset, then reports it and closes; failures stay visible in the bar.
+    func savePresetAndClose() {
+        guard model.isDesigningPreset, !presetSaved else { return }
+        guard model.canSaveDesign else { exportServices.beep(); return }
+        do {
+            let preset = try model.saveDesignedPreset()
+            presetSaved = true
+            model.statusMessage = nil
+            onPresetSaved?(preset)
+            window?.close()
+        } catch {
+            model.statusMessage = "Couldn't save the preset: \(error.localizedDescription)"
+            exportServices.beep()
+        }
+    }
+
+    private func handleDesignerShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, key: String) -> Bool {
+        if flags == .command {
+            switch key {
+            case "s": savePresetAndClose()
+            case "z": model.undoManager.undo()
+            case "w": window?.close()
+            default: return false
+            }
+            return true
+        }
+        if flags == [.command, .shift], key == "z" { model.undoManager.redo(); return true }
+        if flags.isEmpty {
+            switch event.keyCode {
+            case 36, 76: savePresetAndClose()
+            case 53: window?.close()
+            default: return false
+            }
+            return true
+        }
+        return false
+    }
+
     // MARK: Shortcuts
 
     func handleShortcut(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        if model.isDesigningPreset { return handleDesignerShortcut(event, flags: flags, key: key) }
         if flags == .command {
             switch key {
             case "c": copyAndMaybeClose()
