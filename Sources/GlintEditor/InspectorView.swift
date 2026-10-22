@@ -152,25 +152,20 @@ struct InspectorView: View {
         let scale = Double(model.backingScale)
         let sel = model.selectedAnnotations
         let isText = sel.isEmpty ? model.tool == .text : sel.allSatisfy { $0.kind.isText }
-        let hasBlur = sel.contains { $0.isObfuscation }
-        let isDrawingObfuscation = sel.isEmpty && model.tool == .redact && model.redactStyle.isObfuscation
-        let hasSolidRedact = sel.contains { $0.isRedaction }
-            || (sel.isEmpty && model.tool == .redact && model.redactStyle == .solid)
+        let modes = model.activeRedactionModes
         let hasShape = sel.contains { if case .rectangle = $0.kind { return true }; if case .ellipse = $0.kind { return true }; return false }
             || (sel.isEmpty && model.tool == .shape)
         return Section(title: sel.isEmpty ? "New \(model.tool.title.lowercased()) style" : "Selection (\(sel.count))") {
-            if model.tool == .redact {
-                Picker("Manual mode", selection: $model.redactStyle) {
-                    ForEach(RedactionStyle.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }.pickerStyle(.menu)
+            if model.tool == .redact || !modes.isEmpty {
+                RedactionModePicker(model: model)
             }
             if model.showsObfuscationWarning {
-                Label("Blur and pixelate are obfuscation, not secure redaction. Information may be recoverable. Use Solid redaction for secrets.",
+                Label("Blur is obfuscation, not secure redaction. Information may be recoverable. Use Solid or Pixelate for secrets.",
                       systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !hasBlur && !hasSolidRedact && !isDrawingObfuscation {
+            if modes.isEmpty {
                 SliderRow(title: isText ? "Font size" : "Stroke", value: Binding(
                     get: { (isText ? currentStyle.fontSize : currentStyle.strokeWidth) / scale },
                     set: { v in model.updateStyle(key: "size") { if isText { $0.fontSize = v * scale } else { $0.strokeWidth = v * scale } } }),
@@ -183,20 +178,18 @@ struct InspectorView: View {
                 Toggle("Bold", isOn: Binding(get: { currentStyle.bold }, set: { v in model.updateStyle(key: "bold") { $0.bold = v } }))
                     .toggleStyle(.checkbox)
             }
-            if hasBlur {
-                SliderRow(title: "Intensity", value: Binding(
-                    get: { currentStyle.intensity / scale },
-                    set: { v in model.updateStyle(key: "intensity") { $0.intensity = v * scale } }), range: 2...60)
+            if modes.contains(.blur) {
+                SliderRow(title: "Blur intensity", value: Binding(
+                    get: { model.redactionAppearance(for: .blur).intensity / scale },
+                    set: { model.setBlurIntensity($0 * scale) }), range: 2...60)
             }
-            if hasSolidRedact {
-                HStack {
-                    Text("Redaction colour").font(.system(size: 12))
-                    Spacer()
-                    ColorPicker("Redaction colour", selection: colorBinding({ model.redactColor }) { model.setRedactColor($0) }, supportsOpacity: false)
-                        .labelsHidden()
-                }
+            if modes.contains(.solid) {
+                solidRedactionControls
             }
-            if hasShape {
+            if modes.contains(.pixelate) {
+                pixelateControls
+            }
+            if hasShape && modes.isEmpty {
                 Toggle("Dashed", isOn: Binding(get: { currentStyle.dashed }, set: { v in model.updateStyle(key: "dash") { $0.dashed = v } }))
                     .toggleStyle(.checkbox)
                 Toggle("Filled", isOn: Binding(
@@ -217,6 +210,59 @@ struct InspectorView: View {
                 .accessibilityElement(children: .contain)
             }
         }
+    }
+
+    private var solidRedactionControls: some View {
+        let style = model.redactionAppearance(for: .solid)
+        return VStack(alignment: .leading, spacing: 8) {
+            Picker("Solid pattern", selection: Binding(
+                get: { model.redactionAppearance(for: .solid).redactionPattern },
+                set: { model.setRedactPattern($0) })) {
+                    Text("Plain").tag(RedactionPattern.plain)
+                    Text("Checkerboard").tag(RedactionPattern.checkerboard)
+                }
+                .pickerStyle(.segmented)
+                .help("Both patterns fully replace the covered pixels with opaque colours")
+            ColorPicker(style.redactionPattern == .checkerboard ? "Foreground colour" : "Redaction colour",
+                        selection: colorBinding({ model.redactionAppearance(for: .solid).color }) { model.setRedactColor($0) },
+                        supportsOpacity: false)
+            if style.redactionPattern == .checkerboard {
+                ColorPicker("Background colour",
+                            selection: colorBinding({ model.redactionAppearance(for: .solid).redactionSecondaryColor }) {
+                    model.setRedactSecondaryColor($0)
+                }, supportsOpacity: false)
+                redactionCellSize(for: .solid)
+            }
+        }
+        .font(.system(size: 12))
+    }
+
+    private var pixelateControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Opaque decorative mosaic. Original pixels are replaced, not sampled.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Highlight with redaction colour", isOn: Binding(
+                get: { model.redactionAppearance(for: .pixelate).pixelateHighlight },
+                set: { model.setPixelateHighlight($0) }))
+                .toggleStyle(.checkbox)
+                .help("Use the selected redaction colour as an accent in the secure mosaic")
+            if model.redactionAppearance(for: .pixelate).pixelateHighlight {
+                ColorPicker("Highlight colour",
+                            selection: colorBinding({ model.redactionAppearance(for: .pixelate).color }) { model.setRedactColor($0) },
+                            supportsOpacity: false)
+                    .font(.system(size: 12))
+            }
+            redactionCellSize(for: .pixelate)
+        }
+    }
+
+    private func redactionCellSize(for mode: RedactionStyle) -> some View {
+        let scale = Double(model.backingScale)
+        return SliderRow(title: mode == .solid ? "Checkerboard cell size" : "Pixelate cell size", value: Binding(
+            get: { model.redactionAppearance(for: mode).intensity / scale },
+            set: { model.setRedactCellSize($0 * scale) }), range: 2...60)
     }
 
     // MARK: Background

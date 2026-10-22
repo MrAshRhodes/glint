@@ -8,6 +8,19 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- A style-label menu for choosing Solid, Blur, or Pixelate, an optional two-colour checkerboard for Solid, and an optional solid-colour highlight for the Pixelate mosaic. ([#45])
+
+### Changed
+
+- The Redact icon and `3` shortcut activate the tool without cycling its style. Each image still starts with plain Solid, and automatic redaction always uses plain opaque fill. ([#45])
+- GlintCore: `AnnotationStyle` adds backward-compatible `redactionPattern`, `redactionSecondaryColor`, and `pixelateHighlight` fields. `Annotation.isRedaction` now includes secure Pixelate; `isObfuscation` identifies Blur only. ([#45])
+
+### Security
+
+- Pixelate now replaces covered pixels with an opaque, source-independent decorative mosaic instead of sampling sensitive content. Patterned Solid also replaces every tile and gap. Blur remains unsafe for secrets. ([#45])
+
 ## [1.2.1] - 2026-10-22
 
 ### Added
@@ -146,3 +159,4 @@ First public release.
 [#34]: https://github.com/MrAshRhodes/glint/pull/34
 [#37]: https://github.com/MrAshRhodes/glint/pull/37
 [#39]: https://github.com/MrAshRhodes/glint/issues/39
+[#45]: https://github.com/MrAshRhodes/glint/issues/45

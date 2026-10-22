@@ -43,7 +43,7 @@ Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annota
 Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border
 Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/content rects (px, top-left)
 ```
-Pipeline: auto-balance crop → annotations baked into content (solid redactions replace covered pixels) → rotate/flip →
+Pipeline: auto-balance crop → annotations baked into content (Solid and Pixelate replace covered pixels) → rotate/flip →
 inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
@@ -61,18 +61,28 @@ its input file is unchanged.
 `Annotation(id,z,kind,style)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)
 .blur(CGRect) .pixelate(CGRect) .redact(CGRect) .spotlight(CGRect) .emoji(center,String)`.
-`AnnotationStyle(color, fill?, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius)`.
-`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid only), `.isObfuscation` (blur/pixelate).
+`AnnotationStyle(color, fill?, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius,
+redactionPattern, redactionSecondaryColor, pixelateHighlight)`.
+`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid/pixelate), `.isObfuscation` (blur only).
 `AnnotationRenderer.draw(in ctx: CGContext, annotations:, imageSize:, source: CGImage?)` — `ctx` must map
 image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage?` (nil on failure).
-Blur and pixelate sample the *source* pixels. They are obfuscation, not secure redaction: information may be
-recoverable, so do not use them for secrets. `.redact` replaces covered pixels with fully opaque solid color,
-regardless of color alpha or annotation opacity. Blur/pixelate also retain their existing opacity-independent
-rendering behavior. Flattened output does not erase original images or separately saved raw captures.
+`.redact` and `.pixelate` replace covered pixels completely, regardless of color alpha or annotation opacity.
+Solid defaults to `redactionPattern: .plain`; `.checkerboard` alternates `color` and
+`redactionSecondaryColor`, with no transparent gaps. Pixelate draws a deterministic decorative mosaic from a
+non-sensitive palette, never from source pixels. `pixelateHighlight: true` incorporates `color` as an accent
+without removing the mosaic. `intensity` controls tile size in image pixels. New appearance fields decode
+older annotations using plain fill, a light secondary color, and no pixelation highlight.
+Blur alone samples source pixels and is obfuscation, not secure redaction: information may be recoverable,
+so do not use it for secrets. It retains its opacity-independent rendering behavior.
+Exported images contain the flattened replacement, not editable layers or embedded originals. This does
+not erase original images, separately saved raw captures, or the editor's in-memory undo history.
 
 `RedactionStyle` (`solid`, `blur`, `pixelate`) describes manual modes only, with `.displayName` and
 `.isObfuscation`. The editor's **Redact / Obfuscate** tool starts in Solid redaction mode for each image.
-The manual picker and repeated `3` shortcut can select obfuscation, with an unsafe-for-secrets warning.
+The current-style label is a native menu for Solid, Blur, or Pixelate; the Redact icon and `3` shortcut
+activate the tool without cycling modes. Inspector appearance controls edit patterns, colors, mosaic
+highlight, and tile size. Only Blur shows an unsafe-for-secrets warning. Appearance defaults are local
+to the editor session; automatic redaction remains plain opaque Solid.
 
 ## AutoBalance
 `AutoBalance.detectBorder(in:maxPixels:) -> BorderInfo?` (`color`, `perimeterFraction`, `margins`),
@@ -92,8 +102,9 @@ The manual picker and repeated `3` shortcut can select obfuscation, with an unsa
   Detection is a first pass, not a guarantee; review the exported image before sharing.
 
 API migration: `AutoRedactOptions.style` and its initializer argument have been removed. Remove `style:`
-from automatic-redaction calls; create explicit `.blur` or `.pixelate` annotations only for manual
-obfuscation. `Annotation.isRedaction` no longer includes those kinds; use `.isObfuscation` when needed.
+from automatic-redaction calls. Explicit `.blur` annotations are manual obfuscation;
+`.pixelate` now means secure source-independent replacement, not conventional source-derived pixelation.
+`Annotation.isRedaction` includes `.redact` and `.pixelate`; `.isObfuscation` identifies only `.blur`.
 Annotation case names and their serialized representations are unchanged.
 
 ## Export / paths

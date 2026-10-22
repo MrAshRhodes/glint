@@ -107,6 +107,8 @@ struct SensitiveInfoTests {
         #expect(a.count == 1)
         #expect(a.first?.kind == .redact(CGRect(x: 8, y: 8, width: 244, height: 24)))
         #expect(a.first?.style.color == .red)
+        #expect(a.first?.style.redactionPattern == .plain)
+        #expect(a.first?.style.pixelateHighlight == false)
         #expect(a.allSatisfy { $0.isRedaction && !$0.isObfuscation })
 
         let clipped = AutoRedact.annotations(for: [line], options: opts, imageSize: CGSize(width: 100, height: 25))

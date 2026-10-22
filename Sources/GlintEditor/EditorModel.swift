@@ -49,7 +49,7 @@ enum EditorTool: String, CaseIterable {
         case .select: return "Click to select, drag to move, Delete removes"
         case .text: return "Click to add text (press 1 again to change size)"
         case .arrow: return "Drag to draw an arrow (press 2 again for a plain line); hold Shift for 45°"
-        case .redact: return "Use solid redaction for secrets; blur/pixelate only obscure (press 3 to change mode)"
+        case .redact: return "Choose Solid or Pixelate for secrets; Blur only obscures. Use the style menu to change mode."
         case .shape: return "Drag to draw a shape (press 4 again to change shape); hold Shift for squares"
         case .pen: return "Draw freehand"
         case .highlighter: return "Highlight with a translucent stroke"
@@ -174,6 +174,7 @@ final class EditorModel: ObservableObject {
         var style = AnnotationStyle(color: preferences.annotationColor)
         style.strokeWidth = 4 * Double(max(context.backingScale, 1))
         style.fontSize = TextSizeVariant.normal.rawValue * Double(max(context.backingScale, 1))
+        style.intensity = 14 * Double(max(context.backingScale, 1))
         self.defaultStyle = style
         self.presets = presetStore.presets
         self.designMakeDefault = designIsDefault
@@ -190,8 +191,35 @@ final class EditorModel: ObservableObject {
 
     var selectedAnnotations: [Annotation] { annotations.filter { selection.contains($0.id) } }
 
+    private func redactionMode(of annotation: Annotation) -> RedactionStyle? {
+        switch annotation.kind {
+        case .redact: return .solid
+        case .blur: return .blur
+        case .pixelate: return .pixelate
+        default: return nil
+        }
+    }
+
+    var activeRedactionModes: Set<RedactionStyle> {
+        if selection.isEmpty { return tool == .redact ? [redactStyle] : [] }
+        return Set(selectedAnnotations.compactMap { redactionMode(of: $0) })
+    }
+
+    var currentRedactStyle: RedactionStyle {
+        selectedAnnotations.compactMap { redactionMode(of: $0) }.first ?? redactStyle
+    }
+
+    func redactionAppearance(for mode: RedactionStyle) -> AnnotationStyle {
+        if let selected = selectedAnnotations.first(where: { redactionMode(of: $0) == mode }) {
+            return selected.style
+        }
+        var style = defaultStyle
+        style.color = redactColor
+        return style
+    }
+
     var showsObfuscationWarning: Bool {
-        (tool == .redact && redactStyle.isObfuscation) || selectedAnnotations.contains { $0.isObfuscation }
+        activeRedactionModes.contains(.blur)
     }
 
     var canUndo: Bool { undoManager.canUndo }
@@ -311,6 +339,7 @@ final class EditorModel: ObservableObject {
     func setAnnotations(_ new: [Annotation], actionName: String?) {
         let old = annotations
         guard old != new else { return }
+        styleCoalesceKey = nil
         undoManager.registerUndo(withTarget: self) { target in
             MainActor.assumeIsolated { target.setAnnotations(old, actionName: actionName) }
         }
@@ -347,10 +376,11 @@ final class EditorModel: ObservableObject {
             style.color = RGBAColor(r: 1, g: 0.86, b: 0.1)
             style.strokeWidth = 22 * k
             style.opacity = 0.5
-        case .blur, .pixelate:
-            style.intensity = 14 * k
-        case .redact:
-            style.color = redactColor
+        case .redact, .pixelate:
+            style.color = redactColor.with(alpha: 1)
+            style.redactionSecondaryColor = style.redactionSecondaryColor.with(alpha: 1)
+            style.opacity = 1
+            style.cornerRadius = 0
         case .text:
             style.fontSize = defaultStyle.fontSize
         case .counter:
@@ -438,13 +468,85 @@ final class EditorModel: ObservableObject {
     }
 
     func setRedactColor(_ c: RGBAColor) {
-        redactColor = c
-        preferences.redactColor = c
-        let ids = Set(annotations.filter { if case .redact = $0.kind { return true }; return false }.map(\.id))
-        let target = selection.intersection(ids)
-        guard !target.isEmpty else { return }
-        setAnnotations(annotations.map { target.contains($0.id) ? { var a = $0; a.style.color = c; return a }($0) : $0 },
-                       actionName: "Change Colour")
+        let opaque = c.with(alpha: 1)
+        redactColor = opaque
+        preferences.redactColor = opaque
+        updateRedactionAppearance(actionName: "Change Redaction Colour", matching: { $0.isRedaction }) {
+            $0.color = opaque
+        }
+    }
+
+    private func updateRedactionAppearance(actionName: String, matching: (Annotation) -> Bool,
+                                           _ change: (inout AnnotationStyle) -> Void) {
+        var updated = annotations
+        for i in updated.indices where selection.contains(updated[i].id) && matching(updated[i]) {
+            change(&updated[i].style)
+        }
+        setAnnotations(updated, actionName: actionName)
+    }
+
+    func setRedactPattern(_ pattern: RedactionPattern) {
+        defaultStyle.redactionPattern = pattern
+        updateRedactionAppearance(actionName: "Change Redaction Pattern", matching: { redactionMode(of: $0) == .solid }) {
+            $0.redactionPattern = pattern
+        }
+    }
+
+    func setRedactSecondaryColor(_ color: RGBAColor) {
+        let opaque = color.with(alpha: 1)
+        defaultStyle.redactionSecondaryColor = opaque
+        updateRedactionAppearance(actionName: "Change Checkerboard Colour", matching: { redactionMode(of: $0) == .solid }) {
+            $0.redactionSecondaryColor = opaque
+        }
+    }
+
+    func setPixelateHighlight(_ enabled: Bool) {
+        defaultStyle.pixelateHighlight = enabled
+        updateRedactionAppearance(actionName: "Change Pixelate Highlight", matching: { redactionMode(of: $0) == .pixelate }) {
+            $0.pixelateHighlight = enabled
+        }
+    }
+
+    func setRedactCellSize(_ size: Double) {
+        guard size.isFinite else { return }
+        let size = min(max(size, 2 * pixelScale), 60 * pixelScale)
+        defaultStyle.intensity = size
+        updateRedactionAppearance(actionName: "Change Redaction Cell Size", matching: {
+            self.redactionMode(of: $0) == .pixelate
+                || (self.redactionMode(of: $0) == .solid && $0.style.redactionPattern == .checkerboard)
+        }) { $0.intensity = size }
+    }
+
+    func setBlurIntensity(_ intensity: Double) {
+        guard intensity.isFinite else { return }
+        let intensity = min(max(intensity, 2 * pixelScale), 60 * pixelScale)
+        defaultStyle.intensity = intensity
+        updateRedactionAppearance(actionName: "Change Blur Intensity", matching: { redactionMode(of: $0) == .blur }) {
+            $0.intensity = intensity
+        }
+    }
+
+    func setRedactStyle(_ mode: RedactionStyle) {
+        redactStyle = mode
+        let updated = annotations.map { annotation -> Annotation in
+            guard selection.contains(annotation.id), redactionMode(of: annotation) != nil else { return annotation }
+            var annotation = annotation
+            let rect = annotation.boundingBox
+            if annotation.isObfuscation && mode != .blur { annotation.style.color = redactColor }
+            switch mode {
+            case .solid: annotation.kind = .redact(rect)
+            case .blur: annotation.kind = .blur(rect)
+            case .pixelate: annotation.kind = .pixelate(rect)
+            }
+            if mode != .blur {
+                annotation.style.color = annotation.style.color.with(alpha: 1)
+                annotation.style.redactionSecondaryColor = annotation.style.redactionSecondaryColor.with(alpha: 1)
+                annotation.style.opacity = 1
+                annotation.style.cornerRadius = 0
+            }
+            return annotation
+        }
+        setAnnotations(updated, actionName: "Change Redaction Mode")
     }
 
     // MARK: Tools
@@ -455,9 +557,6 @@ final class EditorModel: ObservableObject {
             case .text: textSize = textSize.next; defaultStyle.fontSize = textSize.rawValue * pixelScale
             case .arrow: arrowIsLine.toggle()
             case .shape: shapeVariant = shapeVariant.next
-            case .redact:
-                let all = RedactionStyle.allCases
-                redactStyle = all[(all.firstIndex(of: redactStyle)! + 1) % all.count]
             default: break
             }
         } else {
@@ -471,7 +570,7 @@ final class EditorModel: ObservableObject {
         case .text: return "\(Int(textSize.rawValue)) pt"
         case .arrow: return arrowIsLine ? "Line" : "Arrow"
         case .shape: return shapeVariant.rawValue.capitalized
-        case .redact: return redactStyle.displayName
+        case .redact: return currentRedactStyle.displayName
         default: return nil
         }
     }

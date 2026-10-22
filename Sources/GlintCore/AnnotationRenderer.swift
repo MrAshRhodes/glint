@@ -77,16 +77,39 @@ enum ImageDrawing {
 
 public enum AnnotationRenderer {
     /// Draws annotations in z order. `ctx` must map image space (pixels, origin top-left, y down) onto the target.
-    /// `source` supplies the pixels sampled by blur / pixelate; if nil those fall back to solid boxes.
+    /// `source` supplies pixels for Blur only; if nil Blur falls back to solid boxes.
+    /// Secure redactions are removed from the sampling source before any Blur is drawn.
     public static func draw(in ctx: CGContext, annotations: [Annotation], imageSize: CGSize, source: CGImage? = nil) {
         let ordered = annotations.enumerated().sorted {
             $0.element.z != $1.element.z ? $0.element.z < $1.element.z : $0.offset < $1.offset
         }.map(\.element)
+        let redactions = ordered.filter(\.isRedaction)
+        let samplingSource: CGImage?
+        if let source, !redactions.isEmpty, ordered.contains(where: \.isObfuscation) {
+            // A later Blur must not restore a secret or spread it outside its redaction.
+            samplingSource = redactedSource(source, annotations: redactions, imageSize: imageSize)
+        } else {
+            samplingSource = source
+        }
         for a in ordered {
             ctx.saveGState()
-            draw(a, in: ctx, imageSize: imageSize, source: source)
+            draw(a, in: ctx, imageSize: imageSize, source: samplingSource)
             ctx.restoreGState()
         }
+    }
+
+    private static func redactedSource(_ source: CGImage, annotations: [Annotation], imageSize: CGSize) -> CGImage? {
+        guard imageSize.width > 0, imageSize.height > 0,
+              let ctx = GlintBitmap.makeContext(width: source.width, height: source.height) else { return nil }
+        ctx.draw(source, in: CGRect(x: 0, y: 0, width: source.width, height: source.height))
+        ctx.translateBy(x: 0, y: CGFloat(source.height))
+        ctx.scaleBy(x: CGFloat(source.width) / imageSize.width, y: -CGFloat(source.height) / imageSize.height)
+        for a in annotations {
+            ctx.saveGState()
+            draw(a, in: ctx, imageSize: imageSize, source: nil)
+            ctx.restoreGState()
+        }
+        return ctx.makeImage()
     }
 
     /// Returns the `region` (image space, may extend beyond the image; defaults to the whole image) with
@@ -227,8 +250,7 @@ public enum AnnotationRenderer {
             ctx.fillPath(using: .evenOdd)
 
         case .redact(let r):
-            ctx.setFillColor(s.color.with(alpha: 1).cgColor) // always opaque so pixels are destroyed
-            ctx.fill(r.standardized)
+            drawRedaction(r, style: s, mosaic: false, in: ctx, imageSize: imageSize)
 
         case .blur(let r):
             drawSampled(r.standardized, in: ctx, imageSize: imageSize, source: source, fallback: s.color) { crop in
@@ -236,8 +258,51 @@ public enum AnnotationRenderer {
             }
 
         case .pixelate(let r):
-            drawSampled(r.standardized, in: ctx, imageSize: imageSize, source: source, fallback: s.color) { crop in
-                pixelated(crop, cell: max(CGFloat(s.intensity), 6))
+            drawRedaction(r, style: s, mosaic: true, in: ctx, imageSize: imageSize)
+        }
+    }
+
+    private static let mosaicPalette: [RGBAColor] = [0.18, 0.28, 0.38, 0.48, 0.58].map {
+        RGBAColor(r: $0, g: $0, b: $0)
+    }
+
+    private static func drawRedaction(_ rect: CGRect, style: AnnotationStyle, mosaic: Bool,
+                                      in ctx: CGContext, imageSize: CGSize) {
+        guard rect.minX.isFinite, rect.minY.isFinite, rect.width.isFinite, rect.height.isFinite else { return }
+        let clipped = rect.standardized.intersection(CGRect(origin: .zero, size: imageSize))
+        guard !clipped.isNull, !clipped.isEmpty else { return }
+        // Cover every touched device pixel, including tiny selections at fractional preview/export scales.
+        let coverage = ctx.convertToUserSpace(ctx.convertToDeviceSpace(clipped).integral)
+        ctx.setShouldAntialias(false)
+        ctx.setAlpha(1)
+        ctx.setBlendMode(.normal)
+        ctx.setFillColor((mosaic ? mosaicPalette[0] : style.color).with(alpha: 1).cgColor)
+        ctx.fill(coverage)
+        guard mosaic || style.redactionPattern == .checkerboard else { return }
+
+        // The opaque undercoat makes tile seams safe even if the target transform rounds them differently.
+        ctx.clip(to: coverage)
+        let cell = CGFloat(style.intensity.isFinite ? max(style.intensity, 6) : 12)
+        let columns = Int(ceil((coverage.maxX - clipped.minX) / cell))
+        let rows = Int(ceil((coverage.maxY - clipped.minY) / cell))
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let color: RGBAColor
+                if mosaic {
+                    var hash = UInt64(column) &* 0x9E3779B97F4A7C15 &+ UInt64(row) &* 0xBF58476D1CE4E5B9
+                    hash = (hash ^ (hash >> 30)) &* 0xBF58476D1CE4E5B9
+                    hash = (hash ^ (hash >> 27)) &* 0x94D049BB133111EB
+                    let index = Int((hash ^ (hash >> 31)) % UInt64(mosaicPalette.count))
+                    color = style.pixelateHighlight && index == 0 ? style.color : mosaicPalette[index]
+                } else {
+                    color = (row + column).isMultiple(of: 2) ? style.color : style.redactionSecondaryColor
+                }
+                ctx.setFillColor(color.with(alpha: 1).cgColor)
+                let x = column == 0 ? coverage.minX : clipped.minX + CGFloat(column) * cell
+                let y = row == 0 ? coverage.minY : clipped.minY + CGFloat(row) * cell
+                ctx.fill(CGRect(x: x, y: y,
+                                width: clipped.minX + CGFloat(column + 1) * cell - x,
+                                height: clipped.minY + CGFloat(row + 1) * cell - y))
             }
         }
     }
@@ -284,16 +349,4 @@ public enum AnnotationRenderer {
         return ImageDrawing.ciContext.createCGImage(out, from: input.extent, format: .RGBA8, colorSpace: ColorSpaces.sRGB)
     }
 
-    static func pixelated(_ image: CGImage, cell: CGFloat) -> CGImage? {
-        let w = max(1, Int((CGFloat(image.width) / cell).rounded(.up)))
-        let h = max(1, Int((CGFloat(image.height) / cell).rounded(.up)))
-        guard let small = GlintBitmap.makeContext(width: w, height: h),
-              let big = GlintBitmap.makeContext(width: image.width, height: image.height) else { return nil }
-        small.interpolationQuality = .high
-        small.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let tiny = small.makeImage() else { return nil }
-        big.interpolationQuality = .none
-        big.draw(tiny, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return big.makeImage()
-    }
 }

@@ -171,7 +171,7 @@ public struct SensitiveInfoDetector: Sendable {
 
 // MARK: - Auto redact
 
-/// Modes for manual editing. Only solid fill is redaction; the other modes are obfuscation.
+/// Modes for manual editing. Solid and Pixelate replace source pixels; Blur is unsafe obfuscation.
 public enum RedactionStyle: String, Codable, CaseIterable, Sendable {
     case solid, blur, pixelate
 
@@ -179,11 +179,11 @@ public enum RedactionStyle: String, Codable, CaseIterable, Sendable {
         switch self {
         case .solid: return "Solid redaction"
         case .blur: return "Blur (obfuscation)"
-        case .pixelate: return "Pixelate (obfuscation)"
+        case .pixelate: return "Pixelate redaction"
         }
     }
 
-    public var isObfuscation: Bool { self != .solid }
+    public var isObfuscation: Bool { self == .blur }
 }
 
 public struct AutoRedactOptions: Sendable {

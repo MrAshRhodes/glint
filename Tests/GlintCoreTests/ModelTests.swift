@@ -106,12 +106,13 @@ struct ModelTests {
         #expect(moved.kind == .arrow(from: CGPoint(x: 11, y: 12), to: CGPoint(x: 40, y: 50)))
         #expect(!a.isRedaction && !a.isObfuscation)
         let region = CGRect(x: 0, y: 0, width: 5, height: 5)
-        let solid = Annotation(kind: .redact(region))
-        #expect(solid.isRedaction && !solid.isObfuscation)
-        for kind in [AnnotationKind.blur(region), .pixelate(region)] {
-            let obfuscation = Annotation(kind: kind)
-            #expect(!obfuscation.isRedaction && obfuscation.isObfuscation)
-            #expect(try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(obfuscation)) == obfuscation)
+        for kind in [AnnotationKind.redact(region), .pixelate(region)] {
+            let redaction = Annotation(kind: kind)
+            #expect(redaction.isRedaction && !redaction.isObfuscation)
+            #expect(try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(redaction)) == redaction)
         }
+        let obfuscation = Annotation(kind: .blur(region))
+        #expect(!obfuscation.isRedaction && obfuscation.isObfuscation)
+        #expect(try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(obfuscation)) == obfuscation)
     }
 }
