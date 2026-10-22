@@ -125,7 +125,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
         ctx.restoreGState()
 
         guard model.isEditable else {
-            drawHint("Reset rotation, flip and 3D tilt to edit annotations")
+            if !model.isDesigningPreset { drawHint("Reset rotation, flip and 3D tilt to edit annotations") }
             return
         }
         for a in model.selectedAnnotations where a.id != model.editingID { drawSelection(a, single: model.selection.count == 1) }
@@ -197,6 +197,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         endEditing()
+        guard !model.isDesigningPreset else { return }
         guard model.isEditable, model.preview != nil, displayRect.contains(convert(event.locationInWindow, from: nil)) else {
             if model.tool == .select { model.selection = [] }
             return

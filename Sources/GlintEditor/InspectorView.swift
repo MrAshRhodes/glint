@@ -73,14 +73,18 @@ struct InspectorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 presetsSection
-                if !model.selection.isEmpty || (model.tool != .select) { annotationSection }
+                if !model.isDesigningPreset, !model.selection.isEmpty || (model.tool != .select) {
+                    annotationSection
+                }
                 backgroundSection
                 sizeSection
                 ratioSection
                 frameSection
                 transformSection
-                redactSection
-                textSection
+                if !model.isDesigningPreset {
+                    redactSection
+                    textSection
+                }
                 watermarkSection
             }
             .padding(.horizontal, 14)
@@ -99,18 +103,21 @@ struct InspectorView: View {
                     ForEach(model.presets) { p in
                         Button(p.id == model.defaultPresetID ? "\(p.name) (default)" : p.name) { model.applyPreset(p) }
                     }
-                    Divider()
-                    Button("Save Current as Preset…") { ui.presetName = ""; ui.showSavePreset = true }
-                    Menu("Rename") {
-                        ForEach(model.presets) { p in Button(p.name) { ui.renameText = p.name; ui.renameTarget = p } }
+                    if !model.isDesigningPreset {
+                        Divider()
+                        Button("Save Current as Preset…") { ui.presetName = ""; ui.showSavePreset = true }
+                        Menu("Rename") {
+                            ForEach(model.presets) { p in Button(p.name) { ui.renameText = p.name; ui.renameTarget = p } }
+                        }
+                        Menu("Set as Default") {
+                            ForEach(model.presets) { p in Button(p.name) { model.setDefaultPreset(p) } }
+                        }
+                        Menu("Delete") {
+                            ForEach(model.presets) { p in Button(p.name, role: .destructive) { model.deletePreset(p) } }
+                        }
                     }
-                    Menu("Set as Default") {
-                        ForEach(model.presets) { p in Button(p.name) { model.setDefaultPreset(p) } }
-                    }
-                    Menu("Delete") {
-                        ForEach(model.presets) { p in Button(p.name, role: .destructive) { model.deletePreset(p) } }
-                    }
-                } label: { Text("Presets") }
+                } label: { Text(model.isDesigningPreset ? "Start From" : "Presets") }
+                .help(model.isDesigningPreset ? "Use an existing preset as the starting point" : "Apply or manage presets")
                 .popover(isPresented: $ui.showSavePreset, arrowEdge: .bottom) {
                     nameInput(title: "Save preset", text: $ui.presetName, action: "Save") {
                         model.savePreset(named: ui.presetName); ui.showSavePreset = false
@@ -383,7 +390,7 @@ struct InspectorView: View {
                 Button { model.settings.flipVertical.toggle() } label: { Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down") }.help("Flip vertically")
                 Spacer()
             }
-            if !model.isEditable {
+            if !model.isEditable, !model.isDesigningPreset {
                 Text("Annotations are paused while rotated, flipped or tilted.").font(.caption).foregroundStyle(.secondary)
             }
         }

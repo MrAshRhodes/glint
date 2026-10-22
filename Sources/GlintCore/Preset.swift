@@ -51,6 +51,13 @@ public final class PresetStore {
 
     public func preset(named name: String) -> Preset? { presets.first { $0.name == name } }
 
+    /// `base`, or `base 2`, `base 3`, … — the first name no preset uses yet.
+    public func uniqueName(_ base: String) -> String {
+        var name = base, n = 2
+        while preset(named: name) != nil { name = "\(base) \(n)"; n += 1 }
+        return name
+    }
+
     public func load() throws {
         let data = try Data(contentsOf: url)
         let file = try JSONDecoder().decode(PresetFile.self, from: data)

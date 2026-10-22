@@ -11,6 +11,7 @@ final class EditorActions: ObservableObject {
     var share: () -> Void = {}
     var openRaw: () -> Void = {}
     var close: () -> Void = {}
+    var savePreset: () -> Void = {}
     var dragFileURL: () -> URL? = { nil }
 }
 
