@@ -246,7 +246,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
         let retry: (EditorWindowController) -> Void = { controller in
             if controller.prepareDragFile() != nil {
-                controller.model.statusMessage = "Drag the thumbnail again to export."
+                controller.model.statusMessage = "Drag to share again."
             }
         }
         guard let image = renderForExport(failure: "Drag export failed", retry: retry) else { return nil }
@@ -255,7 +255,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             _ = try exportServices.write(image, url, .plainPNG, model.preferences.exportScale, model.backingScale)
             dragFiles.insert(url)
             clearRetry()
-            model.statusMessage = "Drag the thumbnail to export"
+            model.statusMessage = "Dragging image to share"
             return url
         } catch {
             offerRetry(failure: "Drag export failed: \(error.localizedDescription)", retry: retry)
