@@ -295,10 +295,11 @@ function pageSource(page) {
 
 function themeBootstrap(page) {
   const head = pageSource(page).match(/<head>([\s\S]*?)<\/head>/)[1];
-  const inline = [...head.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  const scripts = [...head.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
+  const inline = scripts.filter((match) => !/(?:^|\s)src\s*=/i.test(match[1]));
   assert.equal(inline.length, 1, `${page}: expected one inline theme bootstrap`);
   assert.ok(inline[0].index < head.search(/<link rel="stylesheet"/), `${page}: theme bootstrap must run before the stylesheet`);
-  return inline[0][1];
+  return inline[0][2];
 }
 
 test("every page has one hidden, enhanceable theme toggle and scheme-aware metadata", () => {
