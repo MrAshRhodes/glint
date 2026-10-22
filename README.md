@@ -55,6 +55,11 @@ Glint.app/Contents/MacOS/Glint --list-presets
 Glint.app/Contents/MacOS/Glint --diagnose
 ```
 
+`--diagnose` checks Screen Recording permission without requesting access and prints only permission state,
+aggregate display/window/application counts, and fixed status messages. It does not print window titles,
+app identities, process/window/display identifiers, or per-display details. Review reports before sharing:
+aggregate counts still describe your desktop activity.
+
 ## Build from source
 
 ```sh
