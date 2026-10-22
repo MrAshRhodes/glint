@@ -66,7 +66,7 @@ For a manual installation, save your work and quit Glint, then download the late
 - **Presets**: save, apply and set a default look.
 - **Export**: PNG, JPEG, HEIC, TIFF; 1x/2x; clipboard; Save As; share sheet; drag out. Optional raw and output folders.
 - **Safe retry**: failed exports keep the image and annotations in the editor with a **Retry** action. If capture auto-redaction or rendering fails, choose **Retry** or **Discard Capture**. Recovery stays in memory while the editor or prompt is open; it never creates an unredacted backup or bypasses redaction.
-- **Automation**: `glint://capture-area`, `capture-window`, `capture-fullscreen`, `capture-text`, `open?file=…`, and a CLI:
+- **Automation**: `glint://capture-area`, `capture-window`, `capture-fullscreen`, `capture-text`, `repeat-last`, `open?file=…`, and a CLI. Every capture URL requires confirmation before Glint captures, saves or copies anything, even with Screen Recording permission. Cancel leaves the screen uncaptured; there is no "always allow" option. Capture URLs received while confirmation or capture is in progress are rejected, not queued; send a new request afterward. Menu/hotkey captures, non-capture URLs and CLI rendering are unchanged:
 
 ```sh
 Glint.app/Contents/MacOS/Glint --render in.png out.png --preset "Social 16:9" --scale 2
