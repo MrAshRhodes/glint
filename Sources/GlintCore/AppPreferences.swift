@@ -125,6 +125,7 @@ public final class AppPreferences {
         public static let compressToJPEG = "glint.compressToJPEG"
         public static let jpegQuality = "glint.jpegQuality"
         public static let lastRenderSettings = "glint.lastRenderSettings"
+        public static let rememberSettings = "glint.rememberSettings"
         public static let annotationColor = "glint.annotationColor"
         public static let redactColor = "glint.redactColor"
         /// Legacy key retained only so resetToDefaults clears it.
@@ -134,7 +135,7 @@ public final class AppPreferences {
              openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions, defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
              hideWindowsDuringCapture, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
-             compressToJPEG, jpegQuality, lastRenderSettings, annotationColor, redactColor, redactStyle]
+             compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
         }
     }
 
@@ -235,6 +236,12 @@ public final class AppPreferences {
     }
     public var lastRenderSettings: RenderSettings? {
         get { decode(Key.lastRenderSettings, as: RenderSettings.self) } set { encode(newValue, Key.lastRenderSettings) }
+    }
+    /// Whether the editor starts from `lastRenderSettings` rather than the default preset.
+    /// Until the user chooses, it keeps the earlier behavior: on unless a default preset has been picked.
+    public var rememberSettings: Bool {
+        get { bool(Key.rememberSettings, defaultPresetName == nil) }
+        set { defaults.set(newValue, forKey: Key.rememberSettings) }
     }
 
     // MARK: app
