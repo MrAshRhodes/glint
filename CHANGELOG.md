@@ -8,9 +8,11 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-22
+
 ### Added
 
-- This changelog, covering every release since 1.0.0. GitHub release notes now come from the release's section here.
+- This changelog, covering every release since 1.0.0. GitHub release notes now come from the release's section here. ([#26], [#30])
 - **Add Preset…** in Preferences → Presets opens a **New Preset** sheet. Pick a starting point (your last-used settings, a saved preset, or a deleted built-in preset), each previewed on a built-in sample image, then name it and choose **Add**, or **Customize in Editor…** to fine-tune it in the Preset Designer. **Use My Image…** previews your own image instead; it is never stored in the preset. ([#33])
 - **Edit…** in Preferences → Presets opens the selected preset in the Preset Designer. Saving updates it in place, including a new name, and a default preset stays the default. Designing a preset does not change your last-used editor settings. ([#33])
 - GlintCore API: `PresetStore.uniqueName(_:)`, which returns the base name or the first unused numbered variant, such as "Preset 2". ([#33])
@@ -21,6 +23,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 - **Add Preset…** replaces **Add from last used** in Preferences → Presets; last-used settings are now one of the starting points in the New Preset sheet. ([#33])
 - Make editor sharing easier to discover with a labeled **Drag to share** preview tile and a visible **Copy ⌘C** shortcut. ([#32])
+
+### Security
+
+- Address CodeQL's script-tag matching alert in the theme-bootstrap test helper. Script tags are now matched case-insensitively, with attributes and closing-tag whitespace supported, while external scripts are excluded. This changes test code only, not application or site runtime behavior. ([#37])
 
 ## [1.1.1] - 2026-10-22
 
@@ -106,7 +112,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/MrAshRhodes/glint/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/MrAshRhodes/glint/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/MrAshRhodes/glint/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/MrAshRhodes/glint/compare/v1.0.0...v1.0.1
@@ -121,6 +128,9 @@ First public release.
 [#20]: https://github.com/MrAshRhodes/glint/pull/20
 [#21]: https://github.com/MrAshRhodes/glint/pull/21
 [#22]: https://github.com/MrAshRhodes/glint/pull/22
+[#26]: https://github.com/MrAshRhodes/glint/pull/26
+[#30]: https://github.com/MrAshRhodes/glint/pull/30
 [#32]: https://github.com/MrAshRhodes/glint/pull/32
 [#33]: https://github.com/MrAshRhodes/glint/pull/33
 [#34]: https://github.com/MrAshRhodes/glint/pull/34
+[#37]: https://github.com/MrAshRhodes/glint/pull/37
