@@ -115,7 +115,7 @@ Run `node --test .github/scripts/site.test.cjs` (Node.js 20+) for asset/link int
 
 ### Cutting a release
 
-1. Update `VERSION`, merge to `main` and wait for CI to pass.
+1. Update `VERSION` and the [changelog](CHANGELOG.md). Move the Unreleased entries into a new `## [X.Y.Z] - YYYY-MM-DD` section using the release date, keep an Unreleased section for future changes, and update the version comparison links. Merge to `main` and wait for CI to pass.
 2. Push a tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
 3. `.github/workflows/release.yml` builds the universal app, creates the GitHub release with generated notes, and attaches the zip, the dmg and their checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases and do not touch the Homebrew tap.
 4. Update the tap. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow does it. Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
@@ -155,7 +155,8 @@ Every change to `main` needs an issue and a pull request, including documentatio
 2. Create a focused branch from `main`, for example `feat/123-short-description`.
 3. Open a pull request to `main` and put `Fixes #123` in its description, outside comments and code blocks. `Closes` and `Resolves` also work, as do same-repository issue URLs. A PR number, nonexistent issue or issue in another repository does not count. Existing closed issues are allowed for follow-up work.
 4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy (Node.js 20+).
-5. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
+5. Record notable user-visible changes under Unreleased in the [changelog](CHANGELOG.md), grouped as Added, Changed, Deprecated, Removed, Fixed, or Security. Call out breaking changes and any action users need to take.
+6. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
 
 The issue-link check runs again when a PR is opened, reopened, updated, marked ready or its description is edited. It reads the current description and verifies the referenced issues with a read-only token. Do not rename either required job without updating branch protection.
 

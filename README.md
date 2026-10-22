@@ -6,7 +6,7 @@ Open-source screenshot beautifier for macOS. Capture an area, window or screen, 
 
 Glint is an independent project, released under the MIT license. It is not affiliated with or endorsed by any other screenshot product.
 
-**[Product site](https://mrashrhodes.github.io/glint/)** · **[User guide](https://mrashrhodes.github.io/glint/guide.html)** · **[Releases](https://github.com/MrAshRhodes/glint/releases/latest)**
+**[Product site](https://mrashrhodes.github.io/glint/)** · **[User guide](https://mrashrhodes.github.io/glint/guide.html)** · **[Releases](https://github.com/MrAshRhodes/glint/releases/latest)** · **[Changelog](CHANGELOG.md)**
 
 ## Install
 
