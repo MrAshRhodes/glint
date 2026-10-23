@@ -7,8 +7,11 @@ public struct RenderLayout: Equatable, Sendable {
     public var canvasSize: CGSize
     public var cardRect: CGRect
     public var contentRect: CGRect
+    /// Content plus the inset band: the area the frame chrome surrounds.
+    public var screenRect: CGRect
     public var padding: CGFloat
     public var inset: CGFloat
+    /// Top frame inset (title bar) in pixels.
     public var barHeight: CGFloat
     /// Total points→pixels factor (`backingScale × outputScale`).
     public var factor: CGFloat
@@ -128,17 +131,20 @@ public enum Compositor {
         let k = max(backingScale, 0.1) * outScale
         let padding = (CGFloat(floor(max(settings.padding, 0))) * k).rounded()
         let inset = insetApplied ? (CGFloat(floor(max(settings.inset, 0))) * k).rounded() : 0
-        let bar = (CGFloat(settings.windowFrame.barHeight) * k).rounded()
+        let frame = settings.windowFrame.insets
+        func px(_ points: Double) -> CGFloat { (CGFloat(max(points, 0)) * k).rounded() }
+        let bar = px(frame.top), left = px(frame.left), bottom = px(frame.bottom), right = px(frame.right)
         let cw = max((contentSize.width * outScale).rounded(), 1)
         let ch = max((contentSize.height * outScale).rounded(), 1)
-        let cardW = cw + 2 * inset, cardH = ch + 2 * inset + bar
+        let cardW = cw + 2 * inset + left + right, cardH = ch + 2 * inset + bar + bottom
         var W = cardW + 2 * padding, H = cardH + 2 * padding
         if let r = settings.aspectRatio.ratio {
             if W / H < r { W = (H * r).rounded(.up) } else { H = (W / r).rounded(.up) }
         }
         let card = CGRect(x: floor((W - cardW) / 2), y: floor((H - cardH) / 2), width: cardW, height: cardH)
-        let contentRect = CGRect(x: card.minX + inset, y: card.minY + bar + inset, width: cw, height: ch)
+        let contentRect = CGRect(x: card.minX + left + inset, y: card.minY + bar + inset, width: cw, height: ch)
         return RenderLayout(canvasSize: CGSize(width: W, height: H), cardRect: card, contentRect: contentRect,
+                            screenRect: contentRect.insetBy(dx: -inset, dy: -inset),
                             padding: padding, inset: inset, barHeight: bar, factor: k)
     }
 
@@ -168,7 +174,8 @@ public enum Compositor {
                                  insetColor: RGBAColor?) {
         let H = layout.canvasSize.height, k = layout.factor
         let card = toBL(layout.cardRect, canvasHeight: H)
-        let radius = min(CGFloat(max(settings.cornerRadius, 0)) * k, min(card.width, card.height) / 2)
+        let cornerRadius = settings.windowFrame.metrics.corner.resolve(settings.cornerRadius)
+        let radius = min(CGFloat(max(cornerRadius, 0)) * k, min(card.width, card.height) / 2)
         let path = CGPath(roundedRect: card, cornerWidth: radius, cornerHeight: radius, transform: nil)
 
         // shadows: render the shape far off-canvas so only its shadow lands inside
@@ -192,9 +199,12 @@ public enum Compositor {
             ctx.setFillColor(insetColor.cgColor)
             ctx.fill(card)
         }
-        if layout.barHeight > 0 { drawTitleBar(settings.windowFrame, in: ctx, card: card, bar: layout.barHeight, factor: k) }
+        let frame = FrameCanvas(ctx: ctx, card: card, screen: toBL(layout.screenRect, canvasHeight: H),
+                                bar: layout.barHeight, k: k, radius: radius, frame: settings.windowFrame)
+        FrameRenderer.drawChrome(frame)
         ctx.interpolationQuality = .high
         ctx.draw(content, in: toBL(layout.contentRect, canvasHeight: H))
+        FrameRenderer.drawOverlay(frame)
         ctx.restoreGState()
 
         if settings.border.enabled, settings.border.width > 0 {
@@ -207,48 +217,6 @@ public enum Compositor {
             ctx.addPath(CGPath(roundedRect: inner, cornerWidth: r, cornerHeight: r, transform: nil))
             ctx.strokePath()
             ctx.restoreGState()
-        }
-    }
-
-    private static func drawTitleBar(_ frame: WindowFrameSettings, in ctx: CGContext, card: CGRect, bar: CGFloat, factor k: CGFloat) {
-        let dark = frame.dark
-        let barRect = CGRect(x: card.minX, y: card.maxY - bar, width: card.width, height: bar)
-        ctx.setFillColor((RGBAColor(hex: dark ? "#2B2B2D" : "#ECECEC") ?? .white).cgColor)
-        ctx.fill(barRect)
-        ctx.setFillColor((RGBAColor(hex: dark ? "#000000" : "#D0D0D0") ?? .black).cgColor)
-        ctx.fill(CGRect(x: barRect.minX, y: barRect.minY, width: barRect.width, height: max(1, k * 0.5)))
-
-        let d = 12 * k
-        for (i, hex) in ["#FF5F57", "#FEBC2E", "#28C840"].enumerated() {
-            ctx.setFillColor((RGBAColor(hex: hex) ?? .red).cgColor)
-            ctx.fillEllipse(in: CGRect(x: card.minX + 14 * k + CGFloat(i) * 20 * k, y: barRect.midY - d / 2, width: d, height: d))
-        }
-
-        let textColor = (RGBAColor(hex: dark ? "#C8C8CC" : "#4A4A4F") ?? .black).cgColor
-        let font = TextDrawing.font(name: "Helvetica Neue", size: 13 * k, bold: false)
-        switch frame.style {
-        case .macOS:
-            guard !frame.title.isEmpty else { return }
-            let lines = TextDrawing.lines(frame.title, font: font, color: textColor, maxWidth: 0)
-            let size = TextDrawing.blockSize(lines, font: font)
-            TextDrawing.draw(lines, font: font, topLeft: CGPoint(x: barRect.midX - size.width / 2, y: barRect.midY + size.height / 2),
-                             in: ctx, flipped: false)
-        case .browser:
-            let pill = CGRect(x: card.minX + 80 * k, y: barRect.midY - 12 * k, width: max(card.width - 96 * k, 0), height: 24 * k)
-            guard pill.width > 20 * k else { return }
-            ctx.setFillColor((RGBAColor(hex: dark ? "#1C1C1E" : "#FFFFFF") ?? .white).cgColor)
-            ctx.addPath(CGPath(roundedRect: pill, cornerWidth: 12 * k, cornerHeight: 12 * k, transform: nil))
-            ctx.fillPath()
-            if !frame.title.isEmpty {
-                let lines = TextDrawing.lines(frame.title, font: font, color: textColor, maxWidth: 0)
-                let size = TextDrawing.blockSize(lines, font: font)
-                ctx.saveGState()
-                ctx.clip(to: pill.insetBy(dx: 8 * k, dy: 0))
-                TextDrawing.draw(lines, font: font, topLeft: CGPoint(x: pill.midX - size.width / 2, y: pill.midY + size.height / 2),
-                                 in: ctx, flipped: false)
-                ctx.restoreGState()
-            }
-        case .none: break
         }
     }
 

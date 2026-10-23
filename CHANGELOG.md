@@ -8,6 +8,15 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- Nine new frame styles alongside None, macOS and Browser, grouped in a **Frame** menu: Windows (Code Editor, Terminal), Devices (Phone, Retro Monitor, Handheld Console) and Playful (Pixel Arcade, Comic Panel, Film Strip, Photo Print). Each has light and dark versions and an optional label, such as a file name, caption or player name, looks the same in the preview and the export, and is saved in presets. Retro Monitor and Pixel Arcade add subtle scanlines and glare; uncheck **Screen effects** to turn them off. None, macOS and Browser frames are unchanged. ([#51])
+
+### Changed
+
+- The inspector's **Window frame** section is now **Frame**, with a grouped menu instead of a segmented control. The label field's placeholder shows what the chosen style uses it for. ([#51])
+- GlintCore: `WindowFrameKind` adds `ide`, `terminal`, `phone`, `retro`, `arcade`, `handheld`, `comic`, `filmStrip` and `photo`, plus `displayName`, `category` and `titlePlaceholder`; exhaustive `switch` statements over it must handle the new cases. `WindowFrameSettings` adds backward-compatible `screenEffects` (stored only when off) and `metrics`/`insets` (`FrameMetrics`, `FrameInsets`, `FrameCornerRule`). `RenderLayout` adds `screenRect`; frames can now add chrome on any side, so `contentRect` may also be offset horizontally. ([#51])
+
 ## [1.3.0] - 2026-10-22
 
 ### Added
@@ -170,3 +179,4 @@ First public release.
 [#45]: https://github.com/MrAshRhodes/glint/issues/45
 [#42]: https://github.com/MrAshRhodes/glint/issues/42
 [#43]: https://github.com/MrAshRhodes/glint/issues/43
+[#51]: https://github.com/MrAshRhodes/glint/issues/51
