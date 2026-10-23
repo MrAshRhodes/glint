@@ -32,10 +32,18 @@ final class EditorWindow: NSWindow {
     }
 }
 
+/// How the editor handed out its composed image without saving it.
+public enum EditorShareKind: Sendable {
+    case copied, dragged
+}
+
 @MainActor
 public final class EditorWindowController: NSWindowController, NSWindowDelegate {
     public var onClose: (() -> Void)?
     public var onExported: ((URL?) -> Void)?
+    /// Called after the composed image was copied to the clipboard or prepared as a drag payload, with the exact
+    /// image that was exported and its backing scale. Never called when rendering or exporting fails.
+    public var onImageShared: ((CGImage, EditorShareKind, CGFloat) -> Void)?
     /// Preset designer only: called after the preset is saved and persisted, before the window closes.
     public var onPresetSaved: ((Preset) -> Void)?
 
@@ -64,7 +72,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, exportServices: EditorExportServices) {
         self.init(model: EditorModel(context: context, preferences: preferences, presetStore: presetStore),
-                  title: context.source.map { "Glint — \($0)" } ?? "Glint", exportServices: exportServices)
+                  title: context.windowTitle, exportServices: exportServices)
     }
 
     private init(model: EditorModel, title: String, exportServices: EditorExportServices) {
@@ -160,6 +168,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             clearRetry()
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
+            onImageShared?(image, .copied, model.backingScale)
             if closeAfterSuccess, model.preferences.closeAfterCopy { window?.close() }
             return true
         } else {
@@ -279,6 +288,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             dragFiles.insert(url)
             clearRetry()
             model.statusMessage = "Dragging image to share"
+            onImageShared?(image, .dragged, model.backingScale)
             return url
         } catch {
             offerRetry(failure: "Drag export failed: \(error.localizedDescription)", retry: retry)

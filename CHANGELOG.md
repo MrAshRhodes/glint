@@ -10,6 +10,9 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ### Added
 
+- **Reopen Last Image** in the menu bar menu (next to **Open Image…** and **Open Recent**) and the File menu, which reopens the latest image you copied or dragged out even if you never saved it. It works once you turn on **Keep copied and dragged screenshots for reopening** in Preferences → Output (off by default). Glint then keeps the finished image, annotations and redactions included, in the Output folder when you copy it (editor Copy, clipboard-only capture, automatic copy after capture) or drag it out (editor **Drag to share**, quick-access thumbnail). The image stays available after the editor closes, the clipboard changes or Glint restarts, and reopens as a flattened result, so a frame or background is never applied twice. Keeping images needs **Keep history**, reuses the file **Save styled output** already saved instead of adding a duplicate, never keeps the original capture, and leaves **Save untouched raw capture** images alone. ([#52])
+- **Keep screenshots in Output for** in Preferences → Output: **Forever** (the default), **1 day**, **7 days**, **30 days** or **90 days**. A finite period moves expired images to the Trash, but only images Glint itself saved after you opted in. Raw captures, manual saves and exports, files that were already in the Output folder, symlinks and files in use for a drag are never removed. Cleanup runs in the background, never the instant you change the setting. Both new settings are off by default, so installing or upgrading Glint keeps its current behavior, and **Reset all preferences** restores them. ([#52])
+- GlintCore API: `OutputRetention` with `OutputRetentionPeriod`, `OutputRetentionSource`, `RetainedOutput`, `OutputCleanupReport`, `OutputRetentionError` and `OutputActiveFiles`, plus `AppPreferences.keepCopiedImages` and `AppPreferences.outputRetention`. ([#52])
 - Nine new frame styles alongside None, macOS and Browser, grouped in a **Frame** menu: Windows (Code Editor, Terminal), Devices (Phone, Retro Monitor, Handheld Console) and Playful (Pixel Arcade, Comic Panel, Film Strip, Photo Print). Each has light and dark versions and an optional label, such as a file name, caption or player name, looks the same in the preview and the export, and is saved in presets. Retro Monitor and Pixel Arcade add subtle scanlines and glare; uncheck **Screen effects** to turn them off. None, macOS and Browser frames are unchanged. ([#51])
 
 ### Changed
@@ -179,4 +182,5 @@ First public release.
 [#45]: https://github.com/MrAshRhodes/glint/issues/45
 [#42]: https://github.com/MrAshRhodes/glint/issues/42
 [#43]: https://github.com/MrAshRhodes/glint/issues/43
+[#52]: https://github.com/MrAshRhodes/glint/issues/52
 [#51]: https://github.com/MrAshRhodes/glint/issues/51

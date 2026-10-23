@@ -3,7 +3,7 @@ import GlintCapture
 import GlintCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     let prefs: AppPreferences
     let presetStore = PresetStore()
     lazy var pipeline = CapturePipeline(prefs: prefs, presetStore: presetStore)
@@ -14,8 +14,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             startCapture: { pipeline.start($0) }
         ))
     }()
+    lazy var cleanupScheduler: OutputCleanupScheduler = {
+        let pipeline = pipeline
+        return OutputCleanupScheduler(run: { await pipeline.runOutputCleanup() })
+    }()
+    /// How long quitting waits for kept screenshots that are still being written.
+    var terminationGrace: Duration = .seconds(3)
+    var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
+    private var cleanupObserver: NSObjectProtocol?
     private var statusItem: NSStatusItem?
     private let menu: NSMenu
+    private let reopenMenuItems = NSHashTable<NSMenuItem>.weakObjects()
 
     init(prefs: AppPreferences = .shared, menu: NSMenu = NSMenu()) {
         self.prefs = prefs
@@ -34,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         updateStatusItem()
         registerHotkeys()
+        startOutputCleanup()
         NotificationCenter.default.addObserver(forName: .glintPreferencesChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.registerHotkeys()
@@ -47,12 +57,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Starts the scheduled Output cleanup; each preferences change also asks for a (debounced) pass.
+    func startOutputCleanup() {
+        cleanupScheduler.start()
+        Task { await pipeline.refreshReopenAvailability() }
+        guard cleanupObserver == nil else { return }
+        cleanupObserver = NotificationCenter.default.addObserver(forName: .glintPreferencesChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.cleanupScheduler.preferencesChanged()
+                Task { await self.pipeline.refreshReopenAvailability() }
+            }
+        }
+    }
+
+    func stopOutputCleanup() {
+        cleanupScheduler.stop()
+        if let cleanupObserver { NotificationCenter.default.removeObserver(cleanupObserver) }
+        cleanupObserver = nil
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { PreferencesWindowController.shared.present() }
         return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Quitting right after a copy must not lose the kept screenshot that is still being written.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard pipeline.isKeepingScreenshots else { return .terminateNow }
+        Task { @MainActor [pipeline, terminationGrace, replyToTermination] in
+            let drained = await pipeline.waitForRetention(timeout: terminationGrace)
+            if !drained { pipeline.notifyRetentionPreventedQuit() }
+            replyToTermination(drained)
+        }
+        return .terminateLater
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
@@ -136,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        Task { await pipeline.refreshReopenAvailability() }
         guard menu === self.menu else { return }
         menu.removeAllItems()
         add(menu, "Capture Area", #selector(captureArea), hotkey: .captureArea)
@@ -160,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Open Image…", #selector(openImage), key: "o")
         let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         let recentMenu = NSMenu()
-        let urls = RecentFiles.urls
+        let urls = RecentFiles.list(defaults: prefs.defaults)
         if urls.isEmpty {
             recentMenu.addItem(withTitle: "No Recent Items", action: nil, keyEquivalent: "").isEnabled = false
         } else {
@@ -175,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         recent.submenu = recentMenu
         menu.addItem(recent)
+        addReopenItem(to: menu)
         add(menu, "Show Output Folder", #selector(showOutput))
         add(menu, "Show Raw Folder", #selector(showRaw))
         menu.addItem(.separator())
@@ -214,7 +257,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func openRecent(_ sender: NSMenuItem) { if let u = sender.representedObject as? URL { pipeline.openFile(u) } }
     @objc private func clearRecent() { RecentFiles.clear() }
+    @objc private func reopenLastImage() { Task { await pipeline.reopenLastImage() } }
     @objc private func checkUpdates() { UpdateChecker.check() }
+
+    /// Menu validation must never wait for the index lock or disk; menu opening refreshes this cache asynchronously.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(reopenLastImage) { return pipeline.canReopenLastImage }
+        return true
+    }
 
     @objc private func openImage() {
         let panel = NSOpenPanel()
@@ -245,6 +295,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: main menu (Edit/Window so ⌘ shortcuts work in the editor)
 
+    func populateFileMenu(_ file: NSMenu) {
+        file.delegate = self
+        file.addItem(withTitle: "Open Image…", action: #selector(openImage), keyEquivalent: "o").target = self
+        addReopenItem(to: file)
+        file.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    }
+
+    private func addReopenItem(to menu: NSMenu) {
+        let item = add(menu, "Reopen Last Image", #selector(reopenLastImage))
+        item.isEnabled = pipeline.canReopenLastImage
+        reopenMenuItems.add(item)
+        pipeline.onReopenAvailabilityChanged = { [weak self] available in
+            self?.reopenMenuItems.allObjects.forEach { $0.isEnabled = available }
+        }
+    }
+
     private func installMainMenu() {
         let main = NSMenu()
         func submenu(_ title: String) -> NSMenu {
@@ -267,8 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         app.addItem(withTitle: "Quit Glint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let file = submenu("File")
-        file.addItem(withTitle: "Open Image…", action: #selector(openImage), keyEquivalent: "o").target = self
-        file.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        populateFileMenu(file)
 
         let edit = submenu("Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")

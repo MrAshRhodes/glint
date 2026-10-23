@@ -88,6 +88,8 @@ final class EditorModel: ObservableObject {
     let backingScale: CGFloat
     let rawURL: URL?
     let source: String?
+    /// The image is already a finished output, so it opens flattened and its look isn't remembered.
+    let isComposed: Bool
     let preferences: AppPreferences
     let presetStore: PresetStore
     /// Set when the editor only designs a preset; the image is a throwaway preview.
@@ -98,7 +100,7 @@ final class EditorModel: ObservableObject {
         didSet {
             guard settings != oldValue else { return }
             if settings.usesDesktopWallpaper != oldValue.usesDesktopWallpaper { refreshWallpaper() }
-            if design == nil {
+            if remembersSettings {
                 preferences.lastRenderSettings = settings
                 preferences.autoBalance = settings.autoBalance
             }
@@ -162,13 +164,15 @@ final class EditorModel: ObservableObject {
         self.backingScale = max(context.backingScale, 1)
         self.rawURL = context.rawURL
         self.source = context.source
+        self.isComposed = context.isComposed
         self.preferences = preferences
         self.presetStore = presetStore
         self.design = design
         self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
-        self.settings = design?.settings ?? EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore)
+        self.settings = design?.settings
+            ?? (context.isComposed ? .passThrough : EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore))
         self.redactOptions = preferences.autoRedactOptions
         self.redactColor = preferences.redactColor
         var style = AnnotationStyle(color: preferences.annotationColor)
@@ -180,10 +184,13 @@ final class EditorModel: ObservableObject {
         self.designMakeDefault = designIsDefault
         refreshWallpaper()
         requestRender()
-        if preferences.autoRedact, design == nil { Task { await self.runAutoRedact(announce: false) } }
+        if preferences.autoRedact, design == nil, !isComposed { Task { await self.runAutoRedact(announce: false) } }
     }
 
     // MARK: State helpers
+
+    /// A normal capture remembers its look for the next one; a preset designer or reopened image must not overwrite it.
+    private var remembersSettings: Bool { design == nil && !isComposed }
 
     var isEditable: Bool {
         settings.tilt.isFlat && settings.rotation == .none && !settings.flipHorizontal && !settings.flipVertical

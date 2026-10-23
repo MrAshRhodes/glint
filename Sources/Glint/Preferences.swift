@@ -257,6 +257,7 @@ private struct OutputTab: View {
                 Toggle("Save untouched raw capture", isOn: model.bind(\.saveRaw))
                 Toggle("Save styled output", isOn: model.bind(\.saveOutput))
             }
+            OutputRetentionSection(model: model)
             Section("Export") {
                 Picker("Format", selection: kind) { ForEach(FormatKind.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                 if kind.wrappedValue != .png {
@@ -277,6 +278,59 @@ private struct OutputTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Keeping copied and dragged screenshots for Reopen Last Image, and how long Output keeps them.
+/// Both settings need Keep history. While it is off they are dimmed and keep their stored choice, and nothing
+/// here turns history back on.
+struct OutputRetentionSection: View {
+    static let title = "Reopen & cleanup"
+    static let keepTitle = "Keep copied and dragged screenshots for reopening"
+    static let periodTitle = "Keep screenshots in Output for"
+    /// Forever first, then the finite periods from shortest to longest.
+    static let periods = OutputRetentionPeriod.allCases
+
+    static let keepDetail = "Needs Keep history. Copied and dragged images are saved to Output/ "
+        + "for Reopen Last Image, reusing the file Save styled output wrote. "
+        + "Raw/ is never touched, whatever Save untouched raw capture is set to."
+    static let periodDetail = "Forever never removes anything. A shorter period moves expired images to the Trash, "
+        + "but only ones Glint saved to Output/ after you opted in. "
+        + "Existing files, Raw/ and anything you save or export yourself are left alone."
+    static let keepPausedDetail = "Needs Keep history, which is off. Nothing is kept for reopening until "
+        + "you turn it on, and Glint never turns it on for you."
+    static let periodPausedDetail = "Needs Keep history, which is off. Nothing is removed until you turn it on."
+
+    static func isEnabled(_ prefs: AppPreferences) -> Bool { prefs.saveHistory }
+    static func keepCaption(_ prefs: AppPreferences) -> String {
+        isEnabled(prefs) ? keepDetail : keepPausedDetail
+    }
+    static func periodCaption(_ prefs: AppPreferences) -> String {
+        isEnabled(prefs) ? periodDetail : periodPausedDetail
+    }
+
+    @ObservedObject var model: PrefsModel
+
+    var body: some View {
+        let enabled = Self.isEnabled(model.prefs)
+        Section(Self.title) {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle(Self.keepTitle, isOn: model.bind(\.keepCopiedImages))
+                    .disabled(!enabled)
+                caption(Self.keepCaption(model.prefs))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Picker(Self.periodTitle, selection: model.bind(\.outputRetention)) {
+                    ForEach(Self.periods) { Text($0.displayName).tag($0) }
+                }
+                .disabled(!enabled)
+                caption(Self.periodCaption(model.prefs))
+            }
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }
 

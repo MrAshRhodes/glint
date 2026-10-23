@@ -7,13 +7,32 @@ public struct EditorContext {
     public let backingScale: CGFloat
     public let rawURL: URL?
     public let source: String?
+    /// True when `image` is already a finished output (such as a reopened last image). The editor shows it
+    /// flattened: no frame, background, padding or shadow is applied again, it is not auto-redacted a second
+    /// time, and look changes made in the session are not remembered for the next capture.
+    public let isComposed: Bool
 
-    public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?) {
+    public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false) {
         self.image = image
         self.backingScale = backingScale
         self.rawURL = rawURL
         self.source = source
+        self.isComposed = isComposed
     }
+
+    var windowTitle: String {
+        if isComposed { return "Glint — last image" }
+        return source.map { "Glint — \($0)" } ?? "Glint"
+    }
+}
+
+extension RenderSettings {
+    /// Renders an already-composed image unchanged: nothing is added around it, cropped or restyled.
+    static let passThrough = RenderSettings(
+        padding: 0, inset: 0, cornerRadius: 0, shadow: .none, background: .transparent, aspectRatio: .auto,
+        border: BorderStyle(), windowFrame: WindowFrameSettings(), tilt: .zero, rotation: .none,
+        flipHorizontal: false, flipVertical: false, watermark: WatermarkSettings(), autoBalance: false,
+        outputScale: 1, usesDesktopWallpaper: false)
 }
 
 /// UI-free rendering with the same settings resolution the editor uses.
@@ -35,7 +54,8 @@ public enum EditorHeadless {
         return settings
     }
 
-    /// Composes the capture with the current preferences (and auto-redaction when enabled).
+    /// Composes the capture with the current preferences (and auto-redaction when enabled). An already-composed
+    /// image is returned as it is: it is neither styled nor auto-redacted a second time.
     /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     @MainActor
     public static func render(context: EditorContext, preferences: AppPreferences,
@@ -44,7 +64,7 @@ public enum EditorHeadless {
                               onWallpaperFailure: (DesktopWallpaperError) -> Void = {
                                   FileHandle.standardError.write(Data("warning: \($0.localizedDescription)\n".utf8))
                               }) throws -> CGImage {
-        let settings = initialSettings(preferences: preferences)
+        let settings: RenderSettings = context.isComposed ? .passThrough : initialSettings(preferences: preferences)
         var wallpaper: CGImage?
         if settings.usesDesktopWallpaper {
             switch wallpaperProvider() {
@@ -53,7 +73,7 @@ public enum EditorHeadless {
             }
         }
         var annotations: [Annotation] = []
-        if preferences.autoRedact, let lines = try? recognizeText(context.image) {
+        if preferences.autoRedact, !context.isComposed, let lines = try? recognizeText(context.image) {
             var options = AutoRedactOptions(detector: preferences.autoRedactOptions, color: preferences.redactColor)
             options.padding = 3 * Double(context.backingScale)
             annotations = AutoRedact.annotations(for: lines, options: options, imageSize: context.image.pixelSize)

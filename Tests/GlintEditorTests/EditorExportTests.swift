@@ -17,6 +17,13 @@ private let redaction = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 50, h
 
 private let notAppliedMessage = RenderError.annotationsNotApplied.localizedDescription
 
+/// What `EditorWindowController.onImageShared` reported.
+private struct SharedImage {
+    let image: CGImage
+    let kind: EditorShareKind
+    let backingScale: CGFloat
+}
+
 private func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
     NSEvent.keyEvent(
         with: .keyDown,
@@ -634,5 +641,175 @@ struct EditorExportTests {
         if mode == .pixelate || decorated { #expect(colors.count > 1) }
         else { #expect(colors.count == 1) }
         #expect(expectedPixels.pixel(0, 0) == (255, 255, 255, 255))
+    }
+
+    // MARK: Reporting copied and dragged images
+
+    @Test func copyReportsTheRenderedImageAndBackingScale() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = false
+        var services = EditorExportServices()
+        var copies: [CGImage] = []
+        services.copy = { copies.append($0); return true }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        controller.model.updateLive([redaction])
+        var shared: [SharedImage] = []
+        controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
+
+        #expect(controller.copyToClipboard())
+        let event = try #require(shared.first)
+        #expect(shared.count == 1 && event.kind == .copied && event.backingScale == 2)
+        #expect(copies.count == 1 && event.image === copies[0])
+        #expect(event.image.width == 100 && event.image.height == 80)
+        try expectRedacted(event.image)
+        try expectRedacted(event.image, x: 49, y: 39)
+        #expect(try #require(PixelBuffer(event.image)).pixel(75, 60) == (255, 255, 255, 255))
+    }
+
+    @Test func copyAndCloseReportsTheImageBeforeTheWindowCloses() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = true
+        var services = EditorExportServices()
+        services.copy = { _ in true }
+        let controller = f.controller(services: services)
+        var events: [String] = []
+        controller.onImageShared = { _, kind, _ in events.append("shared \(kind)") }
+        controller.onClose = { events.append("closed") }
+
+        controller.copyAndMaybeClose()
+        #expect(events == ["shared copied", "closed"])
+    }
+
+    @Test func dragReportsTheRenderedImageOnceThePayloadExists() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let dragDirectory = f.directory.appendingPathComponent("Drag")
+        var services = EditorExportServices()
+        services.dragDirectory = dragDirectory
+        var writes: [(url: URL, backingScale: CGFloat)] = []
+        services.write = { image, url, format, scale, backing in
+            writes.append((url, backing))
+            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backing)
+        }
+        let controller = f.controller(services: services)
+        controller.model.updateLive([redaction])
+        var shared: [SharedImage] = []
+        var payloadsPresent: [Int] = []
+        controller.onImageShared = {
+            shared.append(SharedImage(image: $0, kind: $1, backingScale: $2))
+            payloadsPresent.append(((try? FileManager.default.contentsOfDirectory(atPath: dragDirectory.path)) ?? []).count)
+        }
+        var exports = 0
+        controller.onExported = { _ in exports += 1 }
+
+        let payload = try #require(controller.prepareDragFile())
+        let event = try #require(shared.first)
+        #expect(shared.count == 1 && event.kind == .dragged && event.backingScale == 2 && payloadsPresent == [1])
+        #expect(writes.count == 1 && writes[0].url == payload && writes[0].backingScale == event.backingScale)
+        #expect(payload.deletingLastPathComponent().path == dragDirectory.path)
+        try expectRedacted(event.image)
+        try expectRedacted(try #require(GlintImageIO.load(url: payload)))
+        #expect(exports == 0)
+
+        // The drag cache stays disposable and separate: closing removes the payload, and the editor itself
+        // never writes into the save or history folders (keeping copies is up to the app).
+        controller.window?.close()
+        #expect(!FileManager.default.fileExists(atPath: payload.path))
+        #expect(shared.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: f.preferences.saveDirectory.path))
+        #expect(!FileManager.default.fileExists(atPath: f.preferences.historyDirectory.path))
+    }
+
+    @Test func nothingIsReportedWhenAnnotationsCannotBeBaked() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = true
+        var services = EditorExportServices()
+        services.dragDirectory = f.directory.appendingPathComponent("Drag")
+        var copies = 0
+        services.copy = { _ in copies += 1; return true }
+        services.beep = {}
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var shared: [SharedImage] = []
+        controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
+
+        #expect(!controller.copyToClipboard())
+        controller.copyAndMaybeClose()
+        #expect(controller.prepareDragFile() == nil)
+        #expect(copies == 0 && shared.isEmpty)
+        #expect(controller.model.statusMessage == "Drag export failed: \(notAppliedMessage)")
+
+        // Once the annotations can be applied again the retried drag is reported, and only once.
+        controller.model.renderer = EditorModel.compositorRenderer
+        let retry = try #require(controller.actions.retryExport)
+        retry()
+        let event = try #require(shared.first)
+        #expect(shared.count == 1 && event.kind == .dragged)
+        try expectRedacted(event.image)
+        retry()
+        #expect(shared.count == 1)
+    }
+
+    @Test func retriedCopyIsReportedOnlyOnceItSucceeds() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = false
+        var services = EditorExportServices()
+        var canCopy = false
+        services.copy = { _ in canCopy }
+        services.beep = {}
+        let controller = failingController(f, services: services)
+        defer { controller.window?.close() }
+        var shared: [SharedImage] = []
+        controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
+
+        #expect(!controller.copyToClipboard())
+        controller.model.renderer = EditorModel.compositorRenderer
+        let renderedRetry = try #require(controller.actions.retryExport)
+        renderedRetry()
+        #expect(shared.isEmpty)
+        canCopy = true
+        let clipboardRetry = try #require(controller.actions.retryExport)
+        clipboardRetry()
+        let event = try #require(shared.first)
+        #expect(shared.count == 1 && event.kind == .copied && event.backingScale == 2)
+        try expectRedacted(event.image)
+        clipboardRetry()
+        #expect(shared.count == 1)
+    }
+
+    @Test func nothingIsReportedWhenTheClipboardOrDragWriteFails() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        services.dragDirectory = f.directory.appendingPathComponent("Drag")
+        services.copy = { _ in false }
+        services.write = { _, _, _, _, _ in throw ExportTestFailure.refused }
+        services.beep = {}
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        var shared = 0
+        controller.onImageShared = { _, _, _ in shared += 1 }
+
+        #expect(!controller.copyToClipboard())
+        controller.copyAndMaybeClose()
+        #expect(controller.prepareDragFile() == nil)
+        controller.saveOutput()
+        #expect(shared == 0)
+    }
+
+    @Test func savingAndTheShareSheetAreNotReportedAsCopiesOrDrags() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        var services = EditorExportServices()
+        var sheets = 0
+        services.share = { _, _ in sheets += 1 }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        var shared = 0
+        var saved: [URL] = []
+        controller.onImageShared = { _, _, _ in shared += 1 }
+        controller.onExported = { if let url = $0 { saved.append(url) } }
+
+        controller.saveOutput()
+        controller.actions.share()
+        #expect(saved.count == 1 && sheets == 1 && shared == 0)
     }
 }

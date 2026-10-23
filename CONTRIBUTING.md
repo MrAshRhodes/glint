@@ -221,6 +221,21 @@ After `make test` and `make app`, check the same selection through area, area-to
 
 Profile both the first overlay and a warm overlay with snapping off/on. Record candidate preparation separately from input handling and drawing; synthetic geometry timings alone cannot establish that first-load lag ([#42](https://github.com/MrAshRhodes/glint/issues/42)) is unchanged. Do not enumerate windows, capture pixels or run a detector per pointer event.
 
+## Reopen Last Image and Output retention
+
+Keeping copied and dragged images is opt-in ([#52](https://github.com/MrAshRhodes/glint/issues/52)). Unit tests use temporary directories, a controllable clock, an injected trash closure and private `UserDefaults` suites, never your real Output folder or Trash.
+
+### Retention release checks
+
+After `make test` and `make app`, point Preferences → Output → History folder at a scratch folder and check both the menu bar menu and the File menu:
+
+1. **Defaults.** After **Reset all preferences**, or when upgrading from a release without this feature, the toggle is off, the period is **Forever**, **Reopen Last Image** is dimmed, and copying, dragging and waiting save and remove nothing (no `.glint-output-index.json` appears).
+2. **Copy, drag, reopen.** Turn on **Keep copied and dragged screenshots for reopening**. For editor **Copy ⌘C**, a clipboard-only capture (⌃⌥⌘5), **Copy to clipboard** after capture, **Drag to share** and a quick-access thumbnail drag: finish the action, close the editor or let the thumbnail disappear, replace the clipboard, then choose **Reopen Last Image**. It opens the composed image with annotations and redactions intact and no second frame or background, and repeating the action with the unchanged image creates no duplicate in `Output/`. A failed render keeps nothing; an unwritable Output folder shows a notification while the copy or drag still succeeds.
+3. **Restart persistence.** Copy an image and quit Glint immediately. Glint waits up to three seconds for pending writes; if they are still running, it cancels that quit attempt and notifies you to quit again once saving finishes. After relaunching, **Reopen Last Image** still opens it and **Open Recent** lists it. Delete the newest kept file in Finder: the item opens the next newest image, or is dimmed when none is left; an unreadable file is reported and forgotten. Opening either menu must stay responsive during slow cleanup, and its Reopen item updates when the background availability check finishes. Unavailable ordinary recent files are hidden, not forgotten, so reconnecting their drive restores them.
+4. **Other settings.** With **Save styled output** on, the kept image is the file already saved, not a second one. `Raw/`, files saved with Save or Save As, and files that were already in `Output/` are never changed.
+5. **Cleanup.** Choose **1 day**. With Glint quit, set the `date` (seconds since 1970) of two kept images in the scratch `.glint-output-index.json` to more than a day ago, `touch` one of them, and add a symlink, a pre-existing image, a Raw image and a manual save, then relaunch. Shortly after launch only the untouched back-dated image moves to the Trash. The `touch`ed image stays and is no longer tracked, the other files stay, a file being dragged is skipped, and nothing is removed the instant the picker changes. Choosing **Forever** again removes nothing else.
+6. **History off.** Turn **Keep history** off: the toggle is dimmed with an explanation, nothing new is kept or removed, and Glint never turns history back on. Turning it on again resumes keeping and cleanup.
+
 ## Product site
 
 The dependency-free site in `site/` is published to <https://mrashrhodes.github.io/glint/> by `.github/workflows/pages.yml` on changes to that directory on `main`, or by manual workflow dispatch. The Pages publishing source must be **GitHub Actions**. Only `site/` is uploaded; research, source and build outputs are not published to Pages.
