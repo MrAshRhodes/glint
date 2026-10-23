@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-23
+
 ### Added
 
 - **Reopen Last Image** in the menu bar menu (next to **Open Image…** and **Open Recent**) and the File menu, which reopens the latest image you copied or dragged out even if you never saved it. It works once you turn on **Keep copied and dragged screenshots for reopening** in Preferences → Output (off by default). Glint then keeps the finished image, annotations and redactions included, in the Output folder when you copy it (editor Copy, clipboard-only capture, automatic copy after capture) or drag it out (editor **Drag to share**, quick-access thumbnail). The image stays available after the editor closes, the clipboard changes or Glint restarts, and reopens as a flattened result, so a frame or background is never applied twice. Keeping images needs **Keep history**, reuses the file **Save styled output** already saved instead of adding a duplicate, never keeps the original capture, and leaves **Save untouched raw capture** images alone. ([#52])
@@ -154,7 +156,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/MrAshRhodes/glint/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/MrAshRhodes/glint/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/MrAshRhodes/glint/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/MrAshRhodes/glint/compare/v1.1.1...v1.2.0
