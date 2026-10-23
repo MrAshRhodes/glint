@@ -413,15 +413,27 @@ struct InspectorView: View {
     // MARK: Frame / transform
 
     private var frameSection: some View {
-        Section(title: "Window frame") {
+        Section(title: "Frame") {
             Picker("Style", selection: s.windowFrame.style) {
-                Text("None").tag(WindowFrameKind.none)
-                Text("macOS").tag(WindowFrameKind.macOS)
-                Text("Browser").tag(WindowFrameKind.browser)
-            }.pickerStyle(.segmented).labelsHidden()
-            if model.settings.windowFrame.style != .none {
+                Text(WindowFrameKind.none.displayName).tag(WindowFrameKind.none)
+                ForEach(WindowFrameCategory.allCases, id: \.self) { category in
+                    SwiftUI.Section(category.displayName) {
+                        ForEach(WindowFrameKind.allCases.filter { $0.category == category }, id: \.self) { kind in
+                            Text(kind.displayName).tag(kind)
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.menu).labelsHidden()
+            .accessibilityLabel("Frame style")
+            let frame = model.settings.windowFrame
+            if frame.style != .none {
                 Toggle("Dark", isOn: s.windowFrame.dark).toggleStyle(.checkbox)
-                TextField("Title", text: s.windowFrame.title).textFieldStyle(.roundedBorder)
+                TextField(frame.style.titlePlaceholder, text: s.windowFrame.title).textFieldStyle(.roundedBorder)
+                if frame.metrics.supportsScreenEffects {
+                    Toggle("Screen effects", isOn: s.windowFrame.screenEffects).toggleStyle(.checkbox)
+                        .help("Subtle scanlines and glare")
+                }
             }
             Toggle("Outline border", isOn: s.border.enabled).toggleStyle(.checkbox)
         }
