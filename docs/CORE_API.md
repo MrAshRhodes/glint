@@ -117,6 +117,103 @@ Annotation case names and their serialized representations are unchanged.
   `{uuid}`), `FileNaming.uniqueURL(directory:baseName:ext:)` (collision → `-2`, `-3`…). Default template
   `Glint-{datetime}`; raw = `Glint-{datetime}-{uuid}.png` in `Raw/`, output in `Output/`.
 
+## Output retention (`OutputRetention.swift`)
+Opt-in keeping of the composed images a user copied or dragged, plus age-based cleanup of the images Glint itself
+saved to `Output/`. It backs **Reopen Last Image** and **Keep screenshots in Output for**. Nothing is written,
+tracked or deleted until the user opts in (`AppPreferences.keepCopiedImages`, or a finite
+`AppPreferences.outputRetention`), and everything is paused while `saveHistory` is off; history is never switched
+back on. The Output folder is `prefs.outputPaths.outputDirectory`, read on every call, so a changed history folder
+is respected.
+```swift
+public enum OutputRetentionPeriod: Int, CaseIterable, Sendable, Identifiable {
+    case forever = 0, oneDay = 1, sevenDays = 7, thirtyDays = 30, ninetyDays = 90
+    public init(storedDays: Int)    // unknown or negative → .forever (fail safe)
+    public var days: Int?           // nil for .forever
+    public var displayName: String  // "Forever", "1 day", "7 days", "30 days", "90 days"
+    public var id: Int
+}
+public enum OutputRetentionSource: String, Codable, Sendable { case copied, dragged, saved }
+public struct RetainedOutput: Equatable, Sendable {
+    public let url: URL
+    public let date: Date           // written or last reused; cleanup ages the file from here
+    public let source: OutputRetentionSource
+    public let backingScale: CGFloat  // pixels per point of the stored file, to reopen it at the right size
+    public let reused: Bool         // an existing tracked file already held this image
+    public init(url: URL, date: Date, source: OutputRetentionSource, backingScale: CGFloat, reused: Bool = false)
+}
+public struct OutputCleanupReport: Equatable, Sendable {
+    public var removed: [URL]; public var skippedActive: [URL]; public var untracked: [URL]
+    public var failures: [String]; public var isEmpty: Bool
+    public init(removed: [URL] = [], skippedActive: [URL] = [], untracked: [URL] = [], failures: [String] = [])
+}
+public enum OutputRetentionError: Error, Equatable, LocalizedError { case disabled, encodingFailed, writeFailed(String) }
+
+public final class OutputRetention: @unchecked Sendable {
+    public init(preferences: AppPreferences, now: @escaping @Sendable () -> Date = { Date() },
+                moveToTrash: @escaping @Sendable (URL) throws -> Void = { try OutputRetention.moveToSystemTrash($0) },
+                activeFiles: OutputActiveFiles = .shared)
+    public var retainsCopies: Bool       // keepCopiedImages && saveHistory
+    public var tracksSavedOutputs: Bool  // saveHistory && (keepCopiedImages || outputRetention != .forever)
+    public var cleansUp: Bool            // saveHistory && outputRetention != .forever
+    public func retain(_ image: CGImage, source: OutputRetentionSource, backingScale: CGFloat) throws -> RetainedOutput
+    public func register(savedFile url: URL, image: CGImage, backingScale: CGFloat)
+    public func register(savedFile url: URL, image: CGImage, backingScale: CGFloat, exportScale: ExportScale)
+    public func latest() -> RetainedOutput?
+    public func isManaged(_ url: URL) -> Bool
+    public func discard(_ url: URL)
+    public func cleanUp() -> OutputCleanupReport
+    public static func moveToSystemTrash(_ url: URL) throws
+}
+
+/// Files in use for a drag, which `cleanUp()` skips.
+public final class OutputActiveFiles: @unchecked Sendable {
+    public static let shared: OutputActiveFiles
+    public init()
+    public func begin(_ url: URL); public func end(_ url: URL); public func contains(_ url: URL) -> Bool
+}
+```
+- Every method is thread-safe and touches the disk (`retain` also encodes the image), so call them off the main
+  thread. One process-wide lock, shared by all instances, guards each read-modify-write of the index.
+- `retain` takes the **successfully rendered** image (annotations and redactions baked in), never the original
+  capture, so call it only after `Compositor.render` has succeeded. It throws `.disabled` unless `retainsCopies`
+  (checked again before anything is written, so turning keeping off or moving the Output folder while an image is
+  still being encoded writes nothing), writes the image to the Output folder with the user's `exportFormat`/`exportScale` and `OutputPaths.outputURL`
+  naming, and records it. It never replaces an existing file, and removes the new file again if it cannot be
+  tracked. An image whose pixels match an unchanged tracked file (SHA-256 of normalized sRGB RGBA8 pixels plus
+  dimensions) reuses that file (`reused == true`) and refreshes its date instead of writing a duplicate. Report
+  a failure, but do not treat the copy or drag it belongs to as failed.
+- `register(savedFile:image:backingScale:)` tracks a file Glint just saved to the Output folder, such as the
+  auto-saved styled output, as `.saved`, so it can be reopened, deduplicated and expired. No-op unless
+  `tracksSavedOutputs`, or when `url` is not a regular file directly inside the current Output folder.
+  The three-argument form uses the current export-scale preference. For deferred registration, use
+  `register(savedFile:image:backingScale:exportScale:)` with the same export-scale snapshot passed to the writer:
+  `.original` records the captured backing scale (or 1 if non-finite/nonpositive), `.x1` records 1 and `.x2`
+  records 2. Later preference changes must not change the saved file's recorded density.
+- `latest()` returns the newest tracked file that still exists as a regular, non-symlink file directly in the
+  current Output folder and prunes entries whose file is gone. Reopen it with GlintEditor's
+  `EditorContext(image:backingScale:rawURL:source:isComposed: true)`, passing `RetainedOutput.backingScale` as
+  `backingScale` (the stored file's own pixel density, so a later 1×/2× export does not resample it again): the editor
+  opens the flattened result without applying a frame or background again. `isManaged(_:)` reports whether the
+  index in a URL's own folder tracks it; `discard(_:)` drops an entry without deleting the file.
+- `cleanUp()` returns an empty report unless `cleansUp`. It moves expired entries to the Trash through `moveToTrash`;
+  an entry expires when `date < now - days`, so an image exactly at the cutoff is kept. It only considers files
+  listed in the index that Glint wrote directly inside the current Output folder: never `Raw/`, manual saves or
+  exports, untracked or pre-existing files, or subfolders (no recursion), and never a file in `OutputActiveFiles`
+  (`skippedActive`, still tracked). An entry whose file is no longer a regular file (such as a symlink), or whose
+  size or modification date changed since Glint wrote it, is untracked (`untracked`), not deleted. A file that is
+  already gone is just dropped from the index, and one that cannot be read right now is left alone. If the move
+  fails, the file and its entry stay and the message is added to `failures`. Each file is judged on fresh state,
+  so a preference change or a concurrent `retain` that reuses it is respected.
+- The index is the hidden `.glint-output-index.json` in the Output folder: a `version` plus `entries` with a
+  `fileName`, `date`, SHA-256 `digest`, `source`, `size`, `modified` and `backingScale`. An entry whose name is not
+  a plain file name (empty, `.`, `..`, containing `/`, or the index itself) is dropped on read. Writes are atomic.
+  A missing, corrupt or unknown-version index is treated as empty: it never crashes and never causes a deletion.
+- The editor's drag cache (`Caches/Glint/Drag`, removed when the editor closes) is separate, and a retained Output
+  file is never the editor's drag payload. A quick-access thumbnail drag can offer a file that is already in the
+  Output folder, so wrap that drag in `OutputActiveFiles.begin/end` (calls nest) to keep `cleanUp()` from removing
+  it. `begin` waits briefly if `cleanUp()` is moving that very file to the Trash at that moment, so check that the
+  file still exists after calling it.
+
 ## Preferences
 `AppPreferences(defaults:)` (`.shared`), typed properties for folders, `saveHistory`, `saveRaw`, `saveOutput`,
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
@@ -124,8 +221,11 @@ Annotation case names and their serialized representations are unchanged.
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
 `fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether the editor
 starts from `lastRenderSettings` instead of the default preset; until set, on unless `defaultPresetName` is set),
+`keepCopiedImages` (opt-in, off by default: keep copied and dragged composed images for Reopen Last Image; key
+`glint.keepCopiedImages`), `outputRetention` (`OutputRetentionPeriod`, `.forever` by default; stored as a day count
+under `glint.outputRetentionDays`, where an unknown or negative value reads as `.forever`; see Output retention),
 `annotationColor`, `redactColor`;
-`AppPreferences.Key`, `resetToDefaults()`.
+`AppPreferences.Key`, `resetToDefaults()` (which also restores `keepCopiedImages` and `outputRetention`).
 The `AppPreferences.redactStyle` property has been removed. The legacy `glint.redactStyle` key is ignored
 by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`

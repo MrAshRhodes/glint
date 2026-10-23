@@ -75,6 +75,152 @@ enum CaptureRecovery {
     }
 }
 
+/// Runs the blocking retention work (hashing, encoding, writing) one job at a time on a utility thread, so a copy
+/// or drag never waits for the disk. Jobs finish in the order they were queued.
+@MainActor
+final class RetentionQueue {
+    private final class IdleWaiter {
+        private var continuation: CheckedContinuation<Bool, Never>?
+        var timeout: Task<Void, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+
+        func resume(_ idle: Bool) {
+            timeout?.cancel()
+            timeout = nil
+            continuation?.resume(returning: idle)
+            continuation = nil
+        }
+    }
+
+    private(set) var pending = 0
+    private var tail: Task<Void, Never>?
+    private var waiters: [IdleWaiter] = []
+
+    var isIdle: Bool { pending == 0 }
+
+    /// Runs `work` off the main thread after every earlier job, then passes its result to `completion` on the main actor.
+    func enqueue<Output: Sendable>(_ work: @escaping @Sendable () -> Output,
+                                   completion: @escaping @MainActor (Output) -> Void) {
+        pending += 1
+        let previous = tail
+        tail = Task { @MainActor [weak self] in
+            await previous?.value
+            let output = await Task.detached(priority: .utility, operation: work).value
+            completion(output)
+            self?.finishJob()
+        }
+    }
+
+    /// Returns true once every queued job has finished, or false when `timeout` ran out first.
+    func waitUntilIdle(timeout: Duration? = nil) async -> Bool {
+        guard pending > 0 else { return true }
+        return await withCheckedContinuation { continuation in
+            let waiter = IdleWaiter(continuation)
+            waiters.append(waiter)
+            guard let timeout else { return }
+            waiter.timeout = Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                if !Task.isCancelled { waiter.resume(false) }
+            }
+        }
+    }
+
+    private func finishJob() {
+        pending -= 1
+        guard pending == 0 else { return }
+        tail = nil
+        let ready = waiters
+        waiters = []
+        ready.forEach { $0.resume(true) }
+    }
+}
+
+/// Decides when the Output cleanup runs: shortly after launch, every few hours, and a little while after the
+/// preferences change, so a misclick on the retention picker never removes anything right away.
+@MainActor
+final class OutputCleanupScheduler {
+    struct Timing {
+        var launchDelay: Duration = .seconds(30)
+        var interval: Duration = .seconds(6 * 60 * 60)
+        var debounce: Duration = .seconds(30)
+    }
+
+    /// Arms a one-shot timer and returns the closure that cancels it.
+    typealias Schedule = @MainActor (Duration, @escaping @MainActor () -> Void) -> @MainActor () -> Void
+
+    static let systemSchedule: Schedule = { delay, fire in
+        let task = Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            if !Task.isCancelled { fire() }
+        }
+        return { task.cancel() }
+    }
+
+    private let timing: Timing
+    private let schedule: Schedule
+    private let run: @MainActor () async -> Void
+    private var cancelPeriodic: (@MainActor () -> Void)?
+    private var cancelDebounce: (@MainActor () -> Void)?
+    private var current: Task<Void, Never>?
+    private var runAgain = false
+
+    /// `run` does one cleanup pass; it is never running twice at once.
+    init(timing: Timing = Timing(), schedule: Schedule? = nil, run: @escaping @MainActor () async -> Void) {
+        self.timing = timing
+        self.schedule = schedule ?? Self.systemSchedule
+        self.run = run
+    }
+
+    /// One pass after the launch delay, then one every interval.
+    func start() {
+        cancelPeriodic?()
+        cancelPeriodic = schedule(timing.launchDelay) { [weak self] in self?.periodicFired() }
+    }
+
+    /// Every change restarts the wait, so the pass runs once the preferences have been quiet for the debounce time.
+    func preferencesChanged() {
+        cancelDebounce?()
+        cancelDebounce = schedule(timing.debounce) { [weak self] in
+            self?.cancelDebounce = nil
+            self?.trigger()
+        }
+    }
+
+    func stop() {
+        cancelPeriodic?()
+        cancelDebounce?()
+        cancelPeriodic = nil
+        cancelDebounce = nil
+    }
+
+    /// Returns once no pass is running; passes that are only scheduled are not waited for.
+    func waitUntilIdle() async {
+        while let task = current { await task.value }
+    }
+
+    private func periodicFired() {
+        cancelPeriodic = schedule(timing.interval) { [weak self] in self?.periodicFired() }
+        trigger()
+    }
+
+    /// A trigger that arrives mid-pass asks for one more pass afterwards, which sees the newer preferences.
+    private func trigger() {
+        guard current == nil else {
+            runAgain = true
+            return
+        }
+        current = Task { @MainActor [weak self] in
+            repeat {
+                guard let self else { return }
+                runAgain = false
+                await run()
+            } while self?.runAgain == true
+            self?.current = nil
+        }
+    }
+}
+
 /// Manual GitHub release checks. Installation stays with Homebrew or the user's download.
 @MainActor
 enum UpdateChecker {

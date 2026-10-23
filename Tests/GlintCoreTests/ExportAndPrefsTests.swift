@@ -178,6 +178,89 @@ struct ExportAndPrefsTests {
         #expect(!AppPreferences(defaults: defaults).snapToEdges)
     }
 
+    @Test func outputRetentionDefaultsOffAndStoresNothingUntilChanged() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+
+        #expect(!prefs.keepCopiedImages)
+        #expect(prefs.outputRetention == .forever)
+        #expect(defaults.object(forKey: AppPreferences.Key.keepCopiedImages) == nil)
+        #expect(defaults.object(forKey: AppPreferences.Key.outputRetentionDays) == nil)
+        #expect(AppPreferences.Key.keepCopiedImages == "glint.keepCopiedImages")
+        #expect(AppPreferences.Key.outputRetentionDays == "glint.outputRetentionDays")
+    }
+
+    @Test func keepCopiedImagesPersistsAndSharesStorage() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+
+        prefs.keepCopiedImages = true
+        #expect(AppPreferences(defaults: try #require(UserDefaults(suiteName: suite))).keepCopiedImages)
+        #expect(defaults.bool(forKey: AppPreferences.Key.keepCopiedImages))
+
+        let reloaded = AppPreferences(defaults: defaults)
+        reloaded.keepCopiedImages = false
+        #expect(!prefs.keepCopiedImages)
+        #expect(defaults.object(forKey: AppPreferences.Key.keepCopiedImages) as? Bool == false)
+
+        defaults.set(true, forKey: AppPreferences.Key.keepCopiedImages)
+        #expect(prefs.keepCopiedImages)
+    }
+
+    @Test(arguments: OutputRetentionPeriod.allCases)
+    func outputRetentionPeriodPersistsAsDays(period: OutputRetentionPeriod) throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+
+        prefs.outputRetention = period
+
+        #expect(prefs.outputRetention == period)
+        #expect(defaults.integer(forKey: AppPreferences.Key.outputRetentionDays) == period.rawValue)
+        #expect(AppPreferences(defaults: try #require(UserDefaults(suiteName: suite))).outputRetention == period)
+        #expect(!prefs.keepCopiedImages)
+    }
+
+    @Test func unknownStoredRetentionValuesReadAsForever() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        let unknown: [Any] = [-1, -30, 2, 14, 365, Int.max, Int.min, "7", "forever", 7.5]
+
+        for value in unknown {
+            defaults.set(value, forKey: AppPreferences.Key.outputRetentionDays)
+            #expect(prefs.outputRetention == .forever, "\(value)")
+        }
+        defaults.set(30, forKey: AppPreferences.Key.outputRetentionDays)
+        #expect(prefs.outputRetention == .thirtyDays)
+    }
+
+    @Test func resetClearsOutputRetentionAndRestoresTheOptedOutDefaults() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        prefs.keepCopiedImages = true
+        prefs.outputRetention = .thirtyDays
+        #expect(AppPreferences.Key.all.contains(AppPreferences.Key.keepCopiedImages))
+        #expect(AppPreferences.Key.all.contains(AppPreferences.Key.outputRetentionDays))
+        #expect(Set(AppPreferences.Key.all).count == AppPreferences.Key.all.count)
+
+        prefs.resetToDefaults()
+
+        #expect(defaults.object(forKey: AppPreferences.Key.keepCopiedImages) == nil)
+        #expect(defaults.object(forKey: AppPreferences.Key.outputRetentionDays) == nil)
+        #expect(!prefs.keepCopiedImages && prefs.outputRetention == .forever)
+        let reloaded = AppPreferences(defaults: defaults)
+        #expect(!reloaded.keepCopiedImages && reloaded.outputRetention == .forever)
+    }
+
     @Test func hotkeys() throws {
         let combo = HotkeyAction.captureArea.defaultCombo
         #expect(combo.displayString == "⌃⌥⌘4")

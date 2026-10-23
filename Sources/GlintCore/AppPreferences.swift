@@ -104,6 +104,8 @@ public final class AppPreferences {
         public static let saveHistory = "glint.saveHistory"
         public static let saveRaw = "glint.saveRaw"
         public static let saveOutput = "glint.saveOutput"
+        public static let keepCopiedImages = "glint.keepCopiedImages"
+        public static let outputRetentionDays = "glint.outputRetentionDays"
         public static let copyToClipboardAfterCapture = "glint.copyToClipboardAfterCapture"
         public static let openEditorAfterCapture = "glint.openEditorAfterCapture"
         public static let autoBalance = "glint.autoBalance"
@@ -132,8 +134,9 @@ public final class AppPreferences {
         /// Legacy key retained only so resetToDefaults clears it.
         public static let redactStyle = "glint.redactStyle"
         public static var all: [String] {
-            [saveDirectory, historyDirectory, saveHistory, saveRaw, saveOutput, copyToClipboardAfterCapture,
-             openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions, defaultPresetName, hotkeys,
+            [saveDirectory, historyDirectory, saveHistory, saveRaw, saveOutput, keepCopiedImages, outputRetentionDays,
+             copyToClipboardAfterCapture, openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions,
+             defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
              hideWindowsDuringCapture, snapToEdges, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
              compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
@@ -178,6 +181,18 @@ public final class AppPreferences {
     }
     public var saveRaw: Bool { get { bool(Key.saveRaw, true) } set { defaults.set(newValue, forKey: Key.saveRaw) } }
     public var saveOutput: Bool { get { bool(Key.saveOutput, true) } set { defaults.set(newValue, forKey: Key.saveOutput) } }
+    /// Keep the composed image of every copy or drag in `Output/` so it can be reopened. Needs `saveHistory`; off by default.
+    public var keepCopiedImages: Bool {
+        get { bool(Key.keepCopiedImages, false) } set { defaults.set(newValue, forKey: Key.keepCopiedImages) }
+    }
+    /// How long the files Glint wrote to `Output/` after opting in are kept before they move to the Trash.
+    /// Forever by default; a missing, unknown or negative stored value also reads as `.forever`.
+    public var outputRetention: OutputRetentionPeriod {
+        get {
+            (defaults.object(forKey: Key.outputRetentionDays) as? Int).map(OutputRetentionPeriod.init(storedDays:)) ?? .forever
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.outputRetentionDays) }
+    }
     public var enableFileNameTemplate: Bool {
         get { bool(Key.enableFileNameTemplate, true) } set { defaults.set(newValue, forKey: Key.enableFileNameTemplate) }
     }

@@ -1,4 +1,5 @@
 import AppKit
+import GlintCore
 
 /// Small floating thumbnail at the screen corner: click to edit, drag out to drop the file, auto-dismisses.
 @MainActor
@@ -6,7 +7,10 @@ final class QuickAccessPanel {
     private var panel: NSPanel?
     private var timer: Timer?
 
-    func show(image: CGImage, fileURL: URL?, onEdit: @escaping () -> Void) {
+    /// `onDragOut` runs when a drag leaves the thumbnail. While a saved file is being dragged it counts as in use
+    /// for Output cleanup.
+    func show(image: CGImage, fileURL: URL?, activeFiles: OutputActiveFiles = .shared,
+              onEdit: @escaping () -> Void, onDragOut: @escaping () -> Void = {}) {
         dismiss()
         guard let screen = NSScreen.main else { return }
         let maxSide: CGFloat = 220
@@ -23,10 +27,14 @@ final class QuickAccessPanel {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.isReleasedWhenClosed = false
         let nsImage = NSImage(cgImage: image, size: size)
-        let view = ThumbnailView(frame: NSRect(origin: .zero, size: size), image: nsImage, fileURL: fileURL)
+        let view = ThumbnailView(frame: NSRect(origin: .zero, size: size), image: nsImage, fileURL: fileURL,
+                                 activeFiles: activeFiles)
         view.onClick = { [weak self] in self?.dismiss(); onEdit() }
         view.onHover = { [weak self] inside in inside ? self?.timer?.invalidate() : self?.scheduleDismiss() }
-        view.onDragStart = { [weak self] in self?.timer?.invalidate() }
+        view.onDragStart = { [weak self] in
+            self?.timer?.invalidate()
+            onDragOut()
+        }
         p.contentView = view
         p.alphaValue = 0
         p.orderFrontRegardless()
@@ -51,18 +59,43 @@ final class QuickAccessPanel {
     }
 }
 
+/// Keeps a file that is being dragged out away from Output cleanup until the drag ends.
+final class ActiveDragFile {
+    private let files: OutputActiveFiles
+    private var url: URL?
+
+    init(files: OutputActiveFiles = .shared) { self.files = files }
+
+    func begin(_ url: URL?) {
+        end()
+        guard let url else { return }
+        files.begin(url)
+        self.url = url
+    }
+
+    func end() {
+        guard let url else { return }
+        files.end(url)
+        self.url = nil
+    }
+
+    deinit { end() }
+}
+
 private final class ThumbnailView: NSView, NSDraggingSource {
     var onClick: (() -> Void)?
     var onHover: ((Bool) -> Void)?
     var onDragStart: (() -> Void)?
     private let image: NSImage
     private let fileURL: URL?
+    private let dragFile: ActiveDragFile
     private var downPoint: NSPoint = .zero
     private var dragged = false
 
-    init(frame: NSRect, image: NSImage, fileURL: URL?) {
+    init(frame: NSRect, image: NSImage, fileURL: URL?, activeFiles: OutputActiveFiles) {
         self.image = image
         self.fileURL = fileURL
+        dragFile = ActiveDragFile(files: activeFiles)
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -88,6 +121,7 @@ private final class ThumbnailView: NSView, NSDraggingSource {
         guard !dragged, hypot(event.locationInWindow.x - downPoint.x, event.locationInWindow.y - downPoint.y) > 4 else { return }
         dragged = true
         onDragStart?()
+        dragFile.begin(fileURL)
         let writer: NSPasteboardWriting = fileURL.map { $0 as NSURL } ?? image
         let item = NSDraggingItem(pasteboardWriter: writer)
         item.setDraggingFrame(bounds, contents: image)
@@ -99,4 +133,8 @@ private final class ThumbnailView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        dragFile.end()
+    }
 }
