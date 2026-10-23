@@ -24,7 +24,17 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
   `ShadowLayer(opacity, blur, offsetX, offsetY)` in points.
 - `AspectRatioPreset`: `.auto, .square (1:1), .r4x3, .r3x2, .r16x9, .r9x16, .r4x5, .twitterPost, .twitterHeader, .linkedInPost, .instagramSquare, .instagramPortrait, .facebookPost, .youTubeThumbnail, .openGraph, .pinterestPin, .custom(w,h)`; `.ratio: CGFloat?`,
   `.displayName`, `.recommendedPixelSize`, `AspectRatioPreset.parse("4:3" | "1200x630")`, `.allBuiltIn`.
-- `WindowFrameSettings(style: .none/.macOS/.browser, dark, title)`, `BorderStyle` (outer stroke),
+- `WindowFrameSettings(style:dark:title:screenEffects:)`: decorative chrome around the card. `WindowFrameKind`
+  raw values are persisted in presets and never renamed: `.none`; windows `.macOS`, `.browser`, `.ide` (code
+  editor), `.terminal`; devices `.phone`, `.retro` (retro monitor), `.handheld` (handheld console); playful
+  `.arcade` (pixel arcade), `.comic` (comic panel), `.filmStrip`, `.photo` (photo print). Each kind has
+  `displayName`, `category: WindowFrameCategory?` (`.window/.device/.playful`, nil for `.none`),
+  `titlePlaceholder` (what `title` means, e.g. address, file name, caption) and `metrics: FrameMetrics`
+  (`insets: FrameInsets(top:left:bottom:right:)` in points, `corner: FrameCornerRule` (`.user`,
+  `.atLeast(pt)`, `.fixed(pt)`; `resolve(_:)` applies it to `cornerRadius`), `supportsScreenEffects`).
+  `screenEffects` (default `true`, only encoded when `false`) toggles the subtle scanlines and glare of styles
+  that support them. `insets`/`metrics`/`barHeight` (= `insets.top`) are shortcuts. Client code that switches
+  exhaustively over `WindowFrameKind` must handle the new cases. `BorderStyle` (outer stroke),
   `Tilt(x,y)` degrees (`Tilt(uiX:uiY:)` maps 0…30 sliders, 15 neutral), `Rotation`
   (`.none/.cw90/.cw180/.cw270`), `WatermarkSettings` (text/image, 9 positions, opacity, size, colour).
 - `RenderSettings`: `padding, inset, insetColor?, cornerRadius, shadow, background, aspectRatio,
@@ -41,10 +51,13 @@ Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annota
                   backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
                   wallpaper: CGImage? = nil) throws -> CGImage
 Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border
-Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/content rects (px, top-left)
+Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/screen/content rects (px, top-left)
 ```
 Pipeline: auto-balance crop → annotations baked into content (Solid and Pixelate replace covered pixels) → rotate/flip →
 inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
+`RenderLayout.screenRect` is the content plus its inset band; the frame's insets surround it inside `cardRect`,
+so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
+deterministically by the compositor, so the editor preview and exports show the same frame.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
 `RenderError.annotationsNotApplied` instead of returning the unredacted source, and every export path

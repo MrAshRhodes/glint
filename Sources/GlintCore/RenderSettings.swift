@@ -139,19 +139,142 @@ public struct BorderStyle: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public enum WindowFrameKind: String, Codable, CaseIterable, Sendable { case none, macOS, browser }
+/// Decorative chrome drawn around the screenshot card. Raw values are stored in presets; never rename them.
+public enum WindowFrameKind: String, Codable, CaseIterable, Sendable {
+    case none, macOS, browser
+    case ide, terminal, phone
+    case retro, arcade, handheld, comic, filmStrip, photo
+}
+
+/// Space the frame chrome adds around the screen area, in points.
+public struct FrameInsets: Equatable, Hashable, Sendable {
+    public var top: Double, left: Double, bottom: Double, right: Double
+    public init(top: Double = 0, left: Double = 0, bottom: Double = 0, right: Double = 0) {
+        self.top = top; self.left = left; self.bottom = bottom; self.right = right
+    }
+    public static let zero = FrameInsets()
+}
+
+/// How a frame style treats the card's corner radius setting.
+public enum FrameCornerRule: Equatable, Hashable, Sendable {
+    /// Use the corner radius setting unchanged.
+    case user
+    /// Use the setting, but never less than this many points.
+    case atLeast(Double)
+    /// Always use this many points.
+    case fixed(Double)
+
+    public func resolve(_ userRadius: Double) -> Double {
+        switch self {
+        case .user: return userRadius
+        case .atLeast(let minimum): return max(userRadius, minimum)
+        case .fixed(let radius): return radius
+        }
+    }
+}
+
+public struct FrameMetrics: Equatable, Hashable, Sendable {
+    public var insets: FrameInsets
+    public var corner: FrameCornerRule
+    /// True when the style has optional decorative screen effects (for example scanlines).
+    public var supportsScreenEffects: Bool
+    public init(insets: FrameInsets = .zero, corner: FrameCornerRule = .user, supportsScreenEffects: Bool = false) {
+        self.insets = insets; self.corner = corner; self.supportsScreenEffects = supportsScreenEffects
+    }
+    public static let none = FrameMetrics()
+}
+
+public enum WindowFrameCategory: String, CaseIterable, Sendable {
+    case window, device, playful
+    public var displayName: String {
+        switch self {
+        case .window: return "Windows"
+        case .device: return "Devices"
+        case .playful: return "Playful"
+        }
+    }
+}
+
+extension WindowFrameKind {
+    public var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .macOS: return "macOS"
+        case .browser: return "Browser"
+        case .ide: return "Code Editor"
+        case .terminal: return "Terminal"
+        case .phone: return "Phone"
+        case .retro: return "Retro Monitor"
+        case .arcade: return "Pixel Arcade"
+        case .handheld: return "Handheld Console"
+        case .comic: return "Comic Panel"
+        case .filmStrip: return "Film Strip"
+        case .photo: return "Photo Print"
+        }
+    }
+
+    /// nil for `.none`.
+    public var category: WindowFrameCategory? {
+        switch self {
+        case .none: return nil
+        case .macOS, .browser, .ide, .terminal: return .window
+        case .phone, .retro, .handheld: return .device
+        case .arcade, .comic, .filmStrip, .photo: return .playful
+        }
+    }
+
+    /// What the frame's title text is used for, e.g. as a text field placeholder.
+    public var titlePlaceholder: String {
+        switch self {
+        case .none, .macOS, .terminal: return "Title"
+        case .browser: return "Address"
+        case .ide: return "File name"
+        case .phone: return "Status bar text"
+        case .retro, .handheld: return "Brand label"
+        case .arcade: return "Player name"
+        case .comic, .photo: return "Caption"
+        case .filmStrip: return "Edge marking"
+        }
+    }
+
+    public var metrics: FrameMetrics {
+        switch self {
+        case .none: return .none
+        case .macOS: return FrameMetrics(insets: FrameInsets(top: 28))
+        case .browser: return FrameMetrics(insets: FrameInsets(top: 40))
+        case .ide: return FrameRenderer.ideMetrics
+        case .terminal: return FrameRenderer.terminalMetrics
+        case .phone: return FrameRenderer.phoneMetrics
+        case .retro: return FrameRenderer.retroMetrics
+        case .arcade: return FrameRenderer.arcadeMetrics
+        case .handheld: return FrameRenderer.handheldMetrics
+        case .comic: return FrameRenderer.comicMetrics
+        case .filmStrip: return FrameRenderer.filmStripMetrics
+        case .photo: return FrameRenderer.photoMetrics
+        }
+    }
+}
 
 public struct WindowFrameSettings: Codable, Equatable, Hashable, Sendable {
     public var style: WindowFrameKind
     public var dark: Bool
     public var title: String
-    public init(style: WindowFrameKind = .none, dark: Bool = false, title: String = "") {
+    // Optional storage keeps older presets compatible and omits the key while effects are on.
+    private var effects: Bool?
+    /// Decorative screen effects for styles that support them (`metrics.supportsScreenEffects`).
+    public var screenEffects: Bool {
+        get { effects ?? true }
+        set { effects = newValue ? nil : false }
+    }
+    public init(style: WindowFrameKind = .none, dark: Bool = false, title: String = "", screenEffects: Bool = true) {
         self.style = style; self.dark = dark; self.title = title
+        self.effects = screenEffects ? nil : false
     }
-    /// Title bar height in points.
-    public var barHeight: Double {
-        switch style { case .none: return 0; case .macOS: return 28; case .browser: return 40 }
-    }
+    public var metrics: FrameMetrics { style.metrics }
+    /// Chrome around the screen area, in points.
+    public var insets: FrameInsets { metrics.insets }
+    /// Title bar (top inset) height in points.
+    public var barHeight: Double { insets.top }
 }
 
 /// 3D tilt in degrees (rotation about the X / Y axis). `.zero` = flat.
