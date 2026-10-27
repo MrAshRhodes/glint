@@ -228,11 +228,45 @@ final class OverlayView: NSView {
     private var hasDrawn = false
 
     private static let detailAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
         .foregroundColor: NSColor.white]
     private static let hintAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-        .foregroundColor: NSColor.white]
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+        .foregroundColor: NSColor.white.withAlphaComponent(0.92)]
+
+    /// HUD styling shared by every on-screen label: a dark translucent continuous capsule with a hairline
+    /// and a soft drop shadow, like the system's macOS 26 HUDs. Colors are created once, not per draw.
+    private enum HUD {
+        static let paddingX: CGFloat = 10
+        static let paddingY: CGFloat = 6
+        static let fill = NSColor.black.withAlphaComponent(0.6).cgColor
+        static let hairline = NSColor.white.withAlphaComponent(0.16).cgColor
+        static let shadow = NSColor.black.withAlphaComponent(0.28).cgColor
+        static let shadowBlur: CGFloat = 8
+        static let shadowOffset = CGSize(width: 0, height: -1)
+        /// How far the shadow can reach beyond the capsule (whole points); included in the label's damage.
+        static let shadowReach: CGFloat = shadowBlur + 2
+    }
+
+    private struct BackgroundKey: Hashable {
+        let width: Int
+        let height: Int
+    }
+
+    /// Pre-rendered capsule + shadow per label size in backing pixels, so a redraw is one image blit
+    /// instead of a Gaussian shadow pass. Only a handful of sizes occur (digit counts, hint texts).
+    private var labelBackgrounds: [BackgroundKey: CGImage] = [:]
+
+    private enum Palette {
+        static let dim = NSColor.black.withAlphaComponent(0.38).cgColor
+        static let selectionStroke = NSColor.white.cgColor
+        /// Thin dark outline outside the selection keeps the white stroke visible on light content.
+        static let selectionContrast = NSColor.black.withAlphaComponent(0.35).cgColor
+        static let crosshair = NSColor.white.withAlphaComponent(0.55).cgColor
+    }
+
+    /// Corner radius of the window-picker highlight, close to the system window corner radius.
+    private static let windowCornerRadius: CGFloat = 10
     private var hintLayouts: [String: TextLayout] = [:]
 
     private func hintLayout(_ text: String) -> TextLayout {
@@ -257,10 +291,20 @@ final class OverlayView: NSView {
     private struct Label: Equatable {
         let layout: TextLayout
         let origin: NSPoint
+        /// The capsule, snapped to backing pixels so its cached background and the text render crisply.
+        let frame: NSRect
 
-        var frame: NSRect {
-            NSRect(x: origin.x - 6, y: origin.y - 3, width: layout.size.width + 12, height: layout.size.height + 6)
+        init(layout: TextLayout, origin: NSPoint, scale: CGFloat) {
+            let snapped = NSPoint(x: (origin.x * scale).rounded() / scale, y: (origin.y * scale).rounded() / scale)
+            self.layout = layout
+            self.origin = snapped
+            frame = NSRect(x: snapped.x - HUD.paddingX, y: snapped.y - HUD.paddingY,
+                           width: ceil((layout.size.width + 2 * HUD.paddingX) * scale) / scale,
+                           height: ceil((layout.size.height + 2 * HUD.paddingY) * scale) / scale)
         }
+
+        /// Everything the label paints, including its shadow.
+        var damageFrame: NSRect { frame.insetBy(dx: -HUD.shadowReach, dy: -HUD.shadowReach) }
 
         static func == (lhs: Label, rhs: Label) -> Bool {
             lhs.layout === rhs.layout && lhs.origin == rhs.origin
@@ -392,7 +436,8 @@ final class OverlayView: NSView {
                 ? "Drag to select  ·  \(session.snappingHint)  ·  ⇧: square  ·  Space: window  ·  Esc: cancel"
                 : "Click a window  ·  Space: area  ·  Esc: cancel"
             let layout = hintLayout(text)
-            snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36))
+            snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36),
+                                  scale: scale)
         }
         return snapshot
     }
@@ -405,10 +450,12 @@ final class OverlayView: NSView {
             layout = TextLayout(text, attributes: Self.detailAttributes)
             detailLayout = layout
         }
-        var origin = NSPoint(x: rect.minX + offset, y: rect.minY - layout.size.height - offset - 6)
-        if origin.y < 4 { origin.y = rect.maxY + offset }
-        origin.x = min(max(origin.x, 4), bounds.maxX - layout.size.width - 16)
-        return Label(layout: layout, origin: origin)
+        let margin: CGFloat = 4
+        var origin = NSPoint(x: rect.minX + offset + HUD.paddingX,
+                             y: rect.minY - layout.size.height - offset - HUD.paddingY)
+        if origin.y - HUD.paddingY < margin { origin.y = rect.maxY + offset + HUD.paddingY }
+        origin.x = min(max(origin.x, margin + HUD.paddingX), bounds.maxX - layout.size.width - HUD.paddingX - margin)
+        return Label(layout: layout, origin: origin, scale: scale)
     }
 
     /// Keep damage as separate rectangles: unioning crosshair strips would dirty the entire display.
@@ -434,6 +481,10 @@ final class OverlayView: NSView {
                     damage += Self.subtract(hole, excluding: other)
                     damage += Self.subtract(hole.insetBy(dx: -borderMargin, dy: -borderMargin),
                                             excluding: hole.insetBy(dx: borderMargin, dy: borderMargin))
+                    // Rounded window-highlight corners reach further into the hole than the border ring.
+                    if next.windowHighlight {
+                        damage += Self.cornerRects(of: hole, radius: Self.windowCornerRadius, margin: borderMargin)
+                    }
                 }
             }
         }
@@ -453,7 +504,7 @@ final class OverlayView: NSView {
             damage += (previous.guides + next.guides).map(\.frame)
         }
         for (old, new) in [(previous.detail, next.detail), (previous.hint, next.hint)] where old != new {
-            damage += [old, new].compactMap { $0?.frame.insetBy(dx: -1 / scale, dy: -1 / scale) }
+            damage += [old, new].compactMap { $0?.damageFrame.insetBy(dx: -1 / scale, dy: -1 / scale) }
         }
         let rects = damage.compactMap { rect -> NSRect? in
             let x = floor(rect.minX * scale) / scale, y = floor(rect.minY * scale) / scale
@@ -477,6 +528,18 @@ final class OverlayView: NSView {
     fileprivate func cancelPendingDraw() {
         OverlayPerformance.end("InvalidationToDraw", pendingDrawInterval, cancelled: true)
         pendingDrawInterval = nil
+    }
+
+    /// Squares covering the four rounded corners of `rect`, used to damage a continuous-corner outline.
+    private static func cornerRects(of rect: NSRect, radius: CGFloat, margin: CGFloat) -> [NSRect] {
+        let side = ContinuousCorners.extent(of: rect, radius: radius) + margin
+        guard side > margin else { return [] }
+        return [
+            NSRect(x: rect.minX - margin, y: rect.minY - margin, width: side + margin, height: side + margin),
+            NSRect(x: rect.maxX - side, y: rect.minY - margin, width: side + margin, height: side + margin),
+            NSRect(x: rect.minX - margin, y: rect.maxY - side, width: side + margin, height: side + margin),
+            NSRect(x: rect.maxX - side, y: rect.maxY - side, width: side + margin, height: side + margin)
+        ]
     }
 
     private static func subtract(_ rect: NSRect, excluding other: NSRect?) -> [NSRect] {
@@ -509,19 +572,35 @@ final class OverlayView: NSView {
         // The panel is transparent. Repainting source-over without clearing would accumulate dimming
         // and leave old selection holes/crosshairs behind during partial or overlapping redraws.
         context.clear(dirtyRect)
-        context.setFillColor(NSColor.black.withAlphaComponent(0.38).cgColor)
+        context.setFillColor(Palette.dim)
         context.fill(Self.subtract(bounds, excluding: snapshot.hole))
 
         if let hole = snapshot.hole {
-            let accent = NSColor.controlAccentColor
             if snapshot.windowHighlight {
-                context.setFillColor(accent.withAlphaComponent(0.18).cgColor)
-                context.fill(hole)
+                let accent = NSColor.controlAccentColor
+                let outline = ContinuousCorners.path(in: hole, radius: Self.windowCornerRadius)
+                // Dim the corner slivers between the hole's rectangle and the rounded window outline.
+                context.addRect(hole)
+                context.addPath(outline)
+                context.setFillColor(Palette.dim)
+                context.fillPath(using: .evenOdd)
+                context.addPath(outline)
+                context.setFillColor(accent.withAlphaComponent(0.2).cgColor)
+                context.fillPath()
+                let border = ContinuousCorners.path(in: hole.insetBy(dx: 0.75, dy: 0.75),
+                                                    radius: max(Self.windowCornerRadius - 0.75, 0))
+                context.addPath(border)
+                context.setStrokeColor(accent.withAlphaComponent(0.9).cgColor)
+                context.setLineWidth(1.5)
+                context.strokePath()
+            } else {
+                context.setLineWidth(1)
+                context.setStrokeColor(Palette.selectionContrast)
+                context.stroke(hole.insetBy(dx: -0.5, dy: -0.5))
+                context.setStrokeColor(Palette.selectionStroke)
+                context.stroke(hole.insetBy(dx: 0.5, dy: 0.5))
             }
-            context.setStrokeColor(accent.cgColor)
-            context.setLineWidth(1.5)
-            context.stroke(hole.insetBy(dx: 0.5, dy: 0.5))
-            if let label = snapshot.detail { paintLabel(label) }
+            if let label = snapshot.detail { paintLabel(label, in: context) }
         }
 
         if !snapshot.guides.isEmpty {
@@ -537,7 +616,7 @@ final class OverlayView: NSView {
         }
 
         if let c = snapshot.crosshair {
-            context.setStrokeColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+            context.setStrokeColor(Palette.crosshair)
             context.setLineWidth(0.5)
             context.move(to: NSPoint(x: 0, y: c.y))
             context.addLine(to: NSPoint(x: bounds.maxX, y: c.y))
@@ -545,14 +624,91 @@ final class OverlayView: NSView {
             context.move(to: NSPoint(x: c.x, y: 0))
             context.addLine(to: NSPoint(x: c.x, y: bounds.maxY))
             context.strokePath()
-            if snapshot.hole == nil, let label = snapshot.detail { paintLabel(label) }
+            if snapshot.hole == nil, let label = snapshot.detail { paintLabel(label, in: context) }
         }
-        if let label = snapshot.hint { paintLabel(label) }
+        if let label = snapshot.hint { paintLabel(label, in: context) }
     }
 
-    private func paintLabel(_ label: Label) {
-        NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: label.frame, xRadius: 6, yRadius: 6).fill()
+    private func paintLabel(_ label: Label, in context: CGContext) {
+        if let background = labelBackground(for: label.frame) {
+            let pad = CGFloat(background.width - Int((label.frame.width * scale).rounded())) / 2 / scale
+            context.saveGState()
+            context.interpolationQuality = .none
+            context.draw(background, in: label.frame.insetBy(dx: -pad, dy: -pad))
+            context.restoreGState()
+        }
         label.layout.attributedText.draw(at: label.origin)
+    }
+
+    private func labelBackground(for frame: NSRect) -> CGImage? {
+        let key = BackgroundKey(width: Int((frame.width * scale).rounded()), height: Int((frame.height * scale).rounded()))
+        if let cached = labelBackgrounds[key] { return cached }
+        let pad = Int(ceil(HUD.shadowReach * scale))
+        guard key.width > 0, key.height > 0,
+              let bitmap = CGContext(data: nil, width: key.width + 2 * pad, height: key.height + 2 * pad,
+                                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // Drawn directly in backing pixels; shadow parameters are not affected by the CTM.
+        let capsule = CGRect(x: CGFloat(pad), y: CGFloat(pad), width: CGFloat(key.width), height: CGFloat(key.height))
+        let radius = capsule.height / 2
+        bitmap.saveGState()
+        bitmap.setShadow(offset: CGSize(width: HUD.shadowOffset.width * scale, height: HUD.shadowOffset.height * scale),
+                         blur: HUD.shadowBlur * scale, color: HUD.shadow)
+        bitmap.addPath(CGPath(roundedRect: capsule, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        bitmap.setFillColor(HUD.fill)
+        bitmap.fillPath()
+        bitmap.restoreGState()
+        let hairline = 0.5 * scale
+        let inner = capsule.insetBy(dx: hairline / 2, dy: hairline / 2)
+        bitmap.addPath(CGPath(roundedRect: inner, cornerWidth: radius - hairline / 2, cornerHeight: radius - hairline / 2,
+                              transform: nil))
+        bitmap.setStrokeColor(HUD.hairline)
+        bitmap.setLineWidth(hairline)
+        bitmap.strokePath()
+        guard let image = bitmap.makeImage() else { return nil }
+        if labelBackgrounds.count >= 32 { labelBackgrounds.removeAll() }
+        labelBackgrounds[key] = image
+        return image
+    }
+}
+
+/// Builds rounded rectangles with continuous ("squircle") corners: each corner is a single cubic whose
+/// curvature ramps up from the straight edge, matching the look of `CALayerCornerCurve.continuous`.
+enum ContinuousCorners {
+    /// How far a continuous corner reaches along each edge, relative to the nominal radius.
+    static let extentFactor: CGFloat = 1.528665
+    /// Control-point distance from the corner, relative to the radius; keeps the corner's midpoint on the
+    /// equivalent circular arc.
+    private static let controlFactor: CGFloat = 0.2717
+
+    /// Length each corner occupies along its edges for `rect`, after clamping to the rectangle's size.
+    static func extent(of rect: CGRect, radius: CGFloat) -> CGFloat {
+        min(radius * extentFactor, min(rect.width, rect.height) / 2)
+    }
+
+    static func path(in rect: CGRect, radius: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let e = extent(of: rect, radius: radius)
+        guard e > 0 else {
+            path.addRect(rect)
+            return path
+        }
+        let c = e / extentFactor * controlFactor
+        let (minX, minY, maxX, maxY) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
+        path.move(to: CGPoint(x: minX + e, y: minY))
+        path.addLine(to: CGPoint(x: maxX - e, y: minY))
+        path.addCurve(to: CGPoint(x: maxX, y: minY + e),
+                      control1: CGPoint(x: maxX - c, y: minY), control2: CGPoint(x: maxX, y: minY + c))
+        path.addLine(to: CGPoint(x: maxX, y: maxY - e))
+        path.addCurve(to: CGPoint(x: maxX - e, y: maxY),
+                      control1: CGPoint(x: maxX, y: maxY - c), control2: CGPoint(x: maxX - c, y: maxY))
+        path.addLine(to: CGPoint(x: minX + e, y: maxY))
+        path.addCurve(to: CGPoint(x: minX, y: maxY - e),
+                      control1: CGPoint(x: minX + c, y: maxY), control2: CGPoint(x: minX, y: maxY - c))
+        path.addLine(to: CGPoint(x: minX, y: minY + e))
+        path.addCurve(to: CGPoint(x: minX + e, y: minY),
+                      control1: CGPoint(x: minX, y: minY + c), control2: CGPoint(x: minX + c, y: minY))
+        path.closeSubpath()
+        return path
     }
 }

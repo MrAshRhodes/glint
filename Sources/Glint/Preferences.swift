@@ -38,41 +38,213 @@ final class PrefsModel: ObservableObject {
     }
 }
 
+// MARK: - Window
+
+/// The Settings window: a native toolbar-style tab window (like Safari, Mail or Xcode settings) that
+/// takes its title from the selected pane and resizes to fit each pane's content.
 @MainActor
 final class PreferencesWindowController: NSWindowController {
     static var shared: PreferencesWindowController!
 
     convenience init(prefs: AppPreferences, store: PresetStore) {
-        let host = NSHostingController(rootView: PreferencesView(model: PrefsModel(prefs: prefs, store: store)))
-        let window = NSWindow(contentViewController: host)
-        window.title = "Glint Preferences"
-        window.styleMask = [.titled, .closable]
+        let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store))
+        let window = NSWindow(contentViewController: tabs)
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.toolbarStyle = .preference
         window.isReleasedWhenClosed = false
+        window.collectionBehavior.insert(.fullScreenNone)
         self.init(window: window)
+        tabs.restoreSelection()
     }
 
     func present() {
         NSApp.activate(ignoringOtherApps: true)
-        window?.center()
+        if window?.isVisible != true { window?.center() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
 }
 
-struct PreferencesView: View {
-    @ObservedObject var model: PrefsModel
+/// Settings panes, in toolbar order.
+enum PreferencesPane: String, CaseIterable {
+    case general, capture, output, editor, presets, about
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .capture: return "Capture"
+        case .output: return "Output"
+        case .editor: return "Editor"
+        case .presets: return "Presets"
+        case .about: return "About"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .general: return "gearshape"
+        case .capture: return "viewfinder"
+        case .output: return "square.and.arrow.down"
+        case .editor: return "slider.horizontal.3"
+        case .presets: return "square.stack"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+@MainActor
+final class PreferencesTabViewController: NSTabViewController {
+    static let contentWidth: CGFloat = 540
+    static let selectedPaneKey = "prefs.selectedPane"
+    private static let minimumContentHeight: CGFloat = 220
+
+    init(model: PrefsModel) {
+        super.init(nibName: nil, bundle: nil)
+        tabStyle = .toolbar
+        // No crossfade: it leaves the incoming pane under a stale toolbar blur on macOS 26.
+        transitionOptions = [.allowUserInteraction]
+        for pane in PreferencesPane.allCases {
+            let item = NSTabViewItem(viewController: Self.host(pane, model: model))
+            item.label = pane.title
+            item.image = NSImage(systemSymbolName: pane.symbolName, accessibilityDescription: pane.title)
+            item.identifier = pane.rawValue
+            addTabViewItem(item)
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private static func host(_ pane: PreferencesPane, model: PrefsModel) -> NSViewController {
+        let controller: NSViewController
+        switch pane {
+        case .general: controller = paneHost(GeneralTab(model: model))
+        case .capture: controller = paneHost(CaptureTab(model: model))
+        case .output: controller = paneHost(OutputTab(model: model))
+        case .editor: controller = paneHost(EditorTab(model: model))
+        case .presets: controller = paneHost(PresetsTab(model: model))
+        case .about: controller = paneHost(AboutTab())
+        }
+        controller.title = pane.title
+        return controller
+    }
+
+    private static func paneHost<Content: View>(_ content: Content) -> NSViewController {
+        let host = NSHostingController(rootView: content.frame(width: contentWidth))
+        host.sizingOptions = [.preferredContentSize]
+        return host
+    }
+
+    var selectedPane: PreferencesPane? {
+        guard tabViewItems.indices.contains(selectedTabViewItemIndex) else { return nil }
+        return (tabViewItems[selectedTabViewItemIndex].identifier as? String).flatMap(PreferencesPane.init(rawValue:))
+    }
+
+    func select(_ pane: PreferencesPane) {
+        guard let index = tabViewItems.firstIndex(where: { ($0.identifier as? String) == pane.rawValue }) else { return }
+        selectedTabViewItemIndex = index
+    }
+
+    func restoreSelection(defaults: UserDefaults = .standard) {
+        if let stored = defaults.string(forKey: Self.selectedPaneKey), let pane = PreferencesPane(rawValue: stored) {
+            select(pane)
+        }
+        fitWindowToSelectedPane(animated: false)
+    }
+
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem)
+        if let id = tabViewItem?.identifier as? String { UserDefaults.standard.set(id, forKey: Self.selectedPaneKey) }
+        view.window?.title = tabViewItem?.label ?? "Settings"
+        fitWindowToSelectedPane(animated: view.window?.isVisible == true)
+    }
+
+    override func preferredContentSizeDidChange(for viewController: NSViewController) {
+        super.preferredContentSizeDidChange(for: viewController)
+        guard tabViewItems.indices.contains(selectedTabViewItemIndex),
+              tabViewItems[selectedTabViewItemIndex].viewController === viewController else { return }
+        fitWindowToSelectedPane(animated: view.window?.isVisible == true)
+    }
+
+    /// Resizes the window to the selected pane's ideal height, keeping its top edge in place.
+    func fitWindowToSelectedPane(animated: Bool) {
+        guard let window = view.window, let contentView = window.contentView,
+              tabViewItems.indices.contains(selectedTabViewItemIndex),
+              let pane = tabViewItems[selectedTabViewItemIndex].viewController else { return }
+        window.title = tabViewItems[selectedTabViewItemIndex].label
+        var height = pane.preferredContentSize.height
+        if height <= 0 { height = pane.view.fittingSize.height }
+        let screenHeight = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let chrome = window.frame.height - contentView.frame.height
+        height = min(max(height.rounded(.up), Self.minimumContentHeight), screenHeight - chrome - 40)
+        let delta = CGSize(width: Self.contentWidth - contentView.frame.width, height: height - contentView.frame.height)
+        guard abs(delta.width) >= 1 || abs(delta.height) >= 1 else { return }
+        var frame = window.frame
+        frame.size.width += delta.width
+        frame.size.height += delta.height
+        frame.origin.y -= delta.height
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(frame, display: true)
+            }
+        } else {
+            window.setFrame(frame, display: true)
+        }
+    }
+}
+
+// MARK: - Shared building blocks
+
+/// A grouped-form section the user can collapse. Its expanded state persists under
+/// `prefs.section.<id>.expanded` so each pane opens the way it was left.
+struct CollapsibleSection<Content: View>: View {
+    static func storageKey(_ id: String) -> String { "prefs.section.\(id).expanded" }
+
+    private let title: String
+    private let summary: String?
+    private let content: Content
+    @AppStorage private var isExpanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(_ title: String, id: String, expandedByDefault: Bool = true, summary: String? = nil,
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.summary = summary
+        self.content = content()
+        _isExpanded = AppStorage(wrappedValue: expandedByDefault, Self.storageKey(id))
+    }
 
     var body: some View {
-        TabView {
-            GeneralTab(model: model).tabItem { Label("General", systemImage: "gearshape") }
-            CaptureTab(model: model).tabItem { Label("Capture", systemImage: "viewfinder") }
-            OutputTab(model: model).tabItem { Label("Output", systemImage: "square.and.arrow.down") }
-            EditorTab(model: model).tabItem { Label("Editor", systemImage: "slider.horizontal.3") }
-            PresetsTab(model: model).tabItem { Label("Presets", systemImage: "square.stack") }
-            AboutTab().tabItem { Label("About", systemImage: "info.circle") }
+        Section(isExpanded: $isExpanded.animation(reduceMotion ? nil : .snappy(duration: 0.22))) {
+            content
+        } header: {
+            HStack(spacing: 6) {
+                Text(title)
+                if !isExpanded, let summary {
+                    Text(summary).foregroundStyle(.tertiary).fontWeight(.regular)
+                }
+            }
         }
-        .frame(width: 480, height: 460)
-        .padding(12)
+    }
+}
+
+extension View {
+    /// Grouped settings form that only scrolls when its content outgrows the window.
+    func preferencesPaneForm() -> some View {
+        formStyle(.grouped).scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+final class Local<T>: ObservableObject {
+    @Published var value: T
+    init(_ v: T) { value = v }
+}
+
+extension Binding {
+    func onChange(_ action: @escaping () -> Void) -> Binding<Value> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = $0; action() })
     }
 }
 
@@ -86,27 +258,49 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Toggle("Launch at login", isOn: model.bind(\.launchAtLogin) { applyLaunchAtLogin() })
-            if let loginError = login.value { Text(loginError).font(.caption).foregroundStyle(.red) }
-            Toggle("Hide Dock icon", isOn: model.bind(\.hideDockIcon) { AppDelegate.applyActivationPolicy() })
-            Toggle("Show menu bar icon", isOn: $showIcon.onChange { model.changed() })
-            Toggle("Play sounds", isOn: model.bind(\.soundsEnabled))
-            Toggle("Show notifications", isOn: model.bind(\.notificationsEnabled))
-            Toggle("Show quick-access thumbnail after capture", isOn: $quickAccess)
-            Picker("Appearance", selection: model.bind(\.theme) { AppDelegate.applyTheme() }) {
-                Text("System").tag(AppTheme.system)
-                Text("Light").tag(AppTheme.light)
-                Text("Dark").tag(AppTheme.dark)
+            Section {
+                Toggle(isOn: model.bind(\.launchAtLogin) { applyLaunchAtLogin() }) {
+                    Text("Launch at login")
+                    Text("Open Glint automatically when you log in.")
+                }
+                if let loginError = login.value {
+                    Label(loginError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+                Picker("Appearance", selection: model.bind(\.theme) { AppDelegate.applyTheme() }) {
+                    Text("System").tag(AppTheme.system)
+                    Text("Light").tag(AppTheme.light)
+                    Text("Dark").tag(AppTheme.dark)
+                }
+            }
+            Section("Menu bar & Dock") {
+                Toggle("Show menu bar icon", isOn: $showIcon.onChange { model.changed() })
+                Toggle(isOn: model.bind(\.hideDockIcon) { AppDelegate.applyActivationPolicy() }) {
+                    Text("Hide Dock icon")
+                    Text("Glint keeps running from the menu bar.")
+                }
+            }
+            Section("Feedback") {
+                Toggle("Play sounds", isOn: model.bind(\.soundsEnabled))
+                Toggle("Show notifications", isOn: model.bind(\.notificationsEnabled))
+                Toggle(isOn: $quickAccess) {
+                    Text("Show quick-access thumbnail after capture")
+                    Text("A floating preview lets you copy, drag or edit right away.")
+                }
             }
             Section {
                 HStack {
                     Spacer()
-                    Button("Reset all preferences") { model.prefs.resetToDefaults(); model.objectWillChange.send(); model.changed()
-                        AppDelegate.applyTheme(); AppDelegate.applyActivationPolicy() }
+                    Button("Reset All Preferences") {
+                        model.prefs.resetToDefaults(); model.objectWillChange.send(); model.changed()
+                        AppDelegate.applyTheme(); AppDelegate.applyActivationPolicy()
+                    }
+                    .help("Restore every setting to its default value")
                 }
             }
         }
-        .formStyle(.grouped)
+        .preferencesPaneForm()
     }
 
     private func applyLaunchAtLogin() {
@@ -116,17 +310,6 @@ private struct GeneralTab: View {
         } catch {
             login.value = "Could not update the login item: \(error.localizedDescription)"
         }
-    }
-}
-
-final class Local<T>: ObservableObject {
-    @Published var value: T
-    init(_ v: T) { value = v }
-}
-
-extension Binding {
-    func onChange(_ action: @escaping () -> Void) -> Binding<Value> {
-        Binding(get: { wrappedValue }, set: { wrappedValue = $0; action() })
     }
 }
 
@@ -146,56 +329,54 @@ private struct CaptureTab: View {
 
     var body: some View {
         Form {
-            Section("Global shortcuts") {
-                ForEach(HotkeyAction.allCases, id: \.self) { action in
-                    HotkeyRow(model: model, action: action)
-                }
-            }
             Section("Capture") {
                 Picker("Default timer", selection: $timer) {
                     ForEach([3, 5, 10], id: \.self) { Text("\($0) seconds").tag($0) }
                 }
                 Toggle("Hide mouse cursor", isOn: $hideCursor.onChange { model.changed() })
-                Toggle("Remember last area", isOn: $rememberArea)
                 Toggle("Hide Glint windows while capturing", isOn: model.bind(\.hideWindowsDuringCapture))
-                Toggle("Snap selection to edges", isOn: $snapToEdges.onChange { model.changed() })
-                Text("Snap to window and display edges only. Hold Command to temporarily invert snapping. Shift still constrains the selection to a square.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+            CollapsibleSection("Selection", id: "selection") {
+                Toggle("Remember last area", isOn: $rememberArea)
+                Toggle(isOn: $snapToEdges.onChange { model.changed() }) {
+                    Text("Snap selection to edges")
+                    Text("Snap to window and display edges only. Hold Command to temporarily invert snapping. Shift still constrains the selection to a square.")
+                }
+            }
+            CollapsibleSection("Global shortcuts", id: "shortcuts") {
+                ForEach(HotkeyAction.allCases, id: \.self) { action in
+                    HotkeyRow(model: model, action: action)
+                }
             }
         }
-        .formStyle(.grouped)
+        .preferencesPaneForm()
     }
 }
 
 private struct HotkeyRow: View {
     @ObservedObject var model: PrefsModel
     let action: HotkeyAction
-    @StateObject private var comboBox = Local<RecordedKeyCombo?>(nil)
 
     var body: some View {
-        HStack {
-            Text(action.displayName)
-            Spacer()
-            KeyComboRecorderView(combo: $comboBox.value)
-                .frame(width: 130, height: 24)
-            Button {
-                apply(action.defaultCombo)
-                comboBox.value = Self.recorded(action.defaultCombo)
-            } label: { Image(systemName: "arrow.counterclockwise") }
-            .buttonStyle(.borderless)
-            .help("Restore default")
-        }
-        .onAppear { comboBox.value = Self.recorded(model.prefs.hotkey(for: action)) }
-        .onChange(of: comboBox.value) { _, new in
-            guard let new else { return }
-            apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+        let current = model.prefs.hotkey(for: action)
+        LabeledContent(action.displayName) {
+            HStack(spacing: 6) {
+                ShortcutField(combo: Self.recorded(current), name: action.displayName) { new in
+                    apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+                }
+                Button { apply(action.defaultCombo) } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.borderless)
+                    .disabled(current == action.defaultCombo)
+                    .help("Restore default")
+                    .accessibilityLabel("Restore default shortcut for \(action.displayName)")
+            }
         }
     }
 
     private func apply(_ c: KeyCombo) {
         guard model.prefs.hotkey(for: action) != c else { return }
         model.prefs.setHotkey(c, for: action)
+        model.objectWillChange.send()
         model.changed()
     }
 
@@ -210,6 +391,147 @@ private struct HotkeyRow: View {
         if m.contains(.option) { r.insert(.option) }
         if m.contains(.control) { r.insert(.control) }
         return r
+    }
+}
+
+/// Rounded shortcut field that shows the combo as key caps. Click it (or press Space when focused) and
+/// type a shortcut; Esc cancels.
+private struct ShortcutField: View {
+    let combo: RecordedKeyCombo?
+    let name: String
+    let onRecord: (RecordedKeyCombo) -> Void
+    @StateObject private var recording = Local<Bool>(false)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if recording.value {
+                Text("Type shortcut…").foregroundStyle(.secondary)
+            } else if let combo {
+                ForEach(Array(Self.caps(combo).enumerated()), id: \.offset) { _, cap in KeyCap(text: cap) }
+            } else {
+                Text("Click to record").foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 6)
+        .frame(minWidth: 120, minHeight: 24)
+        .background(shape.fill(.quaternary))
+        .overlay(shape.strokeBorder(Color.accentColor, lineWidth: 2).opacity(recording.value ? 1 : 0))
+        .overlay {
+            ShortcutCapture(name: name, value: combo?.displayString ?? "None",
+                            onRecordingChange: { recording.value = $0 }, onRecord: onRecord)
+        }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: recording.value)
+        .help("Click and type a new shortcut. Esc cancels.")
+    }
+
+    static func caps(_ combo: RecordedKeyCombo) -> [String] {
+        KeyGlyphs.modifierString(combo.modifiers).map(String.init) + [KeyGlyphs.keyName(combo.keyCode)]
+    }
+}
+
+private struct KeyCap: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .frame(minWidth: 18, minHeight: 18)
+            .padding(.horizontal, text.count > 1 ? 4 : 0)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.background))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(.separator, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.08), radius: 0, y: 0.5)
+    }
+}
+
+/// Transparent AppKit layer over `ShortcutField` that records key combos (it needs raw key codes).
+private struct ShortcutCapture: NSViewRepresentable {
+    let name: String
+    let value: String
+    let onRecordingChange: (Bool) -> Void
+    let onRecord: (RecordedKeyCombo) -> Void
+
+    func makeNSView(context: Context) -> ShortcutCaptureView { update(ShortcutCaptureView()) }
+    func updateNSView(_ view: ShortcutCaptureView, context: Context) { _ = update(view) }
+
+    private func update(_ view: ShortcutCaptureView) -> ShortcutCaptureView {
+        view.setAccessibilityLabel("\(name) shortcut")
+        view.setAccessibilityValue(value)
+        view.onRecordingChange = { recording in DispatchQueue.main.async { onRecordingChange(recording) } }
+        view.onRecord = { combo in DispatchQueue.main.async { onRecord(combo) } }
+        return view
+    }
+}
+
+final class ShortcutCaptureView: NSView {
+    var onRecordingChange: ((Bool) -> Void)?
+    var onRecord: ((RecordedKeyCombo) -> Void)?
+    private var recording = false {
+        didSet {
+            guard oldValue != recording else { return }
+            noteFocusRingMaskChanged()
+            onRecordingChange?(recording)
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityHelp("Press to record a new shortcut")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var acceptsFirstResponder: Bool { true }
+    // Like buttons, only reachable with Tab when Full Keyboard Access is on; otherwise switching panes
+    // would focus (and scroll to) the first shortcut field.
+    override var canBecomeKeyView: Bool { NSApp.isFullKeyboardAccessEnabled }
+    // While recording the field draws its own accent outline instead.
+    override var focusRingMaskBounds: NSRect { recording ? .zero : bounds }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) { startRecording() }
+
+    override func accessibilityPerformPress() -> Bool { startRecording(); return true }
+
+    override func resignFirstResponder() -> Bool {
+        recording = false
+        return super.resignFirstResponder()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard recording else { return false }
+        keyDown(with: event)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard recording else {
+            if event.keyCode == 49 || event.keyCode == 36 { startRecording() } else { super.keyDown(with: event) }
+            return
+        }
+        let mods = HotkeyModifiers(event.modifierFlags)
+        switch event.keyCode {
+        case 53, 51, 117: recording = false // Esc and Delete leave the shortcut unchanged
+        default:
+            let isFunctionKey = (96...122).contains(Int(event.keyCode)) && event.keyCode != 114
+            guard !mods.isEmpty || isFunctionKey else { NSSound.beep(); return }
+            recording = false
+            onRecord?(RecordedKeyCombo(keyCode: UInt32(event.keyCode), modifiers: mods))
+        }
+    }
+
+    private func startRecording() {
+        recording = true
+        window?.makeFirstResponder(self)
     }
 }
 
@@ -248,6 +570,17 @@ private struct OutputTab: View {
         })
     }
 
+    private var exportSummary: String {
+        var parts = [kind.wrappedValue.rawValue]
+        if kind.wrappedValue != .png { parts.append("\(Int(quality.wrappedValue * 100))%") }
+        switch model.prefs.exportScale {
+        case .original: parts.append("Original size")
+        case .x1: parts.append("1×")
+        case .x2: parts.append("2×")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         Form {
             Section("Folders") {
@@ -257,27 +590,44 @@ private struct OutputTab: View {
                 Toggle("Save untouched raw capture", isOn: model.bind(\.saveRaw))
                 Toggle("Save styled output", isOn: model.bind(\.saveOutput))
             }
-            OutputRetentionSection(model: model)
-            Section("Export") {
+            CollapsibleSection("After capture", id: "afterCapture") {
+                Toggle("Copy to clipboard", isOn: model.bind(\.copyToClipboardAfterCapture))
+                Toggle(isOn: model.bind(\.openEditorAfterCapture)) {
+                    Text("Open editor")
+                    Text("When off, captures are saved directly.")
+                }
+                Toggle("Close editor after copying", isOn: model.bind(\.closeAfterCopy))
+            }
+            CollapsibleSection("Export", id: "export", expandedByDefault: false, summary: exportSummary) {
                 Picker("Format", selection: kind) { ForEach(FormatKind.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented)
                 if kind.wrappedValue != .png {
-                    HStack { Text("Quality"); Slider(value: quality, in: 0.1...1); Text("\(Int(quality.wrappedValue * 100))%").monospacedDigit() }
+                    LabeledContent("Quality") {
+                        HStack(spacing: 8) {
+                            Slider(value: quality, in: 0.1...1).labelsHidden()
+                                .accessibilityLabel("Quality")
+                            Text("\(Int(quality.wrappedValue * 100))%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 36, alignment: .trailing)
+                        }
+                    }
                 }
                 Picker("Scale", selection: model.bind(\.exportScale)) {
                     Text("Original").tag(ExportScale.original)
                     Text("1×").tag(ExportScale.x1)
                     Text("2×").tag(ExportScale.x2)
                 }
-                TextField("File name", text: model.bind(\.fileNameTemplate))
-                    .help("{datetime} and {uuid} are replaced")
+                .pickerStyle(.segmented)
+                TextField(text: model.bind(\.fileNameTemplate)) {
+                    Text("File name")
+                    Text("{datetime} and {uuid} are replaced.")
+                }
+                .help("{datetime} and {uuid} are replaced")
             }
-            Section("After capture") {
-                Toggle("Copy to clipboard", isOn: model.bind(\.copyToClipboardAfterCapture))
-                Toggle("Open editor (otherwise save directly)", isOn: model.bind(\.openEditorAfterCapture))
-                Toggle("Close editor after copying", isOn: model.bind(\.closeAfterCopy))
-            }
+            OutputRetentionSection(model: model)
         }
-        .formStyle(.grouped)
+        .preferencesPaneForm()
     }
 }
 
@@ -286,6 +636,7 @@ private struct OutputTab: View {
 /// here turns history back on.
 struct OutputRetentionSection: View {
     static let title = "Reopen & cleanup"
+    static let sectionID = "retention"
     static let keepTitle = "Keep copied and dragged screenshots for reopening"
     static let periodTitle = "Keep screenshots in Output for"
     /// Forever first, then the finite periods from shortest to longest.
@@ -311,26 +662,31 @@ struct OutputRetentionSection: View {
 
     @ObservedObject var model: PrefsModel
 
+    private var summary: String {
+        guard Self.isEnabled(model.prefs) else { return "Needs Keep history" }
+        return model.prefs.outputRetention.displayName
+    }
+
     var body: some View {
         let enabled = Self.isEnabled(model.prefs)
-        Section(Self.title) {
-            VStack(alignment: .leading, spacing: 2) {
-                Toggle(Self.keepTitle, isOn: model.bind(\.keepCopiedImages))
-                    .disabled(!enabled)
+        CollapsibleSection(Self.title, id: Self.sectionID, expandedByDefault: false, summary: summary) {
+            Toggle(isOn: model.bind(\.keepCopiedImages)) {
+                Text(Self.keepTitle)
                 caption(Self.keepCaption(model.prefs))
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Picker(Self.periodTitle, selection: model.bind(\.outputRetention)) {
-                    ForEach(Self.periods) { Text($0.displayName).tag($0) }
-                }
-                .disabled(!enabled)
+            .disabled(!enabled)
+            Picker(selection: model.bind(\.outputRetention)) {
+                ForEach(Self.periods) { Text($0.displayName).tag($0) }
+            } label: {
+                Text(Self.periodTitle)
                 caption(Self.periodCaption(model.prefs))
             }
+            .disabled(!enabled)
         }
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text(text).fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -339,23 +695,27 @@ private struct FolderRow: View {
     @Binding var url: URL
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text((url.path as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
+        LabeledContent {
+            HStack(spacing: 8) {
+                Button("Choose…") {
+                    let p = NSOpenPanel()
+                    p.canChooseDirectories = true
+                    p.canChooseFiles = false
+                    p.canCreateDirectories = true
+                    p.directoryURL = url
+                    if p.runModal() == .OK, let u = p.url { url = u }
+                }
+                Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "folder") }
+                    .buttonStyle(.borderless)
+                    .help("Open in Finder")
+                    .accessibilityLabel("Open \(title) in Finder")
             }
-            Spacer()
-            Button("Choose…") {
-                let p = NSOpenPanel()
-                p.canChooseDirectories = true
-                p.canChooseFiles = false
-                p.canCreateDirectories = true
-                p.directoryURL = url
-                if p.runModal() == .OK, let u = p.url { url = u }
-            }
-            Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "folder") }
-                .buttonStyle(.borderless)
+        } label: {
+            Text(title)
+            Text((url.path as NSString).abbreviatingWithTildeInPath)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(url.path)
         }
     }
 }
@@ -385,25 +745,38 @@ private struct EditorTab: View {
                 })
     }
 
+    private var redactSummary: String {
+        let on = model.prefs.autoRedactOptions.categories.count
+        return "\(on) of \(SensitiveCategory.allCases.count) types"
+    }
+
     var body: some View {
         Form {
-            Picker("Default preset", selection: presetName) {
-                ForEach(model.store.presets, id: \.id) { Text($0.name).tag($0.name) }
+            Section {
+                Picker("Default preset", selection: presetName) {
+                    ForEach(model.store.presets, id: \.id) { Text($0.name).tag($0.name) }
+                }
+                Toggle(isOn: model.bind(\.rememberSettings)) {
+                    Text("Remember settings")
+                    Text(model.prefs.rememberSettings
+                         ? "New screenshots start with your last-used settings."
+                         : "New screenshots start with the default preset.")
+                }
+                .help(PrefsModel.rememberSettingsHelp)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Toggle("Remember settings", isOn: model.bind(\.rememberSettings))
-                    .help(PrefsModel.rememberSettingsHelp)
-                Text(model.prefs.rememberSettings
-                     ? "New screenshots start with your last-used settings."
-                     : "New screenshots start with the default preset.")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("Automatic adjustments") {
+                Toggle(isOn: model.bind(\.autoBalance)) {
+                    Text("Auto-balance")
+                    Text("Crop uniform borders around the screenshot.")
+                }
+                Toggle("Auto-redact sensitive info", isOn: model.bind(\.autoRedact))
             }
-            Toggle("Auto-balance (crop uniform borders)", isOn: model.bind(\.autoBalance))
-            Toggle("Auto-redact sensitive info", isOn: model.bind(\.autoRedact))
             if model.prefs.autoRedact {
-                Section("Auto-redact") {
-                    Text("Always uses solid fill. Review the image before sharing; detection can miss information.")
-                        .font(.caption).foregroundStyle(.secondary)
+                CollapsibleSection("Auto-redact", id: "autoRedact", expandedByDefault: false, summary: redactSummary) {
+                    Label("Always uses solid fill. Review the image before sharing; detection can miss information.",
+                          systemImage: "info.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                     ForEach(SensitiveCategory.allCases, id: \.self) { cat in
                         Toggle(cat.displayName, isOn: Binding(
                             get: { model.prefs.autoRedactOptions.categories.contains(cat) },
@@ -414,14 +787,15 @@ private struct EditorTab: View {
                                 model.objectWillChange.send()
                             }))
                     }
-                    TextField("Custom words (comma separated)", text: words)
+                    TextField(text: words, prompt: Text("e.g. Project Atlas, Jane Doe")) {
+                        Text("Custom words (comma separated)")
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
+        .preferencesPaneForm()
     }
 }
-
 // MARK: - Presets
 
 struct PresetStartingPoint: Identifiable {
@@ -519,46 +893,59 @@ private struct PresetsTab: View {
     @StateObject private var ticker = Local<Int>(0)
     @StateObject private var adding = Local<Bool>(false)
     @StateObject private var error = Local<String?>(nil)
+    @StateObject private var sample = Local<CGImage>(SampleImage.make())
+
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Create a reusable look with a sample image, no screenshot needed.")
                 .font(.callout).foregroundStyle(.secondary)
-            List(selection: $sel.value) {
-                ForEach(model.store.presets, id: \.id) { p in
-                    HStack {
-                        Text(p.name)
-                        if p.id == model.store.defaultPreset?.id { Text("default").font(.caption).foregroundStyle(.secondary) }
-                    }.tag(p.id)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(model.store.presets, id: \.id) { preset in
+                        card(preset)
+                    }
                 }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
             }
-            .id(ticker.value)
-            HStack {
+            .frame(minHeight: 220, idealHeight: 300)
+            Divider()
+            HStack(spacing: 8) {
                 Button("Add Preset…") { adding.value = true }
                     .help("Choose a starting look and preview it on a sample image")
                 Button("Edit…") { edit() }.disabled(sel.value == nil)
-                Spacer()
-                Button("Set default") {
-                    if let id = sel.value {
-                        model.store.setDefault(id: id)
-                        model.prefs.defaultPresetName = model.store.presets.first { $0.id == id }?.name
-                        commit()
-                    }
-                }.disabled(sel.value == nil)
-            }
-            HStack {
                 Button("Rename…") { rename() }.disabled(sel.value == nil)
-                Button("Delete") { if let id = sel.value { model.store.delete(id: id); sel.value = nil; commit() } }
+                Button("Delete") { delete() }
                     .disabled(sel.value == nil || model.store.presets.count <= 1)
                 Spacer()
-                Button("Import…") { importPresets() }
-                Button("Export…") { exportPresets() }
+                Button("Set Default") { setDefault() }
+                    .disabled(sel.value == nil || sel.value == model.store.defaultPreset?.id)
+                Menu {
+                    Button("Import…") { importPresets() }
+                    Button("Export…") { exportPresets() }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Import or export presets")
+                .accessibilityLabel("Import or export presets")
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
             if let message = error.value {
-                Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
             }
         }
-        .padding(8)
         .sheet(isPresented: $adding.value) {
             NewPresetSheet(model: model, onSaved: saved, onCustomize: openDesigner)
         }
@@ -566,6 +953,51 @@ private struct PresetsTab: View {
             ticker.value += 1
             model.objectWillChange.send()
         }
+    }
+
+    private func card(_ preset: Preset) -> some View {
+        let selected = preset.id == sel.value
+        let isDefault = preset.id == model.store.defaultPreset?.id
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return Button {
+            sel.value = preset.id
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                PresetThumbnail(settings: preset.settings, image: sample.value, backingScale: 2)
+                    .padding(6)
+                    .frame(height: 96)
+                    .frame(maxWidth: .infinity)
+                    .background(shape.fill(.quinary))
+                    .overlay(shape.strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.1),
+                                                lineWidth: selected ? 2.5 : 0.5))
+                HStack(spacing: 6) {
+                    Text(preset.name).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.tail)
+                    if isDefault {
+                        Text("Default")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule(style: .continuous).fill(.quaternary))
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture(count: 2).onEnded { sel.value = preset.id; edit() })
+        .contextMenu {
+            Button("Edit…") { sel.value = preset.id; edit() }
+            Button("Rename…") { sel.value = preset.id; rename() }
+            Button("Set as Default") { sel.value = preset.id; setDefault() }.disabled(isDefault)
+            Divider()
+            Button("Delete") { sel.value = preset.id; delete() }.disabled(model.store.presets.count <= 1)
+        }
+        .accessibilityLabel(isDefault ? "\(preset.name), default" : preset.name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityHint("Double-click to edit")
+        .help(preset.name)
     }
 
     private func saved(_ preset: Preset) {
@@ -583,6 +1015,20 @@ private struct PresetsTab: View {
         guard let id = sel.value, let preset = model.store.presets.first(where: { $0.id == id }) else { return }
         openDesigner(PresetDesign(image: SampleImage.make(), backingScale: 2, settings: preset.settings,
                                   name: preset.name, editingID: preset.id))
+    }
+
+    private func setDefault() {
+        guard let id = sel.value else { return }
+        model.store.setDefault(id: id)
+        model.prefs.defaultPresetName = model.store.presets.first { $0.id == id }?.name
+        commit()
+    }
+
+    private func delete() {
+        guard let id = sel.value, model.store.presets.count > 1 else { return }
+        model.store.delete(id: id)
+        sel.value = nil
+        commit()
     }
 
     private func commit() {
@@ -605,6 +1051,7 @@ private struct PresetsTab: View {
         alert.accessoryView = field
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty {
             model.store.rename(id: id, to: field.stringValue)
             commit()
@@ -630,6 +1077,8 @@ private struct NewPresetSheet: View {
     let onSaved: (Preset) -> Void
     let onCustomize: (PresetDesign) -> Void
 
+    private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
+
     init(model: PrefsModel, onSaved: @escaping (Preset) -> Void, onCustomize: @escaping (PresetDesign) -> Void) {
         _draft = StateObject(wrappedValue: NewPresetModel(prefs: model.prefs, store: model.store))
         self.onSaved = onSaved
@@ -637,39 +1086,53 @@ private struct NewPresetSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("New Preset").font(.title2.bold())
-            Text("Choose a starting point. Add it as-is or customize the look in the editor.")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("New Preset").font(.headline)
+                Text("Choose a starting point. Add it as-is or customize the look in the editor.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding([.horizontal, .top], 20)
+            .padding(.bottom, 12)
             ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(draft.choices) { choice in
                         startingPoint(choice)
                     }
                 }
-                .padding(2)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 4)
             }
-            .frame(height: 280)
-            HStack {
-                Text(draft.imageName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Spacer()
-                Button("Use My Image…") { chooseImage() }
-                    .help("Use your own preview image; it is never stored in the preset")
+            .frame(height: 290)
+            Divider()
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    Text("Name:").gridColumnAlignment(.trailing)
+                    TextField("Preset name", text: $draft.name)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Preset name")
+                }
+                GridRow {
+                    Text("Preview image:")
+                    HStack {
+                        Text(draft.imageName)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Button("Use My Image…") { chooseImage() }
+                            .help("Use your own preview image; it is never stored in the preset")
+                    }
+                }
+                GridRow {
+                    Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                    footnote
+                }
             }
-            HStack {
-                Text("Name")
-                TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Preset name")
-            }
-            if let message = draft.errorMessage ?? draft.validationMessage {
-                Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
-            } else {
-                Text("Only the look is saved. Your last-used editor settings stay unchanged.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            HStack(spacing: 8) {
                 Button("Customize in Editor…") {
                     do {
                         let design = try draft.design()
@@ -678,6 +1141,8 @@ private struct NewPresetSheet: View {
                     } catch { draft.errorMessage = error.localizedDescription }
                 }
                 .disabled(draft.validationMessage != nil)
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Add") {
                     do {
                         let preset = try draft.add()
@@ -688,40 +1153,46 @@ private struct NewPresetSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.validationMessage != nil)
             }
+            .padding(20)
         }
-        .padding(20)
-        .frame(width: 480)
+        .frame(width: 520)
+    }
+
+    @ViewBuilder
+    private var footnote: some View {
+        if let message = draft.errorMessage ?? draft.validationMessage {
+            Text(message).font(.footnote).foregroundStyle(.red).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text("Only the look is saved. Your last-used editor settings stay unchanged.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func startingPoint(_ choice: PresetStartingPoint) -> some View {
         let selected = choice.id == draft.selectedID
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return Button {
             draft.selectedID = choice.id
             draft.errorMessage = nil
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 PresetThumbnail(settings: choice.settings, image: draft.image, backingScale: draft.backingScale)
                     .id("\(choice.id)-\(draft.imageRevision)")
+                    .padding(6)
                     .frame(height: 96)
                     .frame(maxWidth: .infinity)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(choice.name).font(.callout.weight(.medium)).lineLimit(1)
-                        Text(choice.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .background(shape.fill(.quinary))
+                    .overlay(shape.strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.1),
+                                                lineWidth: selected ? 2.5 : 0.5))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(choice.name).font(.callout.weight(.medium)).lineLimit(1)
+                    Text(choice.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .padding(.horizontal, 2)
             }
-            .padding(10)
-            .background(selected ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(
-                selected ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: selected ? 2 : 1))
-            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(choice.name), \(choice.detail)")
@@ -759,7 +1230,7 @@ private struct PresetThumbnail: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .task {
+        .task(id: settings) {
             let settings = settings, image = image, scale = backingScale
             let wallpaper: CGImage?
             if settings.usesDesktopWallpaper {
@@ -787,24 +1258,54 @@ private struct PresetThumbnail: View {
 // MARK: - About / permissions
 
 private struct AboutTab: View {
+    private var copyright: String {
+        (Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String) ?? "MIT License - Glint contributors"
+    }
+
     var body: some View {
-        VStack(spacing: 14) {
-            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
-            Text("Glint").font(.title.bold())
-            Text("Version \(AppInfo.version) · MIT licensed").foregroundStyle(.secondary)
-            HStack {
-                Button("Check for Updates") { UpdateChecker.check() }
-                Button("GitHub") { NSWorkspace.shared.open(GlintInfo.repositoryURL) }
+        VStack(spacing: 0) {
+            VStack(spacing: 6) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+                    .accessibilityHidden(true)
+                    .padding(.bottom, 6)
+                Text("Glint").font(.title2.bold())
+                Text("Version \(AppInfo.version) · MIT licensed")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
-            Text("Updates are manual. Glint does not download or install them automatically.")
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Link("How to update with Homebrew or a download", destination: UpdateChecker.guideURL)
-                .font(.caption)
-            Divider()
-            PermissionsPane()
-            Spacer()
+            HStack(spacing: 10) {
+                Button("Check for Updates") { UpdateChecker.check() }
+                Link(destination: GlintInfo.repositoryURL) {
+                    Label("GitHub", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 16)
+            VStack(spacing: 4) {
+                Text("Updates are manual. Glint does not download or install them automatically.")
+                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Link("How to update with Homebrew or a download", destination: UpdateChecker.guideURL)
+                    .font(.footnote)
+            }
+            .padding(.top, 10)
+            GroupBox {
+                PermissionsPane().padding(6)
+            }
+            .padding(.top, 20)
+            Text(copyright)
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 16)
         }
-        .padding()
+        .padding(.horizontal, 28)
+        .padding(.top, 24)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -822,24 +1323,35 @@ struct PermissionsPane: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Permissions").font(.headline)
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(granted ? .green : .orange)
-                Text(granted ? "Screen Recording is enabled" : "Screen Recording is required to capture")
-                Spacer()
+                    .imageScale(.large)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(granted ? "Screen Recording is enabled" : "Screen Recording is required to capture")
+                        .fontWeight(.medium)
+                    if !granted {
+                        Text(Self.accessHint)
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
             }
+            .accessibilityElement(children: .combine)
             if !granted {
-                Text(Self.accessHint)
-                    .font(.caption).foregroundStyle(.secondary)
                 if stale.value {
-                    Button(Self.reauthorizeTitle) { reauthorize() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(working.value)
-                    Text(Self.reauthorizeCaption)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button(Self.reauthorizeTitle) { reauthorize() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(working.value)
+                        Text(Self.reauthorizeCaption)
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Button("Open System Settings") { ScreenRecordingPermission.openSystemSettings() }
                 } else {
                     HStack {
@@ -852,7 +1364,7 @@ struct PermissionsPane: View {
                     }
                 }
                 if let message = status.value {
-                    Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -915,7 +1427,10 @@ final class PermissionsWindow {
         } else {
             let w = NSWindow(contentViewController: content)
             w.title = "Glint Setup"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
             window = w
         }
@@ -925,24 +1440,66 @@ final class PermissionsWindow {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    private static let shortcuts: [(String, HotkeyAction)] = [
+        ("Capture an area", .captureArea), ("Capture a window", .captureWindow), ("Capture the full screen", .captureFullscreen),
+    ]
+
     private static func content(needsReauthorization: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
-                VStack(alignment: .leading) {
-                    Text(needsReauthorization ? "Screen Recording needs attention" : "Welcome to Glint").font(.title2.bold())
-                    Text(needsReauthorization ? "Glint can’t capture until macOS allows Screen Recording again."
-                                              : "Turn screenshots into polished images.")
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 80, height: 80)
+                    .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+                    .accessibilityHidden(true)
+                Text(needsReauthorization ? "Screen Recording needs attention" : "Welcome to Glint")
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                Text(needsReauthorization ? "Glint can’t capture until macOS allows Screen Recording again."
+                                          : "Turn screenshots into polished images.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 8)
+            GroupBox {
+                PermissionsPane().padding(6)
+            }
+            .padding(.top, 20)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(shortcuts, id: \.1) { title, action in
+                        HStack {
+                            Text(title)
+                            Spacer()
+                            Text(HotkeyRow.recorded(AppPreferences.shared.hotkey(for: action)).displayString)
+                                .font(.body.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    Text("Glint lives in the menu bar.")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
             }
-            PermissionsPane()
-            Divider()
-            Text("Capture area with ⌃⌥⌘4, a window with ⌃⌥⌘6, or the full screen with ⌃⌥⌘3. Glint lives in the menu bar.")
-                .font(.callout)
-            HStack { Spacer(); Button("Done") { PermissionsWindow.shared.window?.close() }.keyboardShortcut(.defaultAction) }
+            .padding(.top, 12)
+            Button {
+                PermissionsWindow.shared.window?.close()
+            } label: {
+                Text("Done").frame(minWidth: 80)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .padding(.top, 20)
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(.horizontal, 24)
+        .padding(.top, 20)
+        .padding(.bottom, 20)
+        .frame(width: 440)
     }
 }

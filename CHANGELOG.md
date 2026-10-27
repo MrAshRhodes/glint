@@ -8,6 +8,13 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Changed
+
+- Redesigned the UI around Apple's Liquid Glass guidelines (with material fallbacks on macOS 14–15). The editor canvas now fills the window, with the toolbar, inspector and action bar floating as glass. Every inspector section is collapsible and remembers its state, and **Collapse All**/**Expand All** is available. ([#57])
+- Preferences now uses the standard toolbar-tab Settings window, which resizes to fit each tab. Advanced sections are collapsible, presets show as preview cards, and the About and setup screens have been refreshed. ([#57])
+- The post-capture quick-access thumbnail floats on a glass panel, slides in and out (fade only with Reduce Motion), and has a close button on hover. Capture overlay labels and selection outlines have been refined. ([#57])
+- GlintEditor API: `GlintDesign`, `GlintGlassView`, `GlintGlassContainer` and `glintGlass`/`glintCard` view helpers. ([#57])
+
 ## [1.4.0] - 2026-10-23
 
 ### Added
@@ -187,3 +194,4 @@ First public release.
 [#43]: https://github.com/MrAshRhodes/glint/issues/43
 [#52]: https://github.com/MrAshRhodes/glint/issues/52
 [#51]: https://github.com/MrAshRhodes/glint/issues/51
+[#57]: https://github.com/MrAshRhodes/glint/issues/57
