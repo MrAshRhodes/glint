@@ -42,6 +42,24 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private let margin: CGFloat = 28
 
+    /// Insets of the area covered by floating chrome; the image is centred in the rest of the view.
+    var contentInsets = NSEdgeInsets() {
+        didSet {
+            guard !NSEdgeInsetsEqual(oldValue, contentInsets) else { return }
+            needsLayout = true
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    /// The part of the view not covered by floating chrome.
+    private var contentRect: CGRect {
+        let r = CGRect(x: bounds.minX + contentInsets.left, y: bounds.minY + contentInsets.top,
+                       width: bounds.width - contentInsets.left - contentInsets.right,
+                       height: bounds.height - contentInsets.top - contentInsets.bottom)
+        return r.width > 0 && r.height > 0 ? r : .zero
+    }
+
     init(model: EditorModel) {
         self.model = model
         super.init(frame: .zero)
@@ -59,17 +77,20 @@ final class CanvasView: NSView, NSTextViewDelegate {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    // The canvas extends under the transparent titlebar; drags on it edit annotations, never move the window.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     // MARK: Geometry
 
     private var displayRect: CGRect {
         guard let p = model.preview else { return .zero }
-        let avail = bounds.insetBy(dx: margin, dy: margin)
+        let area = contentRect
+        let avail = area.insetBy(dx: margin, dy: margin)
         let cs = p.layout.canvasSize
         guard cs.width > 0, cs.height > 0, avail.width > 0, avail.height > 0 else { return .zero }
         let s = min(avail.width / cs.width, avail.height / cs.height, 2)
         let size = CGSize(width: cs.width * s, height: cs.height * s)
-        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
+        return CGRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height)
     }
 
     private var viewScale: CGFloat {
@@ -100,8 +121,9 @@ final class CanvasView: NSView, NSTextViewDelegate {
     override func layout() {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2
-        model.updatePreviewTarget(CGSize(width: max(bounds.width - 2 * margin, 10) * scale,
-                                         height: max(bounds.height - 2 * margin, 10) * scale))
+        let area = contentRect
+        model.updatePreviewTarget(CGSize(width: max(area.width - 2 * margin, 10) * scale,
+                                         height: max(area.height - 2 * margin, 10) * scale))
         positionEditor()
     }
 
@@ -150,7 +172,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
         let s = NSAttributedString(string: "  \(text)  ", attributes: attrs)
         let size = s.size()
-        let rect = CGRect(x: bounds.midX - size.width / 2, y: bounds.maxY - size.height - 8, width: size.width, height: size.height + 4)
+        let area = contentRect.isEmpty ? bounds : contentRect
+        let rect = CGRect(x: area.midX - size.width / 2, y: area.maxY - size.height - 8, width: size.width, height: size.height + 4)
         NSColor.black.withAlphaComponent(0.7).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
         s.draw(at: CGPoint(x: rect.minX, y: rect.minY + 2))

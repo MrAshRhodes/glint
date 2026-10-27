@@ -112,14 +112,15 @@ struct PresetDesignHeaderView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "paintpalette").foregroundStyle(.secondary)
-            Text(model.designTitle).font(.headline)
+            Text(model.designTitle).font(.headline).lineLimit(1)
             Text("Adjust the look in the sidebar, then save it as a preset. The preview image isn't saved.")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Spacer(minLength: 8)
+                .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                .layoutPriority(-1)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(.bar)
+        .padding(.horizontal, 14)
+        .frame(height: EditorChromeMetrics.toolbarHeight)
+        .glintGlass()
+        .padding(EditorChromeMetrics.shadowPadding)
     }
 }
 
@@ -128,33 +129,47 @@ struct PresetDesignBarView: View {
     let actions: EditorActions
 
     var body: some View {
-        HStack(spacing: 10) {
-            TextField("Preset name", text: $model.designName)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 220)
-                .onSubmit { actions.savePreset() }
-                .accessibilityLabel("Preset name")
-            Toggle("Set as default", isOn: $model.designMakeDefault)
-                .toggleStyle(.checkbox)
-                .disabled(model.designIsDefault)
-                .help(model.designIsDefault ? "This is already the default preset" : "Use this preset for new screenshots")
-            if let problem = model.designValidationMessage {
-                Text(problem).font(.caption).foregroundStyle(.red).lineLimit(1).help(problem)
-            } else if let status = model.statusMessage {
-                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(status)
+        GlintGlassContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    TextField("Preset name", text: $model.designName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                        .onSubmit { actions.savePreset() }
+                        .accessibilityLabel("Preset name")
+                    Toggle("Set as default", isOn: $model.designMakeDefault)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .disabled(model.designIsDefault)
+                        .help(model.designIsDefault ? "This is already the default preset" : "Use this preset for new screenshots")
+                    if let problem = model.designValidationMessage {
+                        Text(problem).font(.caption).foregroundStyle(.red).lineLimit(1).help(problem)
+                            .layoutPriority(-1)
+                    } else if let status = model.statusMessage {
+                        Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(status)
+                            .layoutPriority(-1)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: EditorChromeMetrics.bottomBarHeight)
+                .glintGlass(in: RoundedRectangle(cornerRadius: EditorChromeMetrics.bottomBarCornerRadius, style: .continuous))
+                Spacer(minLength: 0)
+                    .layoutPriority(-2)
+                HStack(spacing: 8) {
+                    Button("Cancel") { actions.close() }
+                        .keyboardShortcut(.cancelAction)
+                        .glintGlassButtonStyle()
+                        .help("Close without saving (Esc)")
+                    // Return is routed by the window controller / name field so other sidebar fields keep their own Return.
+                    Button("Save Preset") { actions.savePreset() }
+                        .glintGlassButtonStyle(prominent: true)
+                        .disabled(!model.canSaveDesign)
+                        .help("Save Preset (⌘S or Return)")
+                }
+                .controlSize(.large)
+                .fixedSize()
             }
-            Spacer()
-            Button("Cancel") { actions.close() }
-                .keyboardShortcut(.cancelAction)
-                .help("Close without saving (Esc)")
-            // Return is routed by the window controller / name field so other sidebar fields keep their own Return.
-            Button("Save Preset") { actions.savePreset() }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canSaveDesign)
-                .help("Save Preset (⌘S or Return)")
         }
-        .padding(.horizontal, 12)
-        .frame(height: 50)
-        .background(.bar)
+        .padding(EditorChromeMetrics.shadowPadding)
     }
 }

@@ -19,16 +19,110 @@ enum SwatchRenderer {
     }
 }
 
-private struct Section<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-            content
+/// Inspector sections whose expanded state is persisted across launches.
+enum InspectorSectionID: String, CaseIterable {
+    case preset, selection, background, layout, ratio, frame, transform, redact, text, watermark
+
+    /// UserDefaults key holding whether the section is expanded.
+    var storageKey: String { "inspector.section.\(rawValue).expanded" }
+
+    var defaultExpanded: Bool {
+        switch self {
+        case .preset, .selection, .background, .layout: return true
+        case .ratio, .frame, .transform, .redact, .text, .watermark: return false
         }
-        .padding(.vertical, 10)
-        Divider()
+    }
+
+    var symbol: String {
+        switch self {
+        case .preset: return "square.stack.3d.up"
+        case .selection: return "paintbrush.pointed"
+        case .background: return "paintpalette"
+        case .layout: return "square.dashed"
+        case .ratio: return "aspectratio"
+        case .frame: return "macwindow"
+        case .transform: return "rotate.right"
+        case .redact: return "eye.slash"
+        case .text: return "text.viewfinder"
+        case .watermark: return "signature"
+        }
+    }
+}
+
+/// Collapsible inspector group: a header button over a grouped card (never glass on glass).
+private struct CollapsibleSection<Content: View>: View {
+    let title: String
+    let symbol: String?
+    let summary: String?
+    @Binding var isExpanded: Bool
+    let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(_ title: String, symbol: String? = nil, summary: String? = nil, isExpanded: Binding<Bool>,
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.symbol = symbol
+        self.summary = summary
+        self._isExpanded = isExpanded
+        self.content = content()
+    }
+
+    private var collapsedSummary: String? {
+        guard !isExpanded, let summary, !summary.isEmpty else { return nil }
+        return summary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    if let symbol {
+                        Image(systemName: symbol)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18)
+                    }
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let collapsedSummary {
+                        Text(collapsedSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(collapsedSummary.map { "\(title), \($0)" } ?? title)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityAddTraits(.isHeader)
+            .help(isExpanded ? "Collapse \(title)" : "Expand \(title)")
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: GlintDesign.rowSpacing) {
+                    content
+                }
+                .font(.callout)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .glintCard()
+                .transition(.opacity)
+            }
+        }
     }
 }
 
@@ -39,17 +133,32 @@ private struct SliderRow: View {
     var format: (Double) -> String = { String(Int($0.rounded())) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.system(size: 12))
+                Text(title).font(.callout)
                 Spacer()
-                Text(format(value)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary))
+                Text(format(value)).font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.quaternary))
                     .accessibilityHidden(true)
             }
             Slider(value: $value, in: range).accessibilityLabel(title).accessibilityValue(format(value))
         }
+    }
+}
+
+/// Caption-sized warning with an orange triangle, used for unsafe redaction and wallpaper problems.
+private struct InspectorWarning: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        }
+        .font(.caption)
     }
 }
 
@@ -66,38 +175,120 @@ struct InspectorView: View {
     @ObservedObject var model: EditorModel
     // CLT-only builds lack the SwiftUI macro plugin, so local state lives in an ObservableObject instead of @State.
     @StateObject private var ui = InspectorState()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // Expanded state per section, shared by every editor window and persisted across launches.
+    @AppStorage("inspector.section.preset.expanded") private var presetExpanded = true
+    @AppStorage("inspector.section.selection.expanded") private var selectionExpanded = true
+    @AppStorage("inspector.section.background.expanded") private var backgroundExpanded = true
+    @AppStorage("inspector.section.layout.expanded") private var layoutExpanded = true
+    @AppStorage("inspector.section.ratio.expanded") private var ratioExpanded = false
+    @AppStorage("inspector.section.frame.expanded") private var frameExpanded = false
+    @AppStorage("inspector.section.transform.expanded") private var transformExpanded = false
+    @AppStorage("inspector.section.redact.expanded") private var redactExpanded = false
+    @AppStorage("inspector.section.text.expanded") private var textExpanded = false
+    @AppStorage("inspector.section.watermark.expanded") private var watermarkExpanded = false
 
     private var s: Binding<RenderSettings> { Binding(get: { model.settings }, set: { model.settings = $0 }) }
 
+    private var showsAnnotationSection: Bool {
+        !model.isDesigningPreset && (!model.selection.isEmpty || model.tool != .select)
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                presetsSection
-                if !model.isDesigningPreset, !model.selection.isEmpty || (model.tool != .select) {
-                    annotationSection
+        VStack(spacing: 0) {
+            header
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    presetsSection
+                    if !model.isDesigningPreset, !model.selection.isEmpty || (model.tool != .select) {
+                        annotationSection
+                    }
+                    backgroundSection
+                    sizeSection
+                    ratioSection
+                    frameSection
+                    transformSection
+                    if !model.isDesigningPreset {
+                        redactSection
+                        textSection
+                    }
+                    watermarkSection
                 }
-                backgroundSection
-                sizeSection
-                ratioSection
-                frameSection
-                transformSection
-                if !model.isDesigningPreset {
-                    redactSection
-                    textSection
-                }
-                watermarkSection
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 14)
+            .scrollIndicators(.automatic)
         }
         .frame(width: 300)
-        .background(.regularMaterial)
+    }
+
+    // MARK: Header / expansion
+
+    private var visibleSections: [InspectorSectionID] {
+        InspectorSectionID.allCases.filter { id in
+            switch id {
+            case .selection: return showsAnnotationSection
+            case .redact, .text: return !model.isDesigningPreset
+            default: return true
+            }
+        }
+    }
+
+    private var anyExpanded: Bool { visibleSections.contains { expanded(id: $0).wrappedValue } }
+
+    private var header: some View {
+        let collapse = anyExpanded
+        return HStack(spacing: 8) {
+            Text(model.isDesigningPreset ? "Preset style" : "Style")
+                .font(.headline)
+            Spacer()
+            Button {
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                    for id in InspectorSectionID.allCases { expanded(id: id).wrappedValue = !collapse }
+                }
+            } label: {
+                Image(systemName: collapse ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(collapse ? "Collapse all sections" : "Expand all sections")
+            .accessibilityLabel(collapse ? "Collapse All" : "Expand All")
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+    }
+
+    private func expanded(id: InspectorSectionID) -> Binding<Bool> {
+        switch id {
+        case .preset: return $presetExpanded
+        case .selection: return $selectionExpanded
+        case .background: return $backgroundExpanded
+        case .layout: return $layoutExpanded
+        case .ratio: return $ratioExpanded
+        case .frame: return $frameExpanded
+        case .transform: return $transformExpanded
+        case .redact: return $redactExpanded
+        case .text: return $textExpanded
+        case .watermark: return $watermarkExpanded
+        }
+    }
+
+    private func section<Content: View>(_ id: InspectorSectionID, _ title: String, summary: String? = nil,
+                                         @ViewBuilder content: () -> Content) -> some View {
+        CollapsibleSection(title, symbol: id.symbol, summary: summary, isExpanded: expanded(id: id), content: content)
     }
 
     // MARK: Presets
 
     private var presetsSection: some View {
-        Section(title: "Preset") {
+        section(.preset, "Preset", summary: model.settings.autoBalance ? "Auto-balance" : nil) {
             HStack {
                 Menu {
                     ForEach(model.presets) { p in
@@ -117,6 +308,7 @@ struct InspectorView: View {
                         }
                     }
                 } label: { Text(model.isDesigningPreset ? "Start From" : "Presets") }
+                .fixedSize()
                 .help(model.isDesigningPreset ? "Use an existing preset as the starting point" : "Apply or manage presets")
                 .popover(isPresented: $ui.showSavePreset, arrowEdge: .bottom) {
                     nameInput(title: "Save preset", text: $ui.presetName, action: "Save") {
@@ -129,7 +321,7 @@ struct InspectorView: View {
                     }
                 }
                 Spacer()
-                Toggle("Auto-balance", isOn: s.autoBalance).toggleStyle(.switch).controlSize(.small)
+                Toggle("Auto-balance", isOn: s.autoBalance).toggleStyle(.switch).controlSize(.mini)
                     .help("Crop uniform borders and even out the margins")
             }
         }
@@ -155,15 +347,12 @@ struct InspectorView: View {
         let modes = model.activeRedactionModes
         let hasShape = sel.contains { if case .rectangle = $0.kind { return true }; if case .ellipse = $0.kind { return true }; return false }
             || (sel.isEmpty && model.tool == .shape)
-        return Section(title: sel.isEmpty ? "New \(model.tool.title.lowercased()) style" : "Selection (\(sel.count))") {
+        return section(.selection, sel.isEmpty ? "New \(model.tool.title.lowercased()) style" : "Selection (\(sel.count))") {
             if model.tool == .redact || !modes.isEmpty {
                 RedactionModePicker(model: model)
             }
             if model.showsObfuscationWarning {
-                Label("Blur is obfuscation, not secure redaction. Information may be recoverable. Use Solid or Pixelate for secrets.",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
+                InspectorWarning(text: "Blur is obfuscation, not secure redaction. Information may be recoverable. Use Solid or Pixelate for secrets.")
             }
             if modes.isEmpty {
                 SliderRow(title: isText ? "Font size" : "Stroke", value: Binding(
@@ -190,22 +379,31 @@ struct InspectorView: View {
                 pixelateControls
             }
             if hasShape && modes.isEmpty {
-                Toggle("Dashed", isOn: Binding(get: { currentStyle.dashed }, set: { v in model.updateStyle(key: "dash") { $0.dashed = v } }))
-                    .toggleStyle(.checkbox)
-                Toggle("Filled", isOn: Binding(
-                    get: { currentStyle.fill != nil },
-                    set: { v in model.updateStyle(key: "fill") { st in st.fill = v ? st.color.with(alpha: 0.25) : nil } }))
-                    .toggleStyle(.checkbox)
+                HStack(spacing: 16) {
+                    Toggle("Dashed", isOn: Binding(get: { currentStyle.dashed }, set: { v in model.updateStyle(key: "dash") { $0.dashed = v } }))
+                        .toggleStyle(.checkbox)
+                    Toggle("Filled", isOn: Binding(
+                        get: { currentStyle.fill != nil },
+                        set: { v in model.updateStyle(key: "fill") { st in st.fill = v ? st.color.with(alpha: 0.25) : nil } }))
+                        .toggleStyle(.checkbox)
+                }
             }
             if !sel.isEmpty {
+                Divider()
                 HStack(spacing: 6) {
-                    Button { model.reorder(.back) } label: { Image(systemName: "square.3.layers.3d.bottom.filled") }.help("Send to back")
-                    Button { model.reorder(.backward) } label: { Image(systemName: "square.2.layers.3d.bottom.filled") }.help("Send backward (⌘[)")
-                    Button { model.reorder(.forward) } label: { Image(systemName: "square.2.layers.3d.top.filled") }.help("Bring forward (⌘])")
-                    Button { model.reorder(.front) } label: { Image(systemName: "square.3.layers.3d.top.filled") }.help("Bring to front")
+                    Button { model.reorder(.back) } label: { Image(systemName: "square.3.layers.3d.bottom.filled") }
+                        .help("Send to back").accessibilityLabel("Send to back")
+                    Button { model.reorder(.backward) } label: { Image(systemName: "square.2.layers.3d.bottom.filled") }
+                        .help("Send backward (⌘[)").accessibilityLabel("Send backward")
+                    Button { model.reorder(.forward) } label: { Image(systemName: "square.2.layers.3d.top.filled") }
+                        .help("Bring forward (⌘])").accessibilityLabel("Bring forward")
+                    Button { model.reorder(.front) } label: { Image(systemName: "square.3.layers.3d.top.filled") }
+                        .help("Bring to front").accessibilityLabel("Bring to front")
                     Spacer()
-                    Button { model.duplicateSelected() } label: { Image(systemName: "plus.square.on.square") }.help("Duplicate (⌘D)")
-                    Button(role: .destructive) { model.deleteSelected() } label: { Image(systemName: "trash") }.help("Delete (⌫)")
+                    Button { model.duplicateSelected() } label: { Image(systemName: "plus.square.on.square") }
+                        .help("Duplicate (⌘D)").accessibilityLabel("Duplicate")
+                    Button(role: .destructive) { model.deleteSelected() } label: { Image(systemName: "trash") }
+                        .help("Delete (⌫)").accessibilityLabel("Delete")
                 }
                 .accessibilityElement(children: .contain)
             }
@@ -214,7 +412,7 @@ struct InspectorView: View {
 
     private var solidRedactionControls: some View {
         let style = model.redactionAppearance(for: .solid)
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: GlintDesign.rowSpacing) {
             Picker("Solid pattern", selection: Binding(
                 get: { model.redactionAppearance(for: .solid).redactionPattern },
                 set: { model.setRedactPattern($0) })) {
@@ -234,11 +432,10 @@ struct InspectorView: View {
                 redactionCellSize(for: .solid)
             }
         }
-        .font(.system(size: 12))
     }
 
     private var pixelateControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GlintDesign.rowSpacing) {
             Text("Opaque decorative mosaic. Original pixels are replaced, not sampled.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -252,7 +449,6 @@ struct InspectorView: View {
                 ColorPicker("Highlight colour",
                             selection: colorBinding({ model.redactionAppearance(for: .pixelate).color }) { model.setRedactColor($0) },
                             supportsOpacity: false)
-                    .font(.system(size: 12))
             }
             redactionCellSize(for: .pixelate)
         }
@@ -267,47 +463,61 @@ struct InspectorView: View {
 
     // MARK: Background
 
+    private var backgroundSummary: String {
+        if model.settings.usesDesktopWallpaper { return "Wallpaper" }
+        let bg = model.settings.background
+        if let preset = BackgroundCatalog.all.first(where: { $0.style == bg }) { return preset.name }
+        switch bg {
+        case .transparent: return "None"
+        case .solid: return "Solid colour"
+        case .linear: return "Custom gradient"
+        case .mesh: return "Mesh gradient"
+        case .pattern: return "Pattern"
+        case .image: return "Image"
+        }
+    }
+
     private var backgroundSection: some View {
-        Section(title: "Background") {
+        section(.background, "Background", summary: backgroundSummary) {
             Toggle("Use desktop wallpaper", isOn: s.usesDesktopWallpaper)
                 .toggleStyle(.checkbox)
             if model.settings.usesDesktopWallpaper {
-                Text("Main display, current Space. Toggle off and on to refresh.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Dynamic wallpapers use their primary still image.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Main display, current Space. Toggle off and on to refresh.")
+                    Text("Dynamic wallpapers use their primary still image.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             if let problem = model.wallpaperProblem {
-                Label(problem, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
+                InspectorWarning(text: problem)
             }
-            let cols = Array(repeating: GridItem(.fixed(34), spacing: 6), count: 6)
-            LazyVGrid(columns: cols, alignment: .leading, spacing: 6) {
+            let cols = Array(repeating: GridItem(.flexible(minimum: 30), spacing: 8), count: 6)
+            LazyVGrid(columns: cols, alignment: .center, spacing: 10) {
                 swatch(id: "none", name: "None", style: .transparent, selected: model.settings.background == .transparent)
                 ForEach(BackgroundCatalog.all) { p in
                     swatch(id: p.id, name: p.name, style: p.style, selected: model.settings.background == p.style)
                 }
             }
+            .padding(.vertical, 2)
             HStack {
                 ColorPicker("Solid colour", selection: colorBinding({
                     if case .solid(let c) = model.settings.background { return c }
                     return .white
                 }) { model.chooseBackground(.solid($0)) }, supportsOpacity: false)
-                    .font(.system(size: 12))
                 Spacer()
                 Button("Image…") { chooseBackgroundImage() }
             }
             if case .linear(let g) = model.settings.background, let first = g.stops.first, let last = g.stops.last {
+                Divider()
                 HStack {
                     ColorPicker("From", selection: colorBinding({ first.color }) { c in
                         var n = g; n.stops[0].color = c; model.chooseBackground(.linear(n)) }, supportsOpacity: false)
+                    Spacer()
                     ColorPicker("To", selection: colorBinding({ last.color }) { c in
                         var n = g; n.stops[n.stops.count - 1].color = c; model.chooseBackground(.linear(n)) }, supportsOpacity: false)
                 }
-                .font(.system(size: 12))
                 SliderRow(title: "Gradient angle", value: Binding(get: { g.angle }, set: { v in
                     var n = g; n.angle = v; model.chooseBackground(.linear(n)) }), range: 0...360) { "\(Int($0))°" }
             } else {
@@ -320,21 +530,33 @@ struct InspectorView: View {
 
     private func swatch(id: String, name: String, style: GlintCore.BackgroundStyle, selected: Bool) -> some View {
         let selected = selected && !model.settings.usesDesktopWallpaper
+        let radius = GlintDesign.controlCornerRadius
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return Button { model.chooseBackground(style) } label: {
             Group {
                 if style == .transparent {
                     Image(systemName: "nosign").foregroundStyle(.secondary).frame(width: 30, height: 30)
+                        .background(shape.fill(.quaternary))
                 } else {
                     Image(nsImage: SwatchRenderer.image(id: id, style: style)).resizable().frame(width: 30, height: 30)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: selected ? 2.5 : 1))
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+            .overlay {
+                // Selection ring sits outside the swatch with a 2pt gap, concentric with its corners.
+                RoundedRectangle(cornerRadius: radius + 4, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(-4)
+                    .opacity(selected ? 1 : 0)
+            }
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
         .help(name)
         .accessibilityLabel("Background \(name)")
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: selected)
     }
 
     private func chooseBackgroundImage() {
@@ -349,16 +571,18 @@ struct InspectorView: View {
     // MARK: Sliders
 
     private var sizeSection: some View {
-        Section(title: "Layout") {
+        section(.layout, "Layout", summary: "Padding \(Int(model.settings.padding.rounded()))") {
             SliderRow(title: "Padding", value: s.padding, range: 0...300)
             SliderRow(title: "Inset", value: s.inset, range: 0...200)
             SliderRow(title: "Rounded", value: s.cornerRadius, range: 0...50)
             SliderRow(title: "Shadow", value: Binding(get: { model.settings.shadow.strength }, set: {
                 model.settings.shadow.strength = $0; model.settings.shadow.enabled = $0 > 0 }), range: 0...100)
+            Divider()
             HStack {
-                Text("3D Tilt").font(.system(size: 12))
+                Text("3D tilt").font(.callout)
                 Spacer()
-                Button("Reset") { model.settings.tilt = .zero }.controlSize(.small)
+                Button("Reset") { model.settings.tilt = .zero }
+                    .disabled(model.settings.tilt == .zero)
             }
             SliderRow(title: "Tilt X", value: Binding(get: { model.settings.tilt.x + 15 }, set: { model.settings.tilt = Tilt(uiX: $0, uiY: model.settings.tilt.y + 15) }), range: 0...30)
             SliderRow(title: "Tilt Y", value: Binding(get: { model.settings.tilt.y + 15 }, set: { model.settings.tilt = Tilt(uiX: model.settings.tilt.x + 15, uiY: $0) }), range: 0...30)
@@ -368,21 +592,23 @@ struct InspectorView: View {
     // MARK: Ratio
 
     private var ratioSection: some View {
-        Section(title: "Ratio") {
-            let cols = [GridItem(.adaptive(minimum: 62), spacing: 5)]
-            LazyVGrid(columns: cols, alignment: .leading, spacing: 5) {
+        section(.ratio, "Ratio", summary: shortName(model.settings.aspectRatio)) {
+            let cols = Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
+            LazyVGrid(columns: cols, spacing: 6) {
                 ForEach(AspectRatioPreset.allBuiltIn, id: \.self) { r in
+                    let selected = model.settings.aspectRatio == r
                     Button { model.settings.aspectRatio = r } label: {
-                        Text(shortName(r)).font(.system(size: 10.5)).lineLimit(1).frame(maxWidth: .infinity)
+                        Text(shortName(r)).font(.caption).lineLimit(1).frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .tint(model.settings.aspectRatio == r ? .accentColor : nil)
+                    .tint(selected ? .accentColor : nil)
                     .help(r.displayName)
                     .accessibilityLabel("Ratio \(r.displayName)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            HStack {
-                TextField("Custom 4:3 or 1200x630", text: $ui.customRatio).textFieldStyle(.roundedBorder).font(.system(size: 11))
+            HStack(spacing: 6) {
+                TextField("Custom 4:3 or 1200x630", text: $ui.customRatio).textFieldStyle(.roundedBorder)
                     .onSubmit(applyCustomRatio)
                 Button("Set", action: applyCustomRatio)
             }
@@ -413,7 +639,7 @@ struct InspectorView: View {
     // MARK: Frame / transform
 
     private var frameSection: some View {
-        Section(title: "Frame") {
+        section(.frame, "Frame", summary: model.settings.windowFrame.style.displayName) {
             Picker("Style", selection: s.windowFrame.style) {
                 Text(WindowFrameKind.none.displayName).tag(WindowFrameKind.none)
                 ForEach(WindowFrameCategory.allCases, id: \.self) { category in
@@ -428,28 +654,43 @@ struct InspectorView: View {
             .accessibilityLabel("Frame style")
             let frame = model.settings.windowFrame
             if frame.style != .none {
-                Toggle("Dark", isOn: s.windowFrame.dark).toggleStyle(.checkbox)
                 TextField(frame.style.titlePlaceholder, text: s.windowFrame.title).textFieldStyle(.roundedBorder)
-                if frame.metrics.supportsScreenEffects {
-                    Toggle("Screen effects", isOn: s.windowFrame.screenEffects).toggleStyle(.checkbox)
-                        .help("Subtle scanlines and glare")
+                HStack(spacing: 16) {
+                    Toggle("Dark", isOn: s.windowFrame.dark).toggleStyle(.checkbox)
+                    if frame.metrics.supportsScreenEffects {
+                        Toggle("Screen effects", isOn: s.windowFrame.screenEffects).toggleStyle(.checkbox)
+                            .help("Subtle scanlines and glare")
+                    }
                 }
             }
             Toggle("Outline border", isOn: s.border.enabled).toggleStyle(.checkbox)
         }
     }
 
+    private var transformSummary: String? {
+        let st = model.settings
+        var parts: [String] = []
+        if st.rotation != .none { parts.append("\(st.rotation.rawValue)°") }
+        if st.flipHorizontal || st.flipVertical { parts.append("Flipped") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
     private var transformSection: some View {
-        Section(title: "Transform") {
-            HStack(spacing: 8) {
-                Button { model.rotate(clockwise: false) } label: { Image(systemName: "rotate.left") }.help("Rotate left")
-                Button { model.rotate(clockwise: true) } label: { Image(systemName: "rotate.right") }.help("Rotate right")
-                Button { model.settings.flipHorizontal.toggle() } label: { Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right") }.help("Flip horizontally")
-                Button { model.settings.flipVertical.toggle() } label: { Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down") }.help("Flip vertically")
+        section(.transform, "Transform", summary: transformSummary) {
+            HStack(spacing: 6) {
+                Button { model.rotate(clockwise: false) } label: { Image(systemName: "rotate.left") }
+                    .help("Rotate left").accessibilityLabel("Rotate left")
+                Button { model.rotate(clockwise: true) } label: { Image(systemName: "rotate.right") }
+                    .help("Rotate right").accessibilityLabel("Rotate right")
+                Button { model.settings.flipHorizontal.toggle() } label: { Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right") }
+                    .help("Flip horizontally").accessibilityLabel("Flip horizontally")
+                Button { model.settings.flipVertical.toggle() } label: { Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down") }
+                    .help("Flip vertically").accessibilityLabel("Flip vertically")
                 Spacer()
             }
             if !model.isEditable, !model.isDesigningPreset {
-                Text("Annotations are paused while rotated, flipped or tilted.").font(.caption).foregroundStyle(.secondary)
+                Text("Annotations are paused while rotated, flipped or tilted.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -457,16 +698,18 @@ struct InspectorView: View {
     // MARK: Redact
 
     private var redactSection: some View {
-        Section(title: "Auto-redact") {
+        let count = model.redactOptions.categories.count
+        return section(.redact, "Auto-redact", summary: count == 0 ? "Off" : "\(count) categor\(count == 1 ? "y" : "ies")") {
             let cats = SensitiveCategory.allCases
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 4) {
+            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                      alignment: .leading, spacing: 6) {
                 ForEach(cats, id: \.self) { c in
                     Toggle(c.displayName, isOn: Binding(
                         get: { model.redactOptions.categories.contains(c) },
                         set: { on in
                             if on { model.redactOptions.categories.insert(c) } else { model.redactOptions.categories.remove(c) }
                             model.preferences.autoRedactOptions = model.redactOptions
-                        })).toggleStyle(.checkbox).font(.system(size: 11))
+                        })).toggleStyle(.checkbox).font(.caption)
                 }
             }
             TextField("Custom words (comma separated)", text: Binding(
@@ -474,17 +717,17 @@ struct InspectorView: View {
                 set: { v in
                     model.redactOptions.customWords = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                     model.preferences.autoRedactOptions = model.redactOptions
-                })).textFieldStyle(.roundedBorder).font(.system(size: 11))
+                })).textFieldStyle(.roundedBorder)
             Text("Auto-redact always uses solid fill. Review the image before sharing; detection can miss information.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 ColorPicker("Colour", selection: colorBinding({ model.redactColor }) { model.setRedactColor($0) }, supportsOpacity: false)
-                    .font(.system(size: 12))
                 Spacer()
             }
             Toggle("Auto-redact new screenshots", isOn: Binding(
                 get: { model.preferences.autoRedact }, set: { model.preferences.autoRedact = $0 }))
-                .toggleStyle(.switch).controlSize(.small)
+                .toggleStyle(.switch).controlSize(.mini)
+            Divider()
             HStack {
                 Button("Redact Sensitive Info") { Task { await model.runAutoRedact() } }.disabled(model.isBusy)
                 if model.isBusy { ProgressView().controlSize(.small) }
@@ -498,7 +741,7 @@ struct InspectorView: View {
     // MARK: OCR
 
     private var textSection: some View {
-        Section(title: "Text in image") {
+        section(.text, "Text in image", summary: model.ocrLines.isEmpty ? nil : "\(model.ocrLines.count) lines") {
             HStack {
                 Button("Detect Text") { Task { await model.detectText(); ui.showText = true } }.disabled(model.isBusy)
                 Button("Copy Text") {
@@ -513,13 +756,13 @@ struct InspectorView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(model.ocrLines.prefix(60).enumerated()), id: \.offset) { _, line in
                             Button { model.copyText(line.text) } label: {
-                                Text(line.text).font(.system(size: 11)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(line.text).font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                             .help("Copy this line")
                         }
                     }
-                }.font(.system(size: 12))
+                }
             }
         }
     }
@@ -527,16 +770,19 @@ struct InspectorView: View {
     // MARK: Watermark
 
     private var watermarkSection: some View {
-        Section(title: "Watermark") {
-            Toggle("Show watermark", isOn: s.watermark.enabled).toggleStyle(.switch).controlSize(.small)
+        section(.watermark, "Watermark", summary: model.settings.watermark.enabled ? "On" : "Off") {
+            Toggle("Show watermark", isOn: s.watermark.enabled).toggleStyle(.switch).controlSize(.mini)
             if model.settings.watermark.enabled {
-                TextField("Text", text: s.watermark.text).textFieldStyle(.roundedBorder)
-                Menu("Templates") {
-                    ForEach(["Screenshot by Glint", "Made with Glint", "© \(Calendar.current.component(.year, from: Date()))", "@yourhandle"], id: \.self) { t in
-                        Button(t) { model.settings.watermark.text = t; model.settings.watermark.kind = .text }
+                HStack(spacing: 6) {
+                    TextField("Text", text: s.watermark.text).textFieldStyle(.roundedBorder)
+                    Menu("Templates") {
+                        ForEach(["Screenshot by Glint", "Made with Glint", "© \(Calendar.current.component(.year, from: Date()))", "@yourhandle"], id: \.self) { t in
+                            Button(t) { model.settings.watermark.text = t; model.settings.watermark.kind = .text }
+                        }
+                        Divider()
+                        Button("Image…") { chooseWatermarkImage() }
                     }
-                    Divider()
-                    Button("Image…") { chooseWatermarkImage() }
+                    .fixedSize()
                 }
                 Picker("Position", selection: s.watermark.position) {
                     ForEach(WatermarkPosition.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -544,7 +790,6 @@ struct InspectorView: View {
                 SliderRow(title: "Opacity", value: Binding(get: { model.settings.watermark.opacity * 100 }, set: { model.settings.watermark.opacity = $0 / 100 }), range: 10...100)
                 SliderRow(title: "Size", value: s.watermark.size, range: 8...64)
                 ColorPicker("Colour", selection: colorBinding({ model.settings.watermark.color }) { model.settings.watermark.color = $0 }, supportsOpacity: false)
-                    .font(.system(size: 12))
             }
         }
     }

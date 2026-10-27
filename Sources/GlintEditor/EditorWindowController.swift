@@ -8,11 +8,16 @@ struct EditorExportServices {
     var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
         try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
     }
-    var share: @MainActor (CGImage, NSView) -> Void = { image, content in
+    /// Shows the sharing picker for `image`, pointing at `anchor` (the Share button, or the window's content view).
+    var share: @MainActor (CGImage, NSView) -> Void = { image, anchor in
         let ns = NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
         let picker = NSSharingServicePicker(items: [ns])
-        let anchor = CGRect(x: content.bounds.maxX - 200, y: 0, width: 80, height: 50)
-        picker.show(relativeTo: anchor, of: content, preferredEdge: .minY)
+        if anchor === anchor.window?.contentView {
+            let rect = CGRect(x: anchor.bounds.maxX - 200, y: 0, width: 80, height: 50)
+            picker.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
+        } else {
+            picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: anchor.isFlipped ? .minY : .maxY)
+        }
     }
     var beep: () -> Void = { NSSound.beep() }
     var dragDirectory: URL = (
@@ -29,6 +34,26 @@ final class EditorWindow: NSWindow {
         if firstResponder is NSText { return super.performKeyEquivalent(with: event) }
         if let c = controller, MainActor.assumeIsolated({ c.handleShortcut(event) }) { return true }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// Transparent strip over the titlebar row. The canvas extends under the transparent titlebar and handles its own
+/// drags, so this keeps the titlebar area that isn't covered by controls moving the window like a normal titlebar.
+private final class TitlebarDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        guard event.clickCount == 2 else {
+            window.performDrag(with: event)
+            return
+        }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": window.performMiniaturize(nil)
+        case "None": break
+        default: window.performZoom(nil)
+        }
     }
 }
 
@@ -81,10 +106,22 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         self.canvas = CanvasView(model: model)
 
         let window = EditorWindow(contentRect: NSRect(x: 0, y: 0, width: 1261, height: 704),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: false)
+        // The title stays set for Mission Control, the Window menu and accessibility; it just isn't drawn.
         window.title = title
-        window.minSize = NSSize(width: 960, height: 560)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = false
+        // An empty unified toolbar gives the titlebar row its standard height, so the traffic lights line up
+        // with the floating glass capsules drawn in it.
+        let toolbar = NSToolbar(identifier: "GlintEditorToolbar")
+        toolbar.allowsUserCustomization = false
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.minSize = NSSize(width: 1000, height: 600)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("")
         super.init(window: window)
@@ -107,41 +144,75 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     // MARK: Layout
 
+    /// The canvas fills the whole window as the content layer; the toolbar, inspector and bottom bar float
+    /// above it as glass, and the canvas centres the image in the area they leave free.
     private func buildUI(in window: NSWindow) {
         let root = NSView()
         window.contentView = root
 
+        let metrics = EditorChromeMetrics.self
+        let inset = GlintDesign.floatingInset
+        let pad = metrics.shadowPadding
         let designing = model.isDesigningPreset
-        let toolbar: NSView = designing ? NSHostingView(rootView: PresetDesignHeaderView(model: model))
-            : NSHostingView(rootView: ToolStripView(model: model))
-        let inspector = NSHostingView(rootView: InspectorView(model: model))
-        let bottom: NSView = designing ? NSHostingView(rootView: PresetDesignBarView(model: model, actions: actions))
-            : NSHostingView(rootView: BottomBarView(model: model, actions: actions))
-        for v in [toolbar, inspector, bottom, canvas] as [NSView] {
+
+        let toolbar: NSView = designing
+            ? Self.host(PresetDesignHeaderView(model: model), sizing: [.intrinsicContentSize])
+            : Self.host(ToolStripView(model: model), sizing: [.intrinsicContentSize])
+        toolbar.setContentHuggingPriority(.required, for: .horizontal)
+        let bottom: NSView = designing
+            ? Self.host(PresetDesignBarView(model: model, actions: actions), sizing: [])
+            : Self.host(BottomBarView(model: model, actions: actions), sizing: [])
+
+        let inspectorContent = Self.host(InspectorView(model: model), sizing: [])
+        inspectorContent.wantsLayer = true
+        inspectorContent.layer?.cornerRadius = GlintDesign.panelCornerRadius
+        inspectorContent.layer?.cornerCurve = .continuous
+        inspectorContent.layer?.masksToBounds = true
+        let inspector = GlintGlassView(cornerRadius: GlintDesign.panelCornerRadius)
+        inspector.contentView = inspectorContent
+
+        let titlebarDrag = TitlebarDragView()
+
+        for v in [canvas, titlebarDrag, inspector, bottom, toolbar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            inspector.topAnchor.constraint(equalTo: root.topAnchor),
-            inspector.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            inspector.widthAnchor.constraint(equalToConstant: 300),
-            inspector.bottomAnchor.constraint(equalTo: bottom.topAnchor),
-
-            bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            bottom.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            bottom.heightAnchor.constraint(equalToConstant: 50),
-
-            toolbar.topAnchor.constraint(equalTo: root.topAnchor),
-            toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: inspector.leadingAnchor),
-            toolbar.heightAnchor.constraint(equalToConstant: 44),
-
-            canvas.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            canvas.topAnchor.constraint(equalTo: root.topAnchor),
             canvas.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: inspector.leadingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: bottom.topAnchor),
+            canvas.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            canvas.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            titlebarDrag.topAnchor.constraint(equalTo: root.topAnchor),
+            titlebarDrag.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            titlebarDrag.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            titlebarDrag.heightAnchor.constraint(equalToConstant: metrics.toolbarRowHeight),
+
+            toolbar.topAnchor.constraint(equalTo: root.topAnchor, constant: (metrics.toolbarRowHeight - metrics.toolbarHeight) / 2 - pad),
+            toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: metrics.toolbarLeading - pad),
+            toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -(inset - pad)),
+            toolbar.heightAnchor.constraint(equalToConstant: metrics.toolbarHeight + 2 * pad),
+
+            inspector.topAnchor.constraint(equalTo: root.topAnchor, constant: metrics.toolbarRowHeight),
+            inspector.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+            inspector.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+            inspector.widthAnchor.constraint(equalToConstant: metrics.inspectorWidth),
+
+            bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - pad),
+            bottom.trailingAnchor.constraint(equalTo: inspector.leadingAnchor, constant: -(inset - pad)),
+            bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -(inset - pad)),
+            bottom.heightAnchor.constraint(equalToConstant: metrics.bottomBarHeight + 2 * pad),
         ])
+        canvas.contentInsets = NSEdgeInsets(top: metrics.toolbarRowHeight,
+                                            left: inset,
+                                            bottom: metrics.bottomBarHeight + 2 * inset,
+                                            right: metrics.inspectorWidth + 2 * inset)
+    }
+
+    private static func host<V: View>(_ view: V, sizing: NSHostingSizingOptions) -> NSView {
+        let host = NSHostingView(rootView: view)
+        host.sizingOptions = sizing
+        return host
     }
 
     // MARK: Public API
@@ -264,7 +335,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         guard let image = renderForExport(failure: "Share failed", retry: { $0.share() }) else { return }
         clearRetry()
         model.statusMessage = "Choose where to share"
-        exportServices.share(image, content)
+        exportServices.share(image, actions.shareAnchor.flatMap { $0.window === window ? $0 : nil } ?? content)
     }
 
     private func openRaw() {
