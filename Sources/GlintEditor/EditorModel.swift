@@ -3,7 +3,7 @@ import Combine
 import GlintCore
 
 enum EditorTool: String, CaseIterable {
-    case select, text, arrow, redact, shape, pen, highlighter, counter
+    case select, text, arrow, redact, shape, zoom, pen, highlighter, counter
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum EditorTool: String, CaseIterable {
         case .arrow: return "Arrow"
         case .redact: return "Redact / Obfuscate"
         case .shape: return "Shape"
+        case .zoom: return "Zoom"
         case .pen: return "Pen"
         case .highlighter: return "Highlighter"
         case .counter: return "Counter"
@@ -25,6 +26,7 @@ enum EditorTool: String, CaseIterable {
         case .arrow: return "arrow.up.right"
         case .redact: return "eye.slash"
         case .shape: return "square.on.circle"
+        case .zoom: return "plus.magnifyingglass"
         case .pen: return "pencil.tip"
         case .highlighter: return "highlighter"
         case .counter: return "1.circle"
@@ -38,6 +40,7 @@ enum EditorTool: String, CaseIterable {
         case .arrow: return "2"
         case .redact: return "3"
         case .shape: return "4"
+        case .zoom: return "Z"
         case .pen: return "P"
         case .highlighter: return "H"
         case .counter: return "C"
@@ -51,6 +54,7 @@ enum EditorTool: String, CaseIterable {
         case .arrow: return "Drag to draw an arrow (press 2 again for a plain line); hold Shift for 45°"
         case .redact: return "Choose Solid or Pixelate for secrets; Blur only obscures. Use the style menu to change mode."
         case .shape: return "Drag to draw a shape (press 4 again to change shape); hold Shift for squares"
+        case .zoom: return "Drag around a detail to magnify it (press Z again for circle or rectangle); drag the inset to move it"
         case .pen: return "Draw freehand"
         case .highlighter: return "Highlight with a translucent stroke"
         case .counter: return "Click to place numbered markers"
@@ -116,6 +120,10 @@ final class EditorModel: ObservableObject {
     @Published var arrowIsLine = false
     @Published var redactStyle: RedactionStyle = .solid
     @Published var textSize: TextSizeVariant = .normal
+    @Published var magnifierShape: MagnifierShape = .circle
+    @Published var magnification: Double = 2
+    @Published var magnifierShowsSourceOutline = true
+    @Published var magnifierShowsConnector = true
     @Published var defaultStyle: AnnotationStyle
     @Published var editingID: UUID? {
         didSet { if editingID != oldValue { requestRender() } }
@@ -304,10 +312,8 @@ final class EditorModel: ObservableObject {
                 await MainActor.run { self?.failRender(message) }
                 return
             }
-            var region = CGRect(origin: .zero, size: img.pixelSize)
-            if let b = r.border { region = AutoBalance.balanceCropRect(imageSize: img.pixelSize, border: b) }
             let p = Preview(image: r.image, layout: r.layout,
-                            mapper: CanvasMapper(region: region.integral, contentRect: r.layout.contentRect))
+                            mapper: CanvasMapper(region: r.region, contentRect: r.layout.contentRect))
             await MainActor.run { self?.finishRender(p) }
         }
     }
@@ -347,13 +353,32 @@ final class EditorModel: ObservableObject {
         let old = annotations
         guard old != new else { return }
         styleCoalesceKey = nil
+        // Mid-interaction, this change undoes back to the interaction's start; see rebaseInteraction.
+        let undoState = rebaseInteraction(from: old, to: new) ?? old
         undoManager.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated { target.setAnnotations(old, actionName: actionName) }
+            MainActor.assumeIsolated { target.setAnnotations(undoState, actionName: actionName) }
         }
         if let actionName, !undoManager.isUndoing, !undoManager.isRedoing { undoManager.setActionName(actionName) }
         annotations = new
         selection = selection.filter { id in new.contains { $0.id == id } }
         objectWillChange.send()
+    }
+
+    /// Applies a change made during a drag or edit (e.g. auto-redact finishing) to the interaction's starting state
+    /// too, so ending, cancelling or undoing the interaction keeps it. Annotations the interaction itself changed or
+    /// created stay as they were at its start. Returns the previous starting state, or nil outside an interaction.
+    private func rebaseInteraction(from old: [Annotation], to new: [Annotation]) -> [Annotation]? {
+        guard let base = interactionBase else { return nil }
+        let oldByID = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let newByID = Dictionary(new.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let baseIDs = Set(base.map(\.id))
+        var rebased = base.compactMap { b -> Annotation? in
+            guard let n = newByID[b.id] else { return oldByID[b.id] == nil ? b : nil }
+            return oldByID[b.id] == b ? n : b
+        }
+        rebased += new.filter { !baseIDs.contains($0.id) && oldByID[$0.id] == nil }
+        interactionBase = rebased
+        return base
     }
 
     func beginInteraction() { interactionBase = annotations }
@@ -438,7 +463,10 @@ final class EditorModel: ObservableObject {
     func nudge(dx: CGFloat, dy: CGFloat) {
         guard !selection.isEmpty else { return }
         let d = CGSize(width: dx, height: dy)
-        setAnnotations(annotations.map { selection.contains($0.id) ? $0.translated(by: d) : $0 }, actionName: "Move")
+        // A lone magnifier nudges its inset; its source stays on the detail it magnifies.
+        let part: MagnifierPart? = selection.count == 1 ? .inset : nil
+        setAnnotations(annotations.map { selection.contains($0.id) ? AnnotationGeometry.moved($0, part: part, by: d) : $0 },
+                       actionName: "Move")
     }
 
     func reorder(_ move: ZOrderMove) {
@@ -556,6 +584,102 @@ final class EditorModel: ObservableObject {
         setAnnotations(updated, actionName: "Change Redaction Mode")
     }
 
+    // MARK: Magnifier
+
+    var selectedMagnifiers: [Magnifier] {
+        selectedAnnotations.compactMap { if case .magnify(let m) = $0.kind { return m }; return nil }
+    }
+
+    /// Whether the inspector shows zoom controls: for selected magnifiers, or the defaults while the Zoom tool is active.
+    var showsMagnifierControls: Bool { selection.isEmpty ? tool == .zoom : !selectedMagnifiers.isEmpty }
+
+    var currentMagnifierShape: MagnifierShape { selectedMagnifiers.first?.shape ?? magnifierShape }
+    var currentMagnification: Double { selectedMagnifiers.first?.magnification ?? magnification }
+    var currentMagnifierShowsSourceOutline: Bool { selectedMagnifiers.first?.showsSourceOutline ?? magnifierShowsSourceOutline }
+    var currentMagnifierShowsConnector: Bool { selectedMagnifiers.first?.showsConnector ?? magnifierShowsConnector }
+
+    /// Inset for a new magnifier of `source`: magnified beside it inside the image when there is room, otherwise
+    /// to the right outside the image (the canvas grows to fit).
+    static func magnifierInset(for source: CGRect, magnification: Double, imageSize: CGSize, gap: CGFloat) -> CGRect {
+        let source = source.standardized
+        let longest = max(source.width, source.height, 1)
+        let limit = 0.6 * max(imageSize.width, imageSize.height) / longest
+        let m = CGFloat(max(min(AnnotationGeometry.clampedMagnification(magnification), Double(limit)),
+                            AnnotationGeometry.magnificationRange.lowerBound))
+        let size = CGSize(width: source.width * m, height: source.height * m)
+        let image = CGRect(origin: .zero, size: imageSize)
+        func centredY(_ x: CGFloat) -> CGRect {
+            let y = min(max(source.midY - size.height / 2, 0), max(imageSize.height - size.height, 0))
+            return CGRect(x: x, y: y, width: size.width, height: size.height)
+        }
+        func centredX(_ y: CGFloat) -> CGRect {
+            let x = min(max(source.midX - size.width / 2, 0), max(imageSize.width - size.width, 0))
+            return CGRect(x: x, y: y, width: size.width, height: size.height)
+        }
+        let candidates = [centredY(source.maxX + gap), centredY(source.minX - gap - size.width),
+                          centredX(source.maxY + gap), centredX(source.minY - gap - size.height)]
+        if let fit = candidates.first(where: { image.contains($0) }) { return fit }
+        let outside = centredY(max(source.maxX, imageSize.width) + gap)
+        return outside.height <= imageSize.height ? outside : outside.offsetBy(dx: 0, dy: source.midY - outside.midY)
+    }
+
+    /// Adds a magnifier of `source` (clamped to the image) as one undo step, selects it and returns to Select.
+    @discardableResult
+    func addMagnifier(source: CGRect) -> Annotation? {
+        let source = source.standardized.intersection(CGRect(origin: .zero, size: image.pixelSize))
+        guard !source.isNull, source.width >= 1, source.height >= 1 else { return nil }
+        let inset = Self.magnifierInset(for: source, magnification: magnification, imageSize: image.pixelSize,
+                                        gap: 24 * pixelScale)
+        let a = makeAnnotation(.magnify(Magnifier(source: source, inset: inset, shape: magnifierShape,
+                                                  showsSourceOutline: magnifierShowsSourceOutline,
+                                                  showsConnector: magnifierShowsConnector)))
+        setAnnotations(annotations + [a], actionName: "Add Zoom")
+        selection = [a.id]
+        tool = .select
+        return a
+    }
+
+    private func updateSelectedMagnifiers(actionName: String, coalesceKey: String? = nil, _ change: (inout Magnifier) -> Void) {
+        var updated = annotations
+        for i in updated.indices where selection.contains(updated[i].id) {
+            guard case .magnify(var m) = updated[i].kind else { continue }
+            change(&m)
+            updated[i].kind = .magnify(m)
+        }
+        guard updated != annotations else { return }
+        if let coalesceKey, styleCoalesceKey == coalesceKey, Date().timeIntervalSince(styleEditDate) < 1 {
+            annotations = updated
+        } else {
+            setAnnotations(updated, actionName: actionName)
+        }
+        styleCoalesceKey = coalesceKey
+        styleEditDate = Date()
+    }
+
+    func setMagnifierShape(_ shape: MagnifierShape) {
+        magnifierShape = shape
+        updateSelectedMagnifiers(actionName: "Change Zoom Shape") { $0.shape = shape }
+    }
+
+    /// Resizes the inset of each selected magnifier about its centre; slider drags coalesce into one undo step.
+    func setMagnification(_ value: Double) {
+        let m = AnnotationGeometry.clampedMagnification(value)
+        magnification = m
+        updateSelectedMagnifiers(actionName: "Change Magnification", coalesceKey: "magnification") {
+            $0.inset = AnnotationGeometry.inset($0.inset.standardized, resizedFor: $0.source.standardized, magnification: m)
+        }
+    }
+
+    func setMagnifierShowsSourceOutline(_ shows: Bool) {
+        magnifierShowsSourceOutline = shows
+        updateSelectedMagnifiers(actionName: "Change Source Outline") { $0.showsSourceOutline = shows }
+    }
+
+    func setMagnifierShowsConnector(_ shows: Bool) {
+        magnifierShowsConnector = shows
+        updateSelectedMagnifiers(actionName: "Change Zoom Connector") { $0.showsConnector = shows }
+    }
+
     // MARK: Tools
 
     func pressToolKey(_ tool: EditorTool) {
@@ -564,6 +688,7 @@ final class EditorModel: ObservableObject {
             case .text: textSize = textSize.next; defaultStyle.fontSize = textSize.rawValue * pixelScale
             case .arrow: arrowIsLine.toggle()
             case .shape: shapeVariant = shapeVariant.next
+            case .zoom: magnifierShape = magnifierShape == .circle ? .rectangle : .circle
             default: break
             }
         } else {
@@ -577,6 +702,7 @@ final class EditorModel: ObservableObject {
         case .text: return "\(Int(textSize.rawValue)) pt"
         case .arrow: return arrowIsLine ? "Line" : "Arrow"
         case .shape: return shapeVariant.rawValue.capitalized
+        case .zoom: return magnifierShape.rawValue.capitalized
         case .redact: return currentRedactStyle.displayName
         default: return nil
         }

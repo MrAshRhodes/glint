@@ -31,8 +31,12 @@ final class CanvasView: NSView, NSTextViewDelegate {
         case none
         case creating(id: UUID, start: CGPoint, tool: EditorTool)
         case clickTool(start: CGPoint)
-        case moving(last: CGPoint)
-        case handle(id: UUID, handle: HandleID)
+        /// Moves and resizes are measured from the mouse-down view point at the mouse-down scale and applied to the
+        /// annotations as they were then, because a magnifier can grow the canvas and rescale the preview mid-drag.
+        /// Only the dragged annotations are kept (by id), so changes made meanwhile (e.g. auto-redact) survive.
+        case moving(start: CGPoint, perImage: CGFloat, base: [UUID: Annotation], part: MagnifierPart?)
+        case handle(start: CGPoint, perImage: CGFloat, base: Annotation, origin: CGPoint, handle: HandleID)
+        case zoom(start: CGPoint, end: CGPoint, square: Bool)
     }
     private var drag = Drag.none
     private var didMove = false
@@ -151,6 +155,22 @@ final class CanvasView: NSView, NSTextViewDelegate {
             return
         }
         for a in model.selectedAnnotations where a.id != model.editingID { drawSelection(a, single: model.selection.count == 1) }
+        if case .zoom(let start, let end, let square) = drag { drawZoomMarquee(from: start, to: end, square: square) }
+    }
+
+    private var imageBounds: CGRect { CGRect(origin: .zero, size: model.image.pixelSize) }
+
+    private func drawZoomMarquee(from start: CGPoint, to end: CGPoint, square: Bool) {
+        let r = viewRect(AnnotationGeometry.zoomSelection(from: start, to: end, square: square, in: imageBounds))
+        let path = model.magnifierShape == .circle ? NSBezierPath(ovalIn: r) : NSBezierPath(rect: r)
+        NSColor.white.withAlphaComponent(0.12).setFill()
+        path.fill()
+        path.lineWidth = 1.5
+        NSColor.white.setStroke()
+        path.stroke()
+        path.setLineDash([4, 3], count: 2, phase: 0)
+        accent.setStroke()
+        path.stroke()
     }
 
     private func drawChecker(in rect: CGRect) {
@@ -183,11 +203,15 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private func drawSelection(_ a: Annotation, single: Bool) {
         accent.setStroke()
-        let box = viewRect(AnnotationGeometry.bounds(of: a)).insetBy(dx: -3, dy: -3)
-        let path = NSBezierPath(rect: box)
-        path.lineWidth = 1
-        path.setLineDash([4, 3], count: 2, phase: 0)
-        if AnnotationGeometry.handles(of: a).count != 2 || !single { path.stroke() }
+        let boxes: [CGRect]
+        if case .magnify(let m) = a.kind { boxes = [m.inset.standardized, m.source.standardized] }
+        else { boxes = [AnnotationGeometry.bounds(of: a)] }
+        for box in boxes {
+            let path = NSBezierPath(rect: viewRect(box).insetBy(dx: -3, dy: -3))
+            path.lineWidth = 1
+            path.setLineDash([4, 3], count: 2, phase: 0)
+            if AnnotationGeometry.handles(of: a).count != 2 || !single { path.stroke() }
+        }
         guard single else { return }
         for (_, pt) in AnnotationGeometry.handles(of: a) {
             let v = toView(pt)
@@ -233,9 +257,10 @@ final class CanvasView: NSView, NSTextViewDelegate {
             beginTool(at: p)
             return
         }
-        if let (id, h) = handleHit(at: v) {
+        if let (id, h) = handleHit(at: v), let a = model.annotations.first(where: { $0.id == id }),
+           let origin = AnnotationGeometry.handles(of: a).first(where: { $0.0 == h })?.1 {
             model.beginInteraction()
-            drag = .handle(id: id, handle: h)
+            drag = .handle(start: v, perImage: max(viewPerImage, 0.0001), base: a, origin: origin, handle: h)
             return
         }
         let shift = event.modifierFlags.contains(.shift)
@@ -247,12 +272,18 @@ final class CanvasView: NSView, NSTextViewDelegate {
             } else if !model.selection.contains(hit.id) {
                 model.selection = [hit.id]
             }
-            model.beginInteraction()
-            drag = .moving(last: p)
+            beginMoving(hit, at: v, imagePoint: p)
         } else {
             if !shift { model.selection = [] }
             drag = .none
         }
+    }
+
+    private func beginMoving(_ hit: Annotation, at v: CGPoint, imagePoint p: CGPoint) {
+        let part = model.selection.count == 1 ? AnnotationGeometry.magnifierPart(hit, at: p, tol: 6 / max(viewPerImage, 0.01)) : nil
+        model.beginInteraction()
+        let base = Dictionary(model.selectedAnnotations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        drag = .moving(start: v, perImage: max(viewPerImage, 0.0001), base: base, part: part)
     }
 
     private func beginTool(at p: CGPoint) {
@@ -260,6 +291,16 @@ final class CanvasView: NSView, NSTextViewDelegate {
         switch tool {
         case .text, .counter:
             drag = .clickTool(start: p)
+        case .zoom:
+            if let hit = annotation(at: p), hit.isMagnifier {
+                model.tool = .select
+                model.selection = [hit.id]
+                beginMoving(hit, at: toView(p), imagePoint: p)
+            } else {
+                let start = AnnotationGeometry.zoomSelection(from: p, to: p, square: false, in: imageBounds).origin
+                model.selection = []
+                drag = .zoom(start: start, end: start, square: false)
+            }
         case .select:
             break
         default:
@@ -291,18 +332,21 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let p = toImage(convert(event.locationInWindow, from: nil))
+        let v = convert(event.locationInWindow, from: nil)
+        let p = toImage(v)
         let shift = event.modifierFlags.contains(.shift)
         didMove = true
         switch drag {
         case .none, .clickTool: break
-        case .moving(let last):
-            let d = CGSize(width: p.x - last.x, height: p.y - last.y)
-            model.updateLive(model.annotations.map { model.selection.contains($0.id) ? $0.translated(by: d) : $0 })
-            drag = .moving(last: p)
-        case .handle(let id, let h):
-            guard let a = model.annotations.first(where: { $0.id == id }) else { return }
-            model.replace(AnnotationGeometry.resized(a, handle: h, to: p, constrain: shift))
+        case .zoom(let start, _, _):
+            drag = .zoom(start: start, end: p, square: shift)
+            needsDisplay = true
+        case .moving(let start, let perImage, let base, let part):
+            let d = CGSize(width: (v.x - start.x) / perImage, height: (v.y - start.y) / perImage)
+            model.updateLive(AnnotationGeometry.moving(model.annotations, from: base, part: part, by: d))
+        case .handle(let start, let perImage, let base, let origin, let h):
+            let target = CGPoint(x: origin.x + (v.x - start.x) / perImage, y: origin.y + (v.y - start.y) / perImage)
+            model.replace(AnnotationGeometry.resized(base, handle: h, to: target, constrain: shift))
         case .creating(let id, let start, _):
             guard var a = model.annotations.first(where: { $0.id == id }) else { return }
             switch a.kind {
@@ -344,6 +388,12 @@ final class CanvasView: NSView, NSTextViewDelegate {
             model.endInteraction(actionName: "Move")
         case .handle:
             model.endInteraction(actionName: "Resize")
+        case .zoom(let start, let end, let square):
+            needsDisplay = true
+            let r = AnnotationGeometry.zoomSelection(from: start, to: end, square: square, in: imageBounds)
+            let minSize = 4 / max(viewPerImage, 0.01)
+            guard r.width >= minSize, r.height >= minSize else { return }
+            model.addMagnifier(source: r)
         case .creating(let id, _, let tool):
             guard let a = model.annotations.first(where: { $0.id == id }) else { model.cancelInteraction(); return }
             let minSize = 4 / max(viewPerImage, 0.01)

@@ -8,6 +8,18 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-27
+
+### Added
+
+- A **Zoom** tool (the magnifier in the toolbar, or `Z`) for calling out small details. Drag around text or a detail to create a circular or rectangular inset with an enlarged copy of just that area, 2× by default, while the original screenshot stays visible; press `Z` again to switch between circle and rectangle. Glint places the inset beside your selection. Drag the inset to move it on its own, drag the selection to change what is magnified, and use the corner handles to resize either. The inspector sets **Shape**, **Magnification** (1.25×–8×), **Show source outline**, **Connect to source**, colour and border width. ([#61])
+- Insets can sit outside the screenshot: the canvas grows automatically to include them, while the frame, rounded corners and shadow stay on the screenshot and the inset floats over the background. Insets are included when you copy, save, drag or export. An inset shows what lies beneath its selection, redactions and other annotations included, so it never reveals pixels hidden by Solid or Pixelate redaction. ([#61])
+- GlintCore API: `Magnifier` (`source`, `inset`, `shape`, `showsSourceOutline`, `showsConnector`, `magnification`) with `MagnifierShape` (`circle`, `rectangle`), plus `Annotation.isMagnifier`. ([#61])
+
+### Changed
+
+- GlintCore: `AnnotationKind` adds `magnify(Magnifier)`; exhaustive `switch` statements over it must handle the new case. `RenderLayout` adds `overflowRect` and `RenderResult` adds `region`; `Compositor.layout` takes an optional overflow argument, defaulted so existing calls compile unchanged. When an inset reaches beyond the screenshot, `contentRect` still marks the screenshot and `overflowRect` covers the expanded content. ([#61])
+
 ## [1.5.0] - 2026-10-27
 
 ### Changed
@@ -165,7 +177,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/MrAshRhodes/glint/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/MrAshRhodes/glint/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/MrAshRhodes/glint/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/MrAshRhodes/glint/compare/v1.2.1...v1.3.0
@@ -198,3 +211,4 @@ First public release.
 [#52]: https://github.com/MrAshRhodes/glint/issues/52
 [#51]: https://github.com/MrAshRhodes/glint/issues/51
 [#57]: https://github.com/MrAshRhodes/glint/issues/57
+[#61]: https://github.com/MrAshRhodes/glint/issues/61
