@@ -33,6 +33,8 @@ enum EditorTool: String, CaseIterable {
         }
     }
 
+    /// The unmodified key that selects this tool. The toolbar labels and the editor's key handling both read it,
+    /// so the shortcut shown is always the one that works.
     var keyHint: String {
         switch self {
         case .select: return "V"
@@ -45,6 +47,12 @@ enum EditorTool: String, CaseIterable {
         case .highlighter: return "H"
         case .counter: return "C"
         }
+    }
+
+    /// The tool whose `keyHint` matches `key`, ignoring case.
+    init?(shortcutKey key: String) {
+        guard let tool = Self.allCases.first(where: { $0.keyHint.lowercased() == key.lowercased() }) else { return nil }
+        self = tool
     }
 
     var tip: String {

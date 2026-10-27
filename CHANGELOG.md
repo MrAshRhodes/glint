@@ -8,6 +8,13 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-27
+
+### Fixed
+
+- Clicking a tool in the editor toolbar selects it again. Since 1.5.0 the toolbar was drawn half a row below the area that receives its clicks, so clicking the lower part of a tool button reached the canvas instead and did nothing, while keyboard shortcuts kept working. Every tool button now responds across its whole area, and the toolbar lines up with the window's traffic-light buttons again. ([#63])
+- Every toolbar tool now shows its shortcut key on the button, not only in its tooltip: **Select** (`V`), **Text** (`1`), **Arrow** (`2`), **Redact / Obfuscate** (`3`), **Shape** (`4`), **Zoom** (`Z`), **Pen** (`P`), **Highlighter** (`H`) and **Counter** (`C`). Clicking a tool, key label included, does exactly what pressing its key does: clicking the active **Text**, **Arrow**, **Shape** or **Zoom** tool again switches its variant, and switching tools with a click finishes the text you are editing. ([#63])
+
 ## [1.5.1] - 2026-10-27
 
 ### Added
@@ -177,7 +184,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/MrAshRhodes/glint/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/MrAshRhodes/glint/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/MrAshRhodes/glint/compare/v1.3.0...v1.4.0
@@ -212,3 +220,4 @@ First public release.
 [#51]: https://github.com/MrAshRhodes/glint/issues/51
 [#57]: https://github.com/MrAshRhodes/glint/issues/57
 [#61]: https://github.com/MrAshRhodes/glint/issues/61
+[#63]: https://github.com/MrAshRhodes/glint/issues/63

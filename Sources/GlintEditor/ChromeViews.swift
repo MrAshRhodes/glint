@@ -13,6 +13,8 @@ final class EditorActions: ObservableObject {
     var close: () -> Void = {}
     var savePreset: () -> Void = {}
     var dragFileURL: () -> URL? = { nil }
+    /// Toolbar tool clicks; the controller handles them exactly like the tool's keyboard shortcut.
+    var selectTool: (EditorTool) -> Void = { _ in }
     /// The Share button's frame in the bottom bar, so the sharing picker points at it.
     weak var shareAnchor: NSView?
 }
@@ -60,22 +62,27 @@ enum EditorChromeMetrics {
     static let shadowPadding: CGFloat = 8
     /// Hit target of icon buttons in the top capsules.
     static let iconButtonSize: CGFloat = 28
+    /// Width of the tool buttons, which show their shortcut key beside the icon.
+    static let toolButtonWidth: CGFloat = 36
 }
 
 /// Bezel-less icon button for glass toolbars: dims while pressed or disabled.
 struct GlintToolbarIconButtonStyle: ButtonStyle {
+    var width: CGFloat = EditorChromeMetrics.iconButtonSize
+
     func makeBody(configuration: Configuration) -> some View {
-        ToolbarIconButton(configuration: configuration)
+        ToolbarIconButton(configuration: configuration, width: width)
     }
 
     private struct ToolbarIconButton: View {
         let configuration: ButtonStyleConfiguration
+        let width: CGFloat
         @Environment(\.isEnabled) private var isEnabled
 
         var body: some View {
             configuration.label
                 .font(.system(size: 14, weight: .medium))
-                .frame(width: EditorChromeMetrics.iconButtonSize, height: EditorChromeMetrics.iconButtonSize)
+                .frame(width: width, height: EditorChromeMetrics.iconButtonSize)
                 .background {
                     if configuration.isPressed { Capsule(style: .continuous).fill(Color.primary.opacity(0.1)) }
                 }
@@ -87,6 +94,7 @@ struct GlintToolbarIconButtonStyle: ButtonStyle {
 
 struct ToolStripView: View {
     @ObservedObject var model: EditorModel
+    let actions: EditorActions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selection
 
@@ -111,28 +119,36 @@ struct ToolStripView: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.tool)
     }
 
-    /// Annotation tools; the selected tool gets an accent-tinted capsule rather than a filled bezel.
+    /// Annotation tools, each showing its shortcut key; the selected tool gets an accent-tinted capsule rather
+    /// than a filled bezel. The key is part of the button, so clicking it selects the tool too.
     private var toolGroup: some View {
         HStack(spacing: 2) {
             ForEach(EditorTool.allCases, id: \.self) { tool in
                 let selected = model.tool == tool
                 Button {
-                    model.pressToolKey(tool)
+                    actions.selectTool(tool)
                 } label: {
-                    Image(systemName: tool.symbol)
-                        .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                        .frame(width: EditorChromeMetrics.iconButtonSize, height: EditorChromeMetrics.iconButtonSize)
-                        .background {
-                            if selected {
-                                Capsule(style: .continuous)
-                                    .fill(Color.accentColor.opacity(0.2))
-                                    .matchedGeometryEffect(id: "selected-tool", in: selection)
-                            }
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Image(systemName: tool.symbol)
+                        Text(tool.keyHint)
+                            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                    .frame(width: EditorChromeMetrics.toolButtonWidth, height: EditorChromeMetrics.iconButtonSize)
+                    .background {
+                        if selected {
+                            Capsule(style: .continuous)
+                                .fill(Color.accentColor.opacity(0.2))
+                                .matchedGeometryEffect(id: "selected-tool", in: selection)
                         }
+                    }
                 }
-                .buttonStyle(GlintToolbarIconButtonStyle())
+                .buttonStyle(GlintToolbarIconButtonStyle(width: EditorChromeMetrics.toolButtonWidth))
                 .help("\(tool.title) (\(tool.keyHint))")
                 .accessibilityLabel(tool.title)
+                .accessibilityHint("Keyboard shortcut \(tool.keyHint)")
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
