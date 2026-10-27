@@ -378,6 +378,9 @@ struct InspectorView: View {
             if modes.contains(.pixelate) {
                 pixelateControls
             }
+            if model.showsMagnifierControls && modes.isEmpty {
+                magnifierControls
+            }
             if hasShape && modes.isEmpty {
                 HStack(spacing: 16) {
                     Toggle("Dashed", isOn: Binding(get: { currentStyle.dashed }, set: { v in model.updateStyle(key: "dash") { $0.dashed = v } }))
@@ -407,6 +410,29 @@ struct InspectorView: View {
                 }
                 .accessibilityElement(children: .contain)
             }
+        }
+    }
+
+    private var magnifierControls: some View {
+        VStack(alignment: .leading, spacing: GlintDesign.rowSpacing) {
+            Picker("Shape", selection: Binding(get: { model.currentMagnifierShape }, set: { model.setMagnifierShape($0) })) {
+                Text("Circle").tag(MagnifierShape.circle)
+                Text("Rectangle").tag(MagnifierShape.rectangle)
+            }
+            .pickerStyle(.segmented)
+            SliderRow(title: "Magnification", value: Binding(
+                get: { model.currentMagnification },
+                set: { model.setMagnification($0) }),
+                      range: AnnotationGeometry.magnificationRange,
+                      format: { "\((($0 * 100).rounded() / 100).formatted())×" })
+            Toggle("Show source outline", isOn: Binding(
+                get: { model.currentMagnifierShowsSourceOutline },
+                set: { model.setMagnifierShowsSourceOutline($0) }))
+                .toggleStyle(.checkbox)
+            Toggle("Connect to source", isOn: Binding(
+                get: { model.currentMagnifierShowsConnector },
+                set: { model.setMagnifierShowsConnector($0) }))
+                .toggleStyle(.checkbox)
         }
     }
 

@@ -447,6 +447,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             case "p": model.pressToolKey(.pen)
             case "h": model.pressToolKey(.highlighter)
             case "c": model.pressToolKey(.counter)
+            case "z": model.pressToolKey(.zoom)
             default: return false
             }
             canvas.endEditing()

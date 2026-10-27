@@ -50,14 +50,22 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
 Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                   backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
                   wallpaper: CGImage? = nil) throws -> CGImage
-Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border
-Compositor.layout(contentSize:insetApplied:settings:backingScale:) -> RenderLayout // canvas/card/screen/content rects (px, top-left)
+Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border + region
+Compositor.layout(contentSize:insetApplied:settings:backingScale:overflow:) -> RenderLayout // canvas/card/screen/content/overflow rects (px, top-left); overflow defaults to none
 ```
 Pipeline: auto-balance crop → annotations baked into content (Solid and Pixelate replace covered pixels) → rotate/flip →
 inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
 `RenderLayout.screenRect` is the content plus its inset band; the frame's insets surround it inside `cardRect`,
 so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
 deterministically by the compositor, so the editor preview and exports show the same frame.
+Canvas expansion: only magnifier (`.magnify`) insets can enlarge the canvas. When an inset (with its outline,
+connector, border and shadow) reaches beyond the base region (the auto-balance crop or the full image), the
+baked content grows to include it; the auto-balance fill applies only inside the base region and the rest is
+transparent. The card (inset band, frame, rounded corners, shadow, border) still wraps only the base content,
+and the overflow floats over the background, with padding applied around both. `contentRect` keeps marking the
+base content; `RenderLayout.overflowRect` is where the expanded content is drawn (equal to `contentRect` when
+nothing overflows, in which case output is unchanged). `RenderResult.region` is the base region in image pixels,
+for mapping editor coordinates onto `contentRect`. Rotation, flips and tilt carry the overflow with the card.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
 `RenderError.annotationsNotApplied` instead of returning the unredacted source, and every export path
@@ -73,10 +81,20 @@ its input file is unchanged.
 ## Annotations
 `Annotation(id,z,kind,style)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)
-.blur(CGRect) .pixelate(CGRect) .redact(CGRect) .spotlight(CGRect) .emoji(center,String)`.
+.blur(CGRect) .pixelate(CGRect) .redact(CGRect) .spotlight(CGRect) .emoji(center,String) .magnify(Magnifier)`.
+Client code that switches exhaustively over `AnnotationKind` must handle `.magnify`.
 `AnnotationStyle(color, fill?, strokeWidth, opacity, fontName, fontSize, bold, intensity, dashed, cornerRadius,
 redactionPattern, redactionSecondaryColor, pixelateHighlight)`.
-`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid/pixelate), `.isObfuscation` (blur only).
+`annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid/pixelate), `.isObfuscation` (blur only),
+`.isMagnifier`.
+`Magnifier(source:inset:shape:showsSourceOutline:showsConnector:)` (the editor's **Zoom** tool): an enlarged copy
+of `source` drawn in `inset`, both `CGRect`s in image space; `inset` may lie partly or fully outside the image
+(see canvas expansion above). `shape: MagnifierShape` (`.circle` default, `.rectangle`), `showsSourceOutline`
+and `showsConnector` (both default `true`, decoded as defaults when absent); `magnification` =
+`inset.width / source.width`. `style.color` colours the border, outline and connector; `style.strokeWidth` sets the border width.
+`boundingBox` spans source and inset; `translated(by:)` moves both. The inset samples what lies beneath it:
+the source with every `isRedaction` annotation applied (whatever its z order) plus annotations drawn before it.
+It never shows pixels a redaction covers; if sampling fails it draws a solid `style.color` fill instead.
 `AnnotationRenderer.draw(in ctx: CGContext, annotations:, imageSize:, source: CGImage?)` — `ctx` must map
 image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage?` (nil on failure).
 `.redact` and `.pixelate` replace covered pixels completely, regardless of color alpha or annotation opacity.

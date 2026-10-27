@@ -21,6 +21,13 @@ struct CanvasMapper: Equatable {
 
 enum HandleID: Hashable {
     case p0, p1, tl, t, tr, r, br, b, bl, l
+    case insetTL, insetTR, insetBR, insetBL
+    case sourceTL, sourceTR, sourceBR, sourceBL
+}
+
+/// The two independently movable parts of a magnifier.
+enum MagnifierPart: Equatable {
+    case inset, source
 }
 
 enum AnnotationGeometry {
@@ -51,8 +58,72 @@ enum AnnotationGeometry {
         case .text(let origin, let string, let maxWidth):
             return CGRect(origin: origin, size: textSize(string, style: a.style, maxWidth: maxWidth))
         case .rectangle(let r), .ellipse(let r): return r
+        case .magnify(let m): return m.source.standardized.union(m.inset.standardized)
         default: return a.boundingBox
         }
+    }
+
+    // MARK: Magnifier
+
+    static let magnificationRange: ClosedRange<Double> = 1.25...8
+
+    static func clampedMagnification(_ m: Double) -> Double {
+        guard m.isFinite else { return 2 }
+        return min(max(m, magnificationRange.lowerBound), magnificationRange.upperBound)
+    }
+
+    /// `source` scaled by `magnification` about the centre of `inset`.
+    static func inset(_ inset: CGRect, resizedFor source: CGRect, magnification: Double) -> CGRect {
+        let m = CGFloat(magnification)
+        let size = CGSize(width: source.width * m, height: source.height * m)
+        return CGRect(x: inset.midX - size.width / 2, y: inset.midY - size.height / 2, width: size.width, height: size.height)
+    }
+
+    /// The magnifier part under `p`; the inset wins because it is drawn above its source.
+    static func magnifierPart(_ a: Annotation, at p: CGPoint, tol: CGFloat) -> MagnifierPart? {
+        guard case .magnify(let m) = a.kind else { return nil }
+        let half = CGFloat(a.style.strokeWidth) / 2
+        let inset = m.inset.standardized.insetBy(dx: -tol - half, dy: -tol - half)
+        switch m.shape {
+        case .rectangle where inset.contains(p): return .inset
+        case .circle where inset.width > 0 && inset.height > 0:
+            let nx = (p.x - inset.midX) / (inset.width / 2), ny = (p.y - inset.midY) / (inset.height / 2)
+            if nx * nx + ny * ny <= 1 { return .inset }
+        default: break
+        }
+        return m.source.standardized.insetBy(dx: -tol, dy: -tol).contains(p) ? .source : nil
+    }
+
+    /// Moves one part of a magnifier, or both when `part` is nil.
+    static func moved(_ a: Annotation, part: MagnifierPart?, by d: CGSize) -> Annotation {
+        guard let part, case .magnify(var m) = a.kind else { return a.translated(by: d) }
+        var out = a
+        switch part {
+        case .inset: m.inset = m.inset.offsetBy(dx: d.width, dy: d.height)
+        case .source: m.source = m.source.offsetBy(dx: d.width, dy: d.height)
+        }
+        out.kind = .magnify(m)
+        return out
+    }
+
+    /// `current` with each annotation in `base` (keyed by id, as it was at mouse-down) moved by `d`; annotations
+    /// added or changed independently since mouse-down are kept.
+    static func moving(_ current: [Annotation], from base: [UUID: Annotation], part: MagnifierPart?, by d: CGSize) -> [Annotation] {
+        current.map { a in base[a.id].map { moved($0, part: part, by: d) } ?? a }
+    }
+
+    /// Selection rect spanning `start`→`end`, optionally square, kept inside `bounds`.
+    static func zoomSelection(from start: CGPoint, to end: CGPoint, square: Bool, in bounds: CGRect) -> CGRect {
+        func clamp(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: min(max(p.x, bounds.minX), bounds.maxX), y: min(max(p.y, bounds.minY), bounds.maxY))
+        }
+        let a = clamp(start), b = clamp(end)
+        guard square else { return rect(from: a, to: b) }
+        let dx = b.x - a.x, dy = b.y - a.y
+        let side = min(max(abs(dx), abs(dy)),
+                       dx < 0 ? a.x - bounds.minX : bounds.maxX - a.x,
+                       dy < 0 ? a.y - bounds.minY : bounds.maxY - a.y)
+        return squared(from: a, to: CGPoint(x: a.x + (dx < 0 ? -side : side), y: a.y + (dy < 0 ? -side : side)))
     }
 
     // MARK: Rect-like helpers
@@ -81,6 +152,12 @@ enum AnnotationGeometry {
     static func handles(of a: Annotation) -> [(HandleID, CGPoint)] {
         switch a.kind {
         case .arrow(let p, let q), .line(let p, let q): return [(.p0, p), (.p1, q)]
+        case .magnify(let m):
+            let i = m.inset.standardized, s = m.source.standardized
+            return [(.insetTL, CGPoint(x: i.minX, y: i.minY)), (.insetTR, CGPoint(x: i.maxX, y: i.minY)),
+                    (.insetBR, CGPoint(x: i.maxX, y: i.maxY)), (.insetBL, CGPoint(x: i.minX, y: i.maxY)),
+                    (.sourceTL, CGPoint(x: s.minX, y: s.minY)), (.sourceTR, CGPoint(x: s.maxX, y: s.minY)),
+                    (.sourceBR, CGPoint(x: s.maxX, y: s.maxY)), (.sourceBL, CGPoint(x: s.minX, y: s.maxY))]
         default:
             guard let r = rect(of: a.kind) else { return [] }
             return [(.tl, CGPoint(x: r.minX, y: r.minY)), (.t, CGPoint(x: r.midX, y: r.minY)),
@@ -99,6 +176,8 @@ enum AnnotationGeometry {
         case .line(let s, let e):
             if handle == .p0 { out.kind = .line(from: constrained(p, from: e, on: constrain), to: e) }
             else { out.kind = .line(from: s, to: constrained(p, from: s, on: constrain)) }
+        case .magnify(let m):
+            out.kind = .magnify(resized(m, handle: handle, to: p, constrain: constrain))
         default:
             guard let r = rect(of: a.kind) else { return a }
             var minX = r.minX, maxX = r.maxX, minY = r.minY, maxY = r.maxY
@@ -123,6 +202,36 @@ enum AnnotationGeometry {
             }
             let nr = CGRect(x: min(minX, maxX), y: min(minY, maxY), width: abs(maxX - minX), height: abs(maxY - minY))
             out.kind = with(rect: nr, kind: a.kind)
+        }
+        return out
+    }
+
+    /// Inset corners scale the inset uniformly (changing magnification); source corners resize the selection and
+    /// resize the inset about its centre so magnification stays the same.
+    static func resized(_ m: Magnifier, handle: HandleID, to p: CGPoint, constrain: Bool) -> Magnifier {
+        var out = m
+        let source = m.source.standardized, inset = m.inset.standardized
+        switch handle {
+        case .insetTL, .insetTR, .insetBR, .insetBL:
+            guard source.width > 0, source.height > 0 else { return m }
+            let left = handle == .insetTL || handle == .insetBL, top = handle == .insetTL || handle == .insetTR
+            let anchor = CGPoint(x: left ? inset.maxX : inset.minX, y: top ? inset.maxY : inset.minY)
+            let aspect = source.width / source.height
+            let wanted = max(abs(p.x - anchor.x), abs(p.y - anchor.y) * aspect)
+            let magnification = clampedMagnification(Double(wanted / source.width))
+            let w = source.width * CGFloat(magnification), h = source.height * CGFloat(magnification)
+            out.inset = CGRect(x: left ? anchor.x - w : anchor.x, y: top ? anchor.y - h : anchor.y, width: w, height: h)
+        case .sourceTL, .sourceTR, .sourceBR, .sourceBL:
+            let left = handle == .sourceTL || handle == .sourceBL, top = handle == .sourceTL || handle == .sourceTR
+            let anchor = CGPoint(x: left ? source.maxX : source.minX, y: top ? source.maxY : source.minY)
+            let minSide: CGFloat = 2
+            var dx = p.x - anchor.x, dy = p.y - anchor.y
+            if constrain { let side = max(abs(dx), abs(dy)); dx = dx < 0 ? -side : side; dy = dy < 0 ? -side : side }
+            let w = max(abs(dx), minSide), h = max(abs(dy), minSide)
+            out.source = CGRect(x: dx < 0 ? anchor.x - w : anchor.x, y: dy < 0 ? anchor.y - h : anchor.y, width: w, height: h)
+            out.inset = self.inset(inset, resizedFor: out.source, magnification: m.magnification)
+        default:
+            return m
         }
         return out
     }
@@ -183,6 +292,8 @@ enum AnnotationGeometry {
             return bounds(of: a).insetBy(dx: -tol, dy: -tol).contains(p)
         case .text, .counter, .emoji:
             return bounds(of: a).insetBy(dx: -tol, dy: -tol).contains(p)
+        case .magnify:
+            return magnifierPart(a, at: p, tol: tol) != nil
         }
     }
 }

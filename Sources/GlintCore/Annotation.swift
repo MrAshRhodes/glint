@@ -62,6 +62,63 @@ public struct AnnotationStyle: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public enum MagnifierShape: String, Codable, CaseIterable, Sendable {
+    case circle, rectangle
+}
+
+/// Enlarged copy of `source` shown in `inset`. Both in image pixels, origin top-left.
+/// `inset` may lie partly or fully outside the image; renders expand the canvas to fit it.
+public struct Magnifier: Codable, Equatable, Hashable, Sendable {
+    public var source: CGRect
+    public var inset: CGRect
+    public var shape: MagnifierShape
+    public var showsSourceOutline: Bool
+    public var showsConnector: Bool
+
+    public init(source: CGRect, inset: CGRect, shape: MagnifierShape = .circle,
+                showsSourceOutline: Bool = true, showsConnector: Bool = true) {
+        self.source = source; self.inset = inset; self.shape = shape
+        self.showsSourceOutline = showsSourceOutline; self.showsConnector = showsConnector
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source, inset, shape, showsSourceOutline, showsConnector
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            source: try c.decode(CGRect.self, forKey: .source),
+            inset: try c.decode(CGRect.self, forKey: .inset),
+            shape: try c.decodeIfPresent(MagnifierShape.self, forKey: .shape) ?? .circle,
+            showsSourceOutline: try c.decodeIfPresent(Bool.self, forKey: .showsSourceOutline) ?? true,
+            showsConnector: try c.decodeIfPresent(Bool.self, forKey: .showsConnector) ?? true
+        )
+    }
+
+    /// `inset.width / source.width`.
+    public var magnification: Double {
+        Double(abs(inset.width)) / max(Double(abs(source.width)), 1e-6)
+    }
+
+    /// Width of the source outline and connector for a given border stroke width.
+    static func outlineWidth(strokeWidth: Double) -> CGFloat {
+        max(1, CGFloat(strokeWidth.isFinite ? strokeWidth : 0) * 0.5)
+    }
+
+    /// Drop-shadow blur and downward offset of the inset, in image pixels.
+    static func shadow(strokeWidth: Double) -> (blur: CGFloat, offset: CGFloat) {
+        let blur = max(8, CGFloat(strokeWidth.isFinite ? min(strokeWidth, 200) : 0) * 2)
+        return (blur, (blur * 0.35).rounded())
+    }
+
+    /// How far the inset's drop shadow can reach beyond the inset, in image pixels.
+    static func shadowMargin(strokeWidth: Double) -> CGFloat {
+        let s = shadow(strokeWidth: strokeWidth)
+        return (s.blur * 1.5 + s.offset).rounded(.up)
+    }
+}
+
 /// Geometry is in image pixels, origin top-left.
 public enum AnnotationKind: Codable, Equatable, Hashable, Sendable {
     case arrow(from: CGPoint, to: CGPoint)
@@ -82,6 +139,8 @@ public enum AnnotationKind: Codable, Equatable, Hashable, Sendable {
     /// Dims everything outside the rect.
     case spotlight(CGRect)
     case emoji(center: CGPoint, string: String)
+    /// Enlarged inset of part of the image; never reveals pixels under any redaction.
+    case magnify(Magnifier)
 }
 
 public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
@@ -102,6 +161,21 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var isObfuscation: Bool {
         if case .blur = kind { return true }
         return false
+    }
+
+    public var isMagnifier: Bool {
+        if case .magnify = kind { return true }
+        return false
+    }
+
+    /// Area a magnifier can paint: the inset with its border and drop shadow, plus the source region and the
+    /// connector between them. The source outline is a hairline on the selection and is not included, so a
+    /// selection touching the image edge does not grow the canvas. `nil` for other kinds.
+    public var magnifierRenderBounds: CGRect? {
+        guard case .magnify(let m) = kind else { return nil }
+        let pad = CGFloat(max(style.strokeWidth.isFinite ? style.strokeWidth : 0, 0)) / 2
+            + Magnifier.shadowMargin(strokeWidth: style.strokeWidth)
+        return m.inset.standardized.insetBy(dx: -pad, dy: -pad).union(m.source.standardized)
     }
 
     public var boundingBox: CGRect {
@@ -128,6 +202,9 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
         case .emoji(let c, _):
             let r = style.fontSize * 0.65
             return CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+        case .magnify(let m):
+            let margin = pad + Magnifier.shadowMargin(strokeWidth: style.strokeWidth)
+            return m.source.standardized.union(m.inset.standardized).insetBy(dx: -margin, dy: -margin)
         }
     }
 
@@ -148,6 +225,10 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
         case .redact(let r): copy.kind = .redact(r.offsetBy(dx: d.width, dy: d.height))
         case .spotlight(let r): copy.kind = .spotlight(r.offsetBy(dx: d.width, dy: d.height))
         case .emoji(let c, let s): copy.kind = .emoji(center: m(c), string: s)
+        case .magnify(var g):
+            g.source = g.source.offsetBy(dx: d.width, dy: d.height)
+            g.inset = g.inset.offsetBy(dx: d.width, dy: d.height)
+            copy.kind = .magnify(g)
         }
         return copy
     }

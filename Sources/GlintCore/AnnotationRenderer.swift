@@ -77,24 +77,51 @@ enum ImageDrawing {
 
 public enum AnnotationRenderer {
     /// Draws annotations in z order. `ctx` must map image space (pixels, origin top-left, y down) onto the target.
-    /// `source` supplies pixels for Blur only; if nil Blur falls back to solid boxes.
-    /// Secure redactions are removed from the sampling source before any Blur is drawn.
+    /// `source` supplies pixels for Blur and Magnify; if nil they fall back to solid colour.
+    /// Secure redactions are removed from the sampling source before any Blur or Magnify is drawn.
     public static func draw(in ctx: CGContext, annotations: [Annotation], imageSize: CGSize, source: CGImage? = nil) {
         let ordered = annotations.enumerated().sorted {
             $0.element.z != $1.element.z ? $0.element.z < $1.element.z : $0.offset < $1.offset
         }.map(\.element)
         let redactions = ordered.filter(\.isRedaction)
+        let lastMagnifier = ordered.lastIndex(where: \.isMagnifier)
         let samplingSource: CGImage?
-        if let source, !redactions.isEmpty, ordered.contains(where: \.isObfuscation) {
-            // A later Blur must not restore a secret or spread it outside its redaction.
+        if let source, !redactions.isEmpty, lastMagnifier != nil || ordered.contains(where: \.isObfuscation) {
+            // A later Blur or Magnify must not restore a secret or spread it outside its redaction.
             samplingSource = redactedSource(source, annotations: redactions, imageSize: imageSize)
         } else {
             samplingSource = source
         }
-        for a in ordered {
+        // What a magnifier shows: the sampling source (every redaction applied, whatever its z) plus the
+        // annotations drawn before it.
+        var lens: CGContext?
+        if lastMagnifier != nil, let samplingSource, imageSize.width > 0, imageSize.height > 0,
+           let lensCtx = GlintBitmap.makeContext(width: samplingSource.width, height: samplingSource.height) {
+            lensCtx.draw(samplingSource, in: CGRect(x: 0, y: 0, width: samplingSource.width, height: samplingSource.height))
+            lensCtx.translateBy(x: 0, y: CGFloat(samplingSource.height))
+            lensCtx.scaleBy(x: CGFloat(samplingSource.width) / imageSize.width,
+                            y: -CGFloat(samplingSource.height) / imageSize.height)
+            lens = lensCtx
+        }
+        for (i, a) in ordered.enumerated() {
+            var snapshot: CGImage?
+            if a.isMagnifier, let lensCtx = lens {
+                // Annotations drawn into the lens since the last snapshot may cover a redaction; re-mask first.
+                for r in redactions {
+                    lensCtx.saveGState()
+                    draw(r, in: lensCtx, imageSize: imageSize, source: nil, lens: nil)
+                    lensCtx.restoreGState()
+                }
+                snapshot = lensCtx.makeImage()
+            }
             ctx.saveGState()
-            draw(a, in: ctx, imageSize: imageSize, source: samplingSource)
+            draw(a, in: ctx, imageSize: imageSize, source: samplingSource, lens: snapshot)
             ctx.restoreGState()
+            if let lensCtx = lens, let lastMagnifier, i < lastMagnifier {
+                lensCtx.saveGState()
+                draw(a, in: lensCtx, imageSize: imageSize, source: samplingSource, lens: snapshot)
+                lensCtx.restoreGState()
+            }
         }
     }
 
@@ -106,25 +133,27 @@ public enum AnnotationRenderer {
         ctx.scaleBy(x: CGFloat(source.width) / imageSize.width, y: -CGFloat(source.height) / imageSize.height)
         for a in annotations {
             ctx.saveGState()
-            draw(a, in: ctx, imageSize: imageSize, source: nil)
+            draw(a, in: ctx, imageSize: imageSize, source: nil, lens: nil)
             ctx.restoreGState()
         }
         return ctx.makeImage()
     }
 
     /// Returns the `region` (image space, may extend beyond the image; defaults to the whole image) with
-    /// annotations burned in. Areas outside the source are filled with `fill`.
+    /// annotations burned in. Areas outside the source are filled with `fill`, limited to `fillRect`
+    /// (image space) when given; the rest of the region stays transparent.
     public static func bake(source: CGImage, annotations: [Annotation], region: CGRect? = nil,
-                            fill: RGBAColor = .clear) -> CGImage? {
+                            fill: RGBAColor = .clear, fillRect: CGRect? = nil) -> CGImage? {
         let full = CGRect(x: 0, y: 0, width: source.width, height: source.height)
         let r = (region ?? full).integral
         guard let ctx = GlintBitmap.makeContext(width: Int(r.width), height: Int(r.height)) else { return nil }
         ctx.translateBy(x: 0, y: r.height)
         ctx.scaleBy(x: 1, y: -1)
         ctx.translateBy(x: -r.minX, y: -r.minY)
-        if fill.a > 0 {
+        let fillArea = fillRect.map { $0.integral.intersection(r) } ?? r
+        if fill.a > 0, !fillArea.isNull, !fillArea.isEmpty {
             ctx.setFillColor(fill.cgColor)
-            ctx.fill(r)
+            ctx.fill(fillArea)
         }
         ImageDrawing.drawFlipped(source, in: full, ctx: ctx)
         draw(in: ctx, annotations: annotations, imageSize: full.size, source: source)
@@ -140,7 +169,7 @@ public enum AnnotationRenderer {
         if a.style.dashed { ctx.setLineDash(phase: 0, lengths: [w * 2, w * 1.5]) }
     }
 
-    private static func draw(_ a: Annotation, in ctx: CGContext, imageSize: CGSize, source: CGImage?) {
+    private static func draw(_ a: Annotation, in ctx: CGContext, imageSize: CGSize, source: CGImage?, lens: CGImage?) {
         let s = a.style
         let opacity = CGFloat(min(max(s.opacity, 0), 1))
         let needsLayer = opacity < 1 && !a.isRedaction && !a.isObfuscation
@@ -259,6 +288,9 @@ public enum AnnotationRenderer {
 
         case .pixelate(let r):
             drawRedaction(r, style: s, mosaic: true, in: ctx, imageSize: imageSize)
+
+        case .magnify(let m):
+            drawMagnifier(m, annotation: a, in: ctx, imageSize: imageSize, lens: lens)
         }
     }
 
@@ -338,6 +370,143 @@ public enum AnnotationRenderer {
         ctx.clip(to: clipped)
         ImageDrawing.drawFlipped(result, in: clipped, ctx: ctx)
         ctx.restoreGState()
+    }
+
+    // MARK: Magnifier
+
+    static func magnifierPath(_ shape: MagnifierShape, in rect: CGRect, cornerRadius: Double) -> CGPath {
+        switch shape {
+        case .circle:
+            return CGPath(ellipseIn: rect, transform: nil)
+        case .rectangle:
+            let r = min(CGFloat(max(cornerRadius.isFinite ? cornerRadius : 0, 0)), min(rect.width, rect.height) / 2)
+            return CGPath(roundedRect: rect, cornerWidth: r, cornerHeight: r, transform: nil)
+        }
+    }
+
+    /// Distance from the centre of `rect` to the edge of its magnifier shape along the unit vector `u`.
+    static func edgeDistance(_ shape: MagnifierShape, rect: CGRect, cornerRadius: Double, along u: CGVector) -> CGFloat {
+        let a = rect.width / 2, b = rect.height / 2
+        guard a > 0, b > 0 else { return 0 }
+        switch shape {
+        case .circle:
+            return 1 / hypot(u.dx / a, u.dy / b)
+        case .rectangle:
+            let t = min(u.dx == 0 ? .infinity : a / abs(u.dx), u.dy == 0 ? .infinity : b / abs(u.dy))
+            let r = min(CGFloat(max(cornerRadius.isFinite ? cornerRadius : 0, 0)), min(a, b))
+            let x = abs(u.dx) * t, y = abs(u.dy) * t
+            guard r > 0, x > a - r, y > b - r else { return t }
+            // The ray leaves through a rounded corner: intersect it with that corner's circle.
+            let cx = a - r, cy = b - r
+            let dot = abs(u.dx) * cx + abs(u.dy) * cy
+            return dot + sqrt(max(dot * dot - (cx * cx + cy * cy) + r * r, 0))
+        }
+    }
+
+    /// Converts a user-space length/offset to the base space shadows are specified in.
+    private static func shadowParameters(_ ctx: CGContext, blur: CGFloat, offsetY: CGFloat) -> (CGSize, CGFloat) {
+        let t = ctx.userSpaceToDeviceSpaceTransform
+        let scale = sqrt(abs(t.a * t.d - t.b * t.c))
+        return (CGSize(width: t.c * offsetY, height: t.d * offsetY), blur * scale)
+    }
+
+    private static func drawMagnifier(_ m: Magnifier, annotation a: Annotation, in ctx: CGContext,
+                                      imageSize: CGSize, lens: CGImage?) {
+        let s = a.style
+        let source = m.source.standardized, inset = m.inset.standardized
+        guard [source.minX, source.minY, source.width, source.height, inset.minX, inset.minY, inset.width, inset.height]
+            .allSatisfy(\.isFinite), inset.width > 0, inset.height > 0 else { return }
+        let outline = Magnifier.outlineWidth(strokeWidth: s.strokeWidth)
+
+        if m.showsSourceOutline, source.width > 0, source.height > 0 {
+            ctx.saveGState()
+            ctx.setStrokeColor(s.color.cgColor)
+            ctx.setLineWidth(outline)
+            ctx.addPath(magnifierPath(m.shape, in: source, cornerRadius: s.cornerRadius))
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+
+        if m.showsConnector, !source.intersects(inset) {
+            let dx = inset.midX - source.midX, dy = inset.midY - source.midY
+            let len = hypot(dx, dy)
+            if len > 0 {
+                let u = CGVector(dx: dx / len, dy: dy / len)
+                let from = edgeDistance(m.shape, rect: source, cornerRadius: s.cornerRadius, along: u)
+                let to = len - edgeDistance(m.shape, rect: inset, cornerRadius: s.cornerRadius,
+                                            along: CGVector(dx: -u.dx, dy: -u.dy))
+                if to > from {
+                    ctx.saveGState()
+                    ctx.setStrokeColor(s.color.cgColor)
+                    ctx.setLineWidth(outline)
+                    ctx.setLineCap(.round)
+                    ctx.move(to: CGPoint(x: source.midX + u.dx * from, y: source.midY + u.dy * from))
+                    ctx.addLine(to: CGPoint(x: source.midX + u.dx * to, y: source.midY + u.dy * to))
+                    ctx.strokePath()
+                    ctx.restoreGState()
+                }
+            }
+        }
+
+        let path = magnifierPath(m.shape, in: inset, cornerRadius: s.cornerRadius)
+
+        // Drop shadow outside the inset only, so transparent lens areas stay clear.
+        let shadow = Magnifier.shadow(strokeWidth: s.strokeWidth)
+        let reach = Magnifier.shadowMargin(strokeWidth: s.strokeWidth) * 2
+        ctx.saveGState()
+        ctx.addRect(inset.insetBy(dx: -reach, dy: -reach))
+        ctx.addPath(path)
+        ctx.clip(using: .evenOdd)
+        let (offset, blur) = shadowParameters(ctx, blur: shadow.blur, offsetY: shadow.offset)
+        ctx.setShadow(offset: offset, blur: blur, color: RGBAColor.black.with(alpha: 0.35).cgColor)
+        ctx.setFillColor(RGBAColor.black.cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.restoreGState()
+
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
+        if let f = s.fill {
+            ctx.setFillColor(f.cgColor)
+            ctx.fill(inset)
+        }
+        drawLens(source: source, inset: inset, in: ctx, imageSize: imageSize, lens: lens, fallback: s.color)
+        ctx.restoreGState()
+
+        if s.strokeWidth > 0 {
+            applyStroke(a, ctx)
+            ctx.addPath(path)
+            ctx.strokePath()
+        }
+    }
+
+    /// Draws `source` (image space) from `lens` aspect-filled and centred in `inset`. Fails safe to a solid
+    /// `fallback` when there is no lens; never touches unredacted pixels.
+    private static func drawLens(source: CGRect, inset: CGRect, in ctx: CGContext, imageSize: CGSize,
+                                 lens: CGImage?, fallback: RGBAColor) {
+        func fillFallback() {
+            ctx.setFillColor(fallback.with(alpha: 1).cgColor)
+            ctx.fill(inset)
+        }
+        guard let lens, imageSize.width > 0, imageSize.height > 0 else { return fillFallback() }
+        guard source.width > 0, source.height > 0 else { return }
+        let visible = source.intersection(CGRect(origin: .zero, size: imageSize))
+        guard !visible.isNull, visible.width > 0, visible.height > 0 else { return }
+        let scale = max(inset.width / source.width, inset.height / source.height)
+        let origin = CGPoint(x: inset.midX - source.width * scale / 2, y: inset.midY - source.height * scale / 2)
+        let sx = CGFloat(lens.width) / imageSize.width, sy = CGFloat(lens.height) / imageSize.height
+        let pixels = CGRect(x: visible.minX * sx, y: visible.minY * sy, width: visible.width * sx, height: visible.height * sy)
+            .integral.intersection(CGRect(x: 0, y: 0, width: lens.width, height: lens.height))
+        guard !pixels.isNull, pixels.width >= 1, pixels.height >= 1, let crop = lens.cropping(to: pixels) else {
+            return fillFallback()
+        }
+        let cropRect = CGRect(x: pixels.minX / sx, y: pixels.minY / sy, width: pixels.width / sx, height: pixels.height / sy)
+        let dest = CGRect(x: origin.x + (cropRect.minX - source.minX) * scale,
+                          y: origin.y + (cropRect.minY - source.minY) * scale,
+                          width: cropRect.width * scale, height: cropRect.height * scale)
+        ctx.interpolationQuality = .high
+        ImageDrawing.drawFlipped(crop, in: dest, ctx: ctx)
     }
 
     static func blurred(_ image: CGImage, radius: CGFloat) -> CGImage? {
