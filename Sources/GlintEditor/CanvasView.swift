@@ -432,7 +432,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     // MARK: Inline text editing
 
-    private func beginEditing(id: UUID, isNew: Bool) {
+    func beginEditing(id: UUID, isNew: Bool) {
         guard let a = model.annotations.first(where: { $0.id == id }), case .text(_, let string, _) = a.kind else { return }
         endEditing()
         if !isNew { model.beginInteraction() }

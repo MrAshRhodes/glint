@@ -137,6 +137,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.close = { [weak self] in self?.window?.close() }
         actions.savePreset = { [weak self] in self?.savePresetAndClose() }
         actions.dragFileURL = { [weak self] in self?.prepareDragFile() }
+        actions.selectTool = { [weak self] in self?.selectTool($0) }
     }
 
     @available(*, unavailable)
@@ -157,7 +158,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
         let toolbar: NSView = designing
             ? Self.host(PresetDesignHeaderView(model: model), sizing: [.intrinsicContentSize])
-            : Self.host(ToolStripView(model: model), sizing: [.intrinsicContentSize])
+            : Self.host(ToolStripView(model: model, actions: actions), sizing: [.intrinsicContentSize])
         toolbar.setContentHuggingPriority(.required, for: .horizontal)
         let bottom: NSView = designing
             ? Self.host(PresetDesignBarView(model: model, actions: actions), sizing: [])
@@ -212,6 +213,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private static func host<V: View>(_ view: V, sizing: NSHostingSizingOptions) -> NSView {
         let host = NSHostingView(rootView: view)
         host.sizingOptions = sizing
+        // The chrome is laid out explicitly, including the toolbar under the transparent titlebar. Left on, the
+        // titlebar's safe area pushes the toolbar's SwiftUI content down half a row, out of the hosting view's
+        // bounds, so clicks on the lower half of every tool button miss it.
+        host.safeAreaRegions = []
         return host
     }
 
@@ -438,22 +443,18 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             return true
         }
         if flags.isEmpty {
-            switch key {
-            case "1": model.pressToolKey(.text)
-            case "2": model.pressToolKey(.arrow)
-            case "3": model.pressToolKey(.redact)
-            case "4": model.pressToolKey(.shape)
-            case "v": model.pressToolKey(.select)
-            case "p": model.pressToolKey(.pen)
-            case "h": model.pressToolKey(.highlighter)
-            case "c": model.pressToolKey(.counter)
-            case "z": model.pressToolKey(.zoom)
-            default: return false
-            }
-            canvas.endEditing()
+            guard let tool = EditorTool(shortcutKey: key) else { return false }
+            selectTool(tool)
             return true
         }
         return false
+    }
+
+    /// Selects a tool; toolbar clicks and tool shortcuts both come through here so they behave identically.
+    /// Choosing the current tool again cycles its variant, and any inline text edit is committed.
+    func selectTool(_ tool: EditorTool) {
+        model.pressToolKey(tool)
+        canvas.endEditing()
     }
 
     // MARK: NSWindowDelegate
