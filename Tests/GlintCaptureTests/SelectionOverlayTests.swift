@@ -7,9 +7,28 @@ import Testing
 struct SelectionOverlayTests {
     private let size = NSSize(width: 640, height: 480)
 
-    private func view(_ session: SelectionSession, origin: CGPoint = .zero, scale: CGFloat = 1) -> OverlayView {
+    private func view(_ session: SelectionSession, origin: CGPoint = .zero, scale: CGFloat = 1,
+                      background: CGImage? = nil) -> OverlayView {
         OverlayView(frame: NSRect(origin: .zero, size: size), session: session,
-                    screenFrameCG: CGRect(origin: origin, size: size), scale: scale)
+                    screenFrameCG: CGRect(origin: origin, size: size), scale: scale, background: background)
+    }
+
+    /// A display-sized frozen screen; `color` receives pixel coordinates with the origin at the top left.
+    private func frozenScreen(scale: CGFloat, color: (Int, Int) -> (UInt8, UInt8, UInt8)) throws -> CGImage {
+        let width = Int(size.width * scale), height = Int(size.height * scale)
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // Bitmap memory starts with the top row.
+        let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+        for y in 0..<height {
+            for x in 0..<width {
+                let (r, g, b) = color(x, y)
+                let i = (y * width + x) * 4
+                (pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]) = (r, g, b, 255)
+            }
+        }
+        return try #require(context.makeImage())
     }
 
     private func window(_ frame: CGRect, id: CGWindowID = 1) -> WindowInfo {
@@ -41,6 +60,13 @@ struct SelectionOverlayTests {
 
         var pixels: Data {
             Data(bytes: context.data!, count: context.bytesPerRow * context.height)
+        }
+
+        /// RGBA at a view point (non-flipped, origin bottom left).
+        func pixel(at p: NSPoint, scale: CGFloat) -> [UInt8] {
+            let x = Int(p.x * scale), y = context.height - 1 - Int(p.y * scale)
+            let bytes = context.data!.assumingMemoryBound(to: UInt8.self)
+            return (0..<4).map { bytes[y * context.bytesPerRow + x * 4 + $0] }
         }
     }
 
@@ -275,5 +301,93 @@ struct SelectionOverlayTests {
         #expect(session.selection == nil)
         overlay.keyDown(with: try key(53))
         overlay.rightMouseDown(with: try mouse(.rightMouseDown, anchor))
+    }
+
+    @Test(arguments: [CGFloat(1), CGFloat(2)])
+    func frozenScreenShowsUndimmedInTheSelectionAndUprightUnderTheDim(scale: CGFloat) throws {
+        // Red in the top-left 100 × 100 points, blue elsewhere.
+        let limit = Int(100 * scale)
+        let frozen = try frozenScreen(scale: scale) { x, y in x < limit && y < limit ? (255, 0, 0) : (0, 0, 255) }
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.cursor = CGPoint(x: 600, y: 400)
+        session.selection = CGRect(x: 10, y: 10, width: 60, height: 60)
+        let overlay = view(session, scale: scale, background: frozen)
+        let bitmap = try Bitmap(size: size, scale: scale)
+        bitmap.paint(overlay, damage: overlay.refresh())
+
+        // CG (40, 40) is inside the selection, near the display's top-left corner.
+        #expect(bitmap.pixel(at: NSPoint(x: 40, y: size.height - 40), scale: scale) == [255, 0, 0, 255])
+        let dimmedRed = bitmap.pixel(at: NSPoint(x: 85, y: size.height - 20), scale: scale)
+        #expect(dimmedRed[0] > 100 && dimmedRed[0] < 200 && dimmedRed[1] == 0 && dimmedRed[2] == 0)
+        #expect(dimmedRed[3] == 255)
+        let dimmedBlue = bitmap.pixel(at: NSPoint(x: 300, y: size.height - 300), scale: scale)
+        #expect(dimmedBlue[0] == 0 && dimmedBlue[1] == 0 && dimmedBlue[2] > 100 && dimmedBlue[2] < 200)
+
+        let live = try Bitmap(size: size, scale: scale)
+        live.paint(view(session, scale: scale), damage: [NSRect(origin: .zero, size: size)])
+        #expect(live.pixel(at: NSPoint(x: 40, y: size.height - 40), scale: scale) == [0, 0, 0, 0])
+        #expect(live.pixel(at: NSPoint(x: 85, y: size.height - 20), scale: scale)[3] < 255)
+    }
+
+    @Test(arguments: [CGFloat(1), CGFloat(2)])
+    func frozenScreenPartialRedrawsMatchFullRedraw(scale: CGFloat) throws {
+        let frozen = try frozenScreen(scale: scale) { x, y in
+            (UInt8(x % 256), UInt8(y % 256), UInt8((x * 7 + y * 13) % 256))
+        }
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.cursor = CGPoint(x: 130.25, y: 160.75)
+        let overlay = view(session, scale: scale, background: frozen)
+        let bitmap = try Bitmap(size: size, scale: scale)
+        bitmap.paint(overlay, damage: overlay.refresh())
+
+        var pending: [NSRect] = []
+        for point in [CGPoint(x: 90.75, y: 130.25), CGPoint(x: 540.25, y: 440.75), CGPoint(x: 320.5, y: 220.25)] {
+            session.mouseMoved(to: point)
+            pending += overlay.refresh()
+        }
+        bitmap.paint(overlay, damage: pending)
+        try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+
+        for selection in [CGRect(x: 130.25, y: 160.75, width: 330.5, height: 220.25),
+                          CGRect(x: 2.25, y: 2.75, width: 300, height: 200),
+                          CGRect(x: -30.5, y: 450.25, width: 200, height: 100), nil] {
+            session.selection = selection
+            bitmap.paint(overlay, damage: overlay.refresh())
+            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+        }
+
+        session.toggleMode()
+        for frame in [CGRect(x: 40, y: 50, width: 300, height: 250),
+                      CGRect(x: 600.25, y: 420.75, width: 300, height: 250)] {
+            session.hoverWindow = window(frame)
+            bitmap.paint(overlay, damage: overlay.refresh())
+            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+        }
+    }
+
+    @Test func overlayTakesKeyFocusWithoutActivatingUnlessThatFails() {
+        var calls: [String] = []
+        var becomesKey = true
+        let makeKey = { calls.append("makeKey") }
+        let activate = { calls.append("activate") }
+        #expect(!OverlayFocus.makeKey(makeKey, isKey: { becomesKey }, activate: activate))
+        #expect(calls == ["makeKey"])
+
+        calls = []
+        becomesKey = false
+        #expect(OverlayFocus.makeKey(makeKey, isKey: { becomesKey }, activate: activate))
+        #expect(calls == ["makeKey", "activate", "makeKey"])
+    }
+
+    @Test func overlayPanelIsNonActivatingAndCanBecomeKey() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let panel = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height)
+        defer { panel.close() }
+        #expect(panel.styleMask.contains(.nonactivatingPanel))
+        #expect(panel.canBecomeKey && !panel.canBecomeMain)
+        #expect(!panel.hidesOnDeactivate)
     }
 }

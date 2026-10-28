@@ -96,6 +96,21 @@ enum CaptureGeometry {
         return CGRect(x: x, y: y, width: max(snap(l.maxX) - x, 1 / scale), height: max(snap(l.maxY) - y, 1 / scale))
     }
 
+    /// Pixel rect (top-left origin) of `r` inside a whole-display image, clipped to the display and snapped like
+    /// a live grab. The scale comes from the image, so a fallback grab at another resolution still lines up.
+    static func pixelCrop(_ r: CGRect, display: CGRect, imageSize: CGSize) -> (pixels: CGRect, scale: CGFloat)? {
+        guard display.width > 0, imageSize.width >= 1, imageSize.height >= 1 else { return nil }
+        let clipped = r.intersection(display)
+        guard !clipped.isNull, clipped.width >= 1, clipped.height >= 1 else { return nil }
+        let scale = imageSize.width / display.width
+        let local = displayLocal(clipped, display: display, scale: scale)
+        let pixels = CGRect(x: (local.minX * scale).rounded(), y: (local.minY * scale).rounded(),
+                            width: (local.width * scale).rounded(), height: (local.height * scale).rounded())
+            .intersection(CGRect(origin: .zero, size: imageSize))
+        guard !pixels.isNull, pixels.width >= 1, pixels.height >= 1 else { return nil }
+        return (pixels, scale)
+    }
+
     /// Index of the frame containing `p` (falls back to the nearest by center distance).
     static func index(containing p: CGPoint, in frames: [CGRect]) -> Int? {
         if let i = frames.firstIndex(where: { $0.contains(p) }) { return i }

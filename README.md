@@ -57,7 +57,7 @@ Updates keep Glint's Screen Recording permission. **Updating from 1.2.0 or earli
 
 ## Features
 
-- **Capture**: area (crosshair overlay), window picker, full screen, repeat last area, timer (3/5/10 s), capture text (OCR to clipboard). OCR notifications confirm copying without previewing recognized text. Multi-display and Retina aware.
+- **Capture**: area (crosshair overlay), window picker, full screen, repeat last area, timer (3/5/10 s), capture text (OCR to clipboard). OCR notifications confirm copying without previewing recognized text. Multi-display and Retina aware. Menus and pop-ups that are open in another app are included when you start a capture with a shortcut; see [capturing open menus](https://mrashrhodes.github.io/glint/guide.html#capturing-menus).
 - **Selection snapping**: opt in with **Snap to Edges** in the menu bar or **Snap selection to edges** in Preferences → Capture. Area selections align to visible window bounds and display edges, with snap guides. Hold ⌘ to temporarily invert snapping; Shift still constrains to a square. Snapping is off by default and does not detect arbitrary content inside windows.
 - **Global hotkeys**: ⌃⌥⌘4 area to editor, ⌃⌥⌘5 area to clipboard, ⌃⌥⌘6 window, ⌃⌥⌘3 full screen, ⌃⌥⌘7 OCR, ⌃⌥⌘R repeat last area. All rebindable.
 - **Beautify**: 32 built-in backgrounds (gradients, mesh, patterns, solid, transparent, your own image), padding, inset, corner radius, two-layer shadow, 3D tilt, rotate/flip, window, device and playful frames (macOS, browser, code editor, terminal, phone, retro monitor, pixel arcade, handheld console, comic panel, film strip, photo print), watermark.
