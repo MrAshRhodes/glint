@@ -8,6 +8,13 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-10-28
+
+### Fixed
+
+- Menus, context menus and other pop-ups that are open in another app can now be captured. Previously, the selection overlay closed them as it appeared, so they were gone from the screenshot. Now, if one is open when you start an area, window or text capture, Glint grabs the screen before showing the overlay and takes the capture from that image, so the menu is included even though macOS closes it once the overlay appears. In window mode (`Space`), an open menu can be picked like a window. With nothing open, capture behaves as before. ([#65])
+- The selection overlay no longer activates Glint. It takes keyboard focus without bringing Glint to the front, so `Esc`, `Space`, `Return`, the arrow keys and the `⇧` and `⌘` modifiers work as before. ([#65])
+
 ## [1.5.2] - 2026-10-27
 
 ### Fixed
@@ -184,7 +191,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/MrAshRhodes/glint/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/MrAshRhodes/glint/compare/v1.4.0...v1.5.0
@@ -221,3 +229,4 @@ First public release.
 [#57]: https://github.com/MrAshRhodes/glint/issues/57
 [#61]: https://github.com/MrAshRhodes/glint/issues/61
 [#63]: https://github.com/MrAshRhodes/glint/issues/63
+[#65]: https://github.com/MrAshRhodes/glint/issues/65

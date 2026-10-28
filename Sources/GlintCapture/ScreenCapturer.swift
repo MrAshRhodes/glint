@@ -56,9 +56,10 @@ public final class ScreenCapturer {
                                  onTick: ((Int) -> Void)? = nil) async throws -> CaptureResult {
         try await requirePermission()
         var outcome: SelectionOutcome?
+        // No freezing: the grab happens live after the countdown, so menus can be opened meanwhile.
         switch mode {
-        case .area: outcome = try await select(.area)
-        case .window: outcome = try await select(.window)
+        case .area: outcome = try await select(.area, freeze: false).outcome
+        case .window: outcome = try await select(.window, freeze: false).outcome
         case .fullscreen, .lastArea: break
         }
         var remaining = max(seconds, 0)
@@ -91,31 +92,64 @@ public final class ScreenCapturer {
         }
     }
 
-    private func select(_ mode: OverlayStartMode) async throws -> SelectionOutcome {
-        let session = SelectionSession(mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges)
-        return try await session.run()
+    private func select(_ mode: OverlayStartMode,
+                        freeze: Bool = true) async throws -> (outcome: SelectionOutcome, frozen: [FrozenDisplay]) {
+        let options = options
+        let session = SelectionSession(mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges,
+                                       freeze: freeze ? { await ImageGrabber.freeze($0, options: options) } : nil)
+        let outcome = try await session.run()
+        return (outcome, session.frozen)
     }
 
     private func interactive(start: OverlayStartMode, kind: CaptureKind) async throws -> CaptureResult {
         try await requirePermission()
-        let outcome = try await select(start)
-        return try await grab(outcome, kind: kind)
+        let selection = try await select(start)
+        return try await grab(selection.outcome, kind: kind, frozen: selection.frozen)
     }
 
-    private func grab(_ outcome: SelectionOutcome, kind: CaptureKind) async throws -> CaptureResult {
-        try await Task.sleep(nanoseconds: UInt64(options.settleDelay * 1_000_000_000)) // let overlay vanish
+    /// `frozen` holds displays grabbed while other apps' menus were open; those may have closed since.
+    private func grab(_ outcome: SelectionOutcome, kind: CaptureKind,
+                      frozen: [FrozenDisplay] = []) async throws -> CaptureResult {
         switch outcome {
         case .area(let r, _):
             lastArea = r
+            if let result = frozenResult(r, kind: kind, frozen: frozen) { return result }
+            try await settle()
             return try await grabArea(r, kind: kind)
         case .window(let w):
+            let windowKind: CaptureKind = kind == .textOnly ? .textOnly : .window
+            let fallback = frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w)
+            if let fallback, !WindowEnumerator.isOnScreen(w.id) { return fallback }
+            try await settle()
             let displays = WindowEnumerator.displays()
             let d = CaptureGeometry.index(containing: CGPoint(x: w.frame.midX, y: w.frame.midY),
                                           in: displays.map(\.frame)).map { displays[$0] }
-            let g = try await ImageGrabber.grabWindow(w, scale: d?.scale ?? 2, options: options)
-            return CaptureResult(image: g.image, scale: g.scale, displayID: d?.id ?? CGMainDisplayID(),
-                                 rect: w.frame, kind: kind == .textOnly ? .textOnly : .window, windowInfo: w)
+            do {
+                let g = try await ImageGrabber.grabWindow(w, scale: d?.scale ?? 2, options: options)
+                return CaptureResult(image: g.image, scale: g.scale, displayID: d?.id ?? CGMainDisplayID(),
+                                     rect: w.frame, kind: windowKind, windowInfo: w)
+            } catch {
+                // A picked menu can still close while the overlay fades out.
+                if let fallback { return fallback }
+                throw error
+            }
         }
+    }
+
+    private func settle() async throws {
+        try await Task.sleep(nanoseconds: UInt64(options.settleDelay * 1_000_000_000)) // let overlay vanish
+    }
+
+    /// `r` cropped from the frozen image of the display containing its centre, chosen as `grabArea` would.
+    private func frozenResult(_ r: CGRect, kind: CaptureKind, frozen: [FrozenDisplay],
+                              window: WindowInfo? = nil) -> CaptureResult? {
+        guard !frozen.isEmpty else { return nil }
+        let displays = WindowEnumerator.displays()
+        guard let i = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: displays.map(\.frame)),
+              let display = frozen.first(where: { $0.display.id == displays[i].id }),
+              let crop = display.crop(r) else { return nil }
+        return CaptureResult(image: crop.grab.image, scale: crop.grab.scale, displayID: display.display.id,
+                             rect: crop.rect, kind: kind, windowInfo: window)
     }
 
     private func grabArea(_ r: CGRect, kind: CaptureKind) async throws -> CaptureResult {

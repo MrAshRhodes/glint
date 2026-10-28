@@ -43,12 +43,17 @@ final class SelectionSession {
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
     private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
+    private let freeze: (([DisplayInfo]) async -> [FrozenDisplay])?
+    /// Displays grabbed before the overlay appeared because other apps' menus or pop-ups were open.
+    private(set) var frozen: [FrozenDisplay] = []
 
-    init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false) {
+    init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false,
+         freeze: (([DisplayInfo]) async -> [FrozenDisplay])? = nil) {
         self.mode = mode == .area ? .area : .window
         self.lastArea = lastArea
         self.snapToEdges = snapToEdges
         self.primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        self.freeze = freeze
     }
 
     func run() async throws -> SelectionOutcome {
@@ -60,6 +65,12 @@ final class SelectionSession {
         targets = Dictionary(uniqueKeysWithValues: displays.map {
             ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
         })
+        if let freeze, !snapshot.transientWindows.isEmpty {
+            // Other apps' menus and pop-ups can still close once the overlay is clicked; keep them as they look now.
+            let interval = OverlayPerformance.begin("FreezeCapture")
+            frozen = await freeze(displays)
+            OverlayPerformance.end("FreezeCapture", interval)
+        }
         shift = NSEvent.modifierFlags.contains(.shift)
         command = NSEvent.modifierFlags.contains(.command)
         cursor = CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: primaryHeight)
@@ -68,14 +79,18 @@ final class SelectionSession {
             continuation = cont
             let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
             for screen in NSScreen.screens {
+                let id = WindowEnumerator.displayID(of: screen)
+                let background = frozen.first { $0.display.id == id }?.image
                 let panel = OverlayPerformance.measure("PanelCreation") {
-                    OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight)
+                    OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight,
+                                 background: background)
                 }
                 panels.append(panel)
                 panel.orderFrontRegardless()
             }
-            NSApp.activate(ignoringOtherApps: true)
-            panels.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.makeKey()
+            if let panel = panels.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? panels.first {
+                OverlayFocus.makeKey(panel)
+            }
             updateHover()
             refresh()
             NSCursor.crosshair.set()
@@ -192,8 +207,30 @@ final class SelectionSession {
     }
 }
 
+/// Activating Glint would deactivate the frontmost app, and macOS dismisses that app's open menus and popovers
+/// when it deactivates. The overlay panels are non-activating, so one can take keyboard focus without that;
+/// activation is only the fallback that keeps the overlay's keyboard shortcuts working.
+@MainActor
+enum OverlayFocus {
+    /// Returns whether the app had to be activated.
+    @discardableResult
+    static func makeKey(_ makeKey: () -> Void, isKey: () -> Bool, activate: () -> Void) -> Bool {
+        makeKey()
+        guard !isKey() else { return false }
+        activate()
+        makeKey()
+        return true
+    }
+
+    static func makeKey(_ panel: NSPanel) {
+        makeKey({ panel.makeKey() }, isKey: { panel.isKeyWindow },
+                activate: { NSApp.activate(ignoringOtherApps: true) })
+    }
+}
+
 final class OverlayPanel: NSPanel {
-    init(screen: NSScreen, session: SelectionSession, level: NSWindow.Level, primaryHeight: CGFloat) {
+    init(screen: NSScreen, session: SelectionSession, level: NSWindow.Level, primaryHeight: CGFloat,
+         background: CGImage? = nil) {
         super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         self.level = level
@@ -209,7 +246,7 @@ final class OverlayPanel: NSPanel {
         hidesOnDeactivate = false
         let v = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), session: session,
                             screenFrameCG: CaptureGeometry.appKitToCG(screen.frame, primaryHeight: primaryHeight),
-                            scale: screen.backingScaleFactor)
+                            scale: screen.backingScaleFactor, background: background)
         contentView = v
         setFrame(screen.frame, display: false)
     }
@@ -222,6 +259,8 @@ final class OverlayView: NSView {
     private unowned let session: SelectionSession
     private let screenFrameCG: CGRect
     private let scale: CGFloat
+    /// The display as it looked before the overlay appeared, painted under the dim (see `FrozenDisplay`).
+    private let background: CGImage?
     private var lastSnapshot: Snapshot?
     private var detailLayout: TextLayout?
     private var pendingDrawInterval: OSSignpostIntervalState?
@@ -330,10 +369,11 @@ final class OverlayView: NSView {
         }
     }
 
-    init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat) {
+    init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat, background: CGImage? = nil) {
         self.session = session
         self.screenFrameCG = screenFrameCG
         self.scale = scale
+        self.background = background
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: .zero,
                                        options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited],
@@ -572,6 +612,7 @@ final class OverlayView: NSView {
         // The panel is transparent. Repainting source-over without clearing would accumulate dimming
         // and leave old selection holes/crosshairs behind during partial or overlapping redraws.
         context.clear(dirtyRect)
+        if let background { context.draw(background, in: bounds) }
         context.setFillColor(Palette.dim)
         context.fill(Self.subtract(bounds, excluding: snapshot.hole))
 
