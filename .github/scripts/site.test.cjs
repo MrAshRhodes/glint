@@ -76,7 +76,7 @@ test("public pages have unique search metadata and complete, consistent social c
 
 test("the homepage describes the free macOS app as JSON-LD without invented ratings", () => {
   const head = html.match(/<head>([\s\S]*?)<\/head>/)[1];
-  const structured = [...head.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
+  const structured = [...head.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)]
     .filter((match) => attributes(match[1]).type === "application/ld+json");
   assert.equal(structured.length, 1, "expected one JSON-LD block");
   const data = JSON.parse(structured[0][2]);
