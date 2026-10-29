@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User guide
+    url: https://mrashrhodes.github.io/glint/guide.html
+    about: Installation, updates, screenshot tools and troubleshooting.
+  - name: Report a security vulnerability privately
+    url: https://github.com/MrAshRhodes/glint/security/advisories/new
+    about: Do not publish vulnerability details in a public issue.

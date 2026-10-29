@@ -8,10 +8,112 @@ const root = path.resolve(__dirname, "../../site");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "site.js"), "utf8");
 const pages = ["index.html", "guide.html", "404.html"];
+const canonicalURLs = {
+  "index.html": "https://mrashrhodes.github.io/glint/",
+  "guide.html": "https://mrashrhodes.github.io/glint/guide.html",
+};
 
 function attributes(tag) {
   return Object.fromEntries([...tag.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].map((match) => [match[1], match[2] ?? ""]));
 }
+
+test("public pages have unique search metadata and complete, consistent social cards", () => {
+  const titles = new Set();
+  const descriptions = new Set();
+  for (const [page, canonicalURL] of Object.entries(canonicalURLs)) {
+    const head = pageSource(page).match(/<head>([\s\S]*?)<\/head>/)[1];
+    const pageTitles = [...head.matchAll(/<title>([^<]+)<\/title>/g)];
+    assert.equal(pageTitles.length, 1, `${page}: expected one title`);
+    const title = pageTitles[0][1];
+    assert.match(title, /Glint/);
+    assert.match(title, /screenshots?/i);
+    assert.match(title, /macOS/);
+    titles.add(title);
+
+    const tags = [...head.matchAll(/<meta\b([^>]*)>/g)].map((match) => attributes(match[1]));
+    const content = (key) => {
+      const matches = tags.filter((tag) => tag.name === key || tag.property === key);
+      assert.equal(matches.length, 1, `${page}: expected one ${key} meta tag`);
+      assert.ok(matches[0].content?.trim(), `${page}: empty ${key}`);
+      return matches[0].content;
+    };
+    const description = content("description");
+    assert.match(description, /screenshots?/i);
+    assert.match(description, /macOS/);
+    descriptions.add(description);
+
+    const canonicals = [...head.matchAll(/<link\b([^>]*)>/g)]
+      .map((match) => attributes(match[1])).filter((tag) => tag.rel === "canonical");
+    assert.equal(canonicals.length, 1, `${page}: expected one canonical`);
+    assert.equal(canonicals[0].href, canonicalURL);
+    for (const tag of tags.filter((tag) => ["robots", "googlebot", "bingbot"].includes(tag.name))) {
+      assert.doesNotMatch(tag.content, /\b(?:noindex|nofollow|none)\b/i, `${page}: blocked from indexing or following links`);
+    }
+
+    assert.equal(content("og:type"), "website");
+    assert.equal(content("og:site_name"), "Glint");
+    assert.equal(content("og:locale"), "en_GB");
+    assert.equal(content("og:title"), title);
+    assert.equal(content("og:description"), description);
+    assert.equal(content("og:url"), canonicalURL);
+    assert.equal(content("twitter:card"), "summary_large_image");
+    assert.equal(content("twitter:title"), title);
+    assert.equal(content("twitter:description"), description);
+
+    const imageURL = new URL("assets/og.jpg", canonicalURLs["index.html"]).href;
+    assert.equal(content("og:image"), imageURL);
+    assert.equal(content("twitter:image"), imageURL);
+    assert.equal(content("og:image:type"), "image/jpeg");
+    assert.equal(content("og:image:width"), "1200");
+    assert.equal(content("og:image:height"), "675");
+    assert.equal(content("twitter:image:alt"), content("og:image:alt"));
+    const image = fs.readFileSync(path.join(root, "assets/og.jpg"));
+    assert.equal(image.subarray(0, 3).toString("hex"), "ffd8ff", "social image must be a real JPEG");
+  }
+  assert.equal(titles.size, Object.keys(canonicalURLs).length, "page titles must be distinct");
+  assert.equal(descriptions.size, Object.keys(canonicalURLs).length, "page descriptions must be distinct");
+});
+
+test("the homepage describes the free macOS app as JSON-LD without invented ratings", () => {
+  const head = html.match(/<head>([\s\S]*?)<\/head>/)[1];
+  const structured = [...head.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
+    .filter((match) => attributes(match[1]).type === "application/ld+json");
+  assert.equal(structured.length, 1, "expected one JSON-LD block");
+  const data = JSON.parse(structured[0][2]);
+  assert.equal(data["@context"], "https://schema.org");
+  assert.equal(data["@type"], "SoftwareApplication");
+  assert.equal(data.name, "Glint");
+  assert.equal(data.url, canonicalURLs["index.html"]);
+  const description = [...head.matchAll(/<meta\b([^>]*)>/g)]
+    .map((match) => attributes(match[1])).find((tag) => tag.name === "description").content;
+  assert.equal(data.description, description);
+  assert.equal(data.applicationCategory, "DesignApplication");
+  assert.equal(data.operatingSystem, "macOS 14 or later");
+  assert.equal(data.image, new URL("assets/og.jpg", data.url).href);
+  assert.equal(data.downloadUrl, "https://github.com/MrAshRhodes/glint/releases/latest");
+  assert.equal(data.license, "https://github.com/MrAshRhodes/glint/blob/main/LICENSE");
+  assert.equal(data.sameAs, "https://github.com/MrAshRhodes/glint");
+  assert.equal(data.isAccessibleForFree, true);
+  assert.deepEqual(data.offers, { "@type": "Offer", price: "0", priceCurrency: "USD" });
+  assert.deepEqual(data.author, { "@type": "Person", name: "MrAshRhodes", url: "https://github.com/MrAshRhodes" });
+  assert.doesNotMatch(JSON.stringify(data), /"(?:aggregateRating|review|softwareVersion)"\s*:/);
+});
+
+test("the sitemap lists exactly the canonical public pages, not the error page", () => {
+  const sitemap = fs.readFileSync(path.join(root, "sitemap.xml"), "utf8");
+  assert.match(sitemap, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
+  assert.match(sitemap, /<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">/);
+  assert.match(sitemap, /<\/urlset>\s*$/);
+  const locations = [...sitemap.matchAll(/<url>\s*<loc>([^<]+)<\/loc>\s*<\/url>/g)].map((match) => match[1]);
+  assert.deepEqual(locations, Object.values(canonicalURLs));
+  assert.equal([...sitemap.matchAll(/<loc>/g)].length, locations.length);
+  assert.equal([...sitemap.matchAll(/<url>/g)].length, locations.length);
+  assert.doesNotMatch(sitemap, /<lastmod>/, "do not invent freshness dates");
+  for (const [page, url] of Object.entries(canonicalURLs)) {
+    assert.ok(fs.existsSync(path.join(root, page)), `missing sitemap page: ${page}`);
+    assert.match(pageSource(page), new RegExp(`<link rel="canonical" href="${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}">`));
+  }
+});
 
 test("every local HTML asset and fragment resolves under the Pages project path", () => {
   for (const page of pages) {
@@ -296,8 +398,9 @@ function pageSource(page) {
 function themeBootstrap(page) {
   const head = pageSource(page).match(/<head>([\s\S]*?)<\/head>/)[1];
   const scripts = [...head.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
-  const inline = scripts.filter((match) => !/(?:^|\s)src\s*=/i.test(match[1]));
-  assert.equal(inline.length, 1, `${page}: expected one inline theme bootstrap`);
+  const inline = scripts.filter((match) =>
+    !/(?:^|\s)src\s*=/i.test(match[1]) && attributes(match[1]).type !== "application/ld+json");
+  assert.equal(inline.length, 1, `${page}: expected one executable inline theme bootstrap`);
   assert.ok(inline[0].index < head.search(/<link rel="stylesheet"/), `${page}: theme bootstrap must run before the stylesheet`);
   return inline[0][2];
 }
