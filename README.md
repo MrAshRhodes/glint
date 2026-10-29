@@ -1,12 +1,24 @@
-<p align="center"><img src="docs/assets/icon-1024.png" width="128" alt="Glint icon"></p>
+<p align="center"><img src="site/assets/icon-256.webp" width="128" height="128" alt="Glint icon"></p>
 
 # Glint
 
-Open-source screenshot beautifier for macOS. Capture an area, window or screen, then turn it into a polished image with backgrounds, padding, shadows, annotations and automatic redaction of sensitive text. Everything runs locally. Nothing is uploaded.
+**Free, open-source screenshot beautifier for macOS.**
 
-Glint is an independent project, released under the MIT license. It is not affiliated with or endorsed by any other screenshot product.
+Capture an area, window or screen, then add backgrounds, padding, shadows, annotations and redaction. Screenshot processing stays on your Mac. Glint does not upload your images.
+
+[![CI](https://github.com/MrAshRhodes/glint/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MrAshRhodes/glint/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/MrAshRhodes/glint)](https://github.com/MrAshRhodes/glint/releases/latest)
+[![License](https://img.shields.io/github/license/MrAshRhodes/glint)](LICENSE)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)](https://mrashrhodes.github.io/glint/guide.html#install)
+[![Homebrew cask](https://img.shields.io/badge/Homebrew-cask-orange)](https://github.com/MrAshRhodes/homebrew-tap)
 
 **[Product site](https://mrashrhodes.github.io/glint/)** · **[User guide](https://mrashrhodes.github.io/glint/guide.html)** · **[Releases](https://github.com/MrAshRhodes/glint/releases/latest)** · **[Changelog](CHANGELOG.md)**
+
+| Before | After |
+| --- | --- |
+| <img src="site/assets/dashboard-raw.webp" width="480" alt="Original sample dashboard before styling"> | <img src="site/assets/dashboard-default.webp" width="480" alt="The same dashboard rendered by Glint with a gradient background, padding, rounded corners and shadow"> |
+
+Example output using original sample artwork, not a screenshot of the editor. [Try the before/after preview](https://mrashrhodes.github.io/glint/#table-title).
 
 ## Install
 
@@ -95,6 +107,27 @@ make run
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture and environment notes.
 
+## Contributing
+
+Bug reports, ideas, documentation and code contributions are welcome. Start with
+the [contribution guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+Every pull request must link a real issue; discuss the change there first.
+
+## Support
+
+See the [user guide](https://mrashrhodes.github.io/glint/guide.html) for installation,
+updates and troubleshooting. Search [existing issues](https://github.com/MrAshRhodes/glint/issues)
+before [reporting a bug or requesting a feature](https://github.com/MrAshRhodes/glint/issues/new/choose).
+Use synthetic examples and remove private information from attachments.
+
+## Security
+
+Report suspected vulnerabilities privately, not in a public issue.
+See the [security policy](SECURITY.md) and
+[private reporting form](https://github.com/MrAshRhodes/glint/security/advisories/new).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Glint is an independent project. It is not affiliated with or endorsed by any other screenshot product.

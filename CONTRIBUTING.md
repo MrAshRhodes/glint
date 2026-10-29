@@ -310,6 +310,9 @@ How releases use it:
 
 ## Pull requests
 
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities
+privately using the [security policy](SECURITY.md), not in a public issue.
+
 Every change to `main` needs an issue and a pull request, including documentation, maintenance, dependency and workflow changes. Do not push directly to `main`.
 
 1. Create or choose an issue in `MrAshRhodes/glint` that describes the change.

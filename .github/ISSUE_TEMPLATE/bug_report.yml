@@ -1,0 +1,88 @@
+name: Bug report
+description: Report something that is not working.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first.
+        For a security vulnerability, do not use this public form:
+        https://github.com/MrAshRhodes/glint/security/advisories/new
+        Use synthetic examples and remove sensitive information from attachments.
+
+  - type: input
+    id: glint-version
+    attributes:
+      label: Glint version
+      description: Find this in About Glint. For a source build, include the commit.
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "macOS 14.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - Homebrew
+        - ZIP
+        - DMG
+        - Built from source
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include relevant settings and whether it happens every time.
+      placeholder: |
+        1. Open Glint.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead? Include any error message.
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: |
+        Optional. Redact sensitive information before uploading and inspect the
+        final image. Blur is not safe for secrets. Do not attach raw captures
+        containing private information.
+
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Diagnostic output
+      description: |
+        Optional. Run /Applications/Glint.app/Contents/MacOS/Glint --diagnose
+        if Glint is installed in Applications.
+        Review the output before sharing: aggregate counts still describe
+        your desktop activity.
+      render: text
