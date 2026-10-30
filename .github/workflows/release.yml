@@ -5,19 +5,14 @@ name: Release
 # updates the Homebrew cask. A published release is never rebuilt or overwritten, because the cask
 # pins the sha256 of its zip.
 #
-# Every release is signed with the same "Glint Release Signing" certificate, imported from the
-# GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets (create them once with
-# `make signing-cert`; see packaging/signing/README.md). macOS ties Screen Recording permission
-# to the app's designated requirement: with the certificate it is satisfied by every later
-# release, while an ad-hoc signature pins one build, so every update would make users remove
-# and re-add Glint in System Settings (#39). Without the secrets the release fails, unless the
-# repository variable GLINT_ALLOW_ADHOC_RELEASE is "true".
+# Developer ID and notarization credentials live in the protected release environment.
+# No unsigned/self-signed fallback is allowed. See packaging/signing/README.md.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -30,10 +25,15 @@ jobs:
   release:
     name: Build and publish
     runs-on: macos-latest
-    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    timeout-minutes: 90
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Resolve the version
         id: version
@@ -90,31 +90,22 @@ jobs:
         env:
           GLINT_SIGNING_P12_BASE64: ${{ secrets.GLINT_SIGNING_P12_BASE64 }}
           GLINT_SIGNING_P12_PASSWORD: ${{ secrets.GLINT_SIGNING_P12_PASSWORD }}
-          ALLOW_ADHOC_RELEASE: ${{ vars.GLINT_ALLOW_ADHOC_RELEASE }}
         run: |
-          if [[ -n "$GLINT_SIGNING_P12_BASE64" && -n "$GLINT_SIGNING_P12_PASSWORD" ]]; then
-            if [[ ! -s packaging/signing/designated-requirement.txt ]]; then
-              echo "::error title=Signing requirement missing::Commit packaging/signing/designated-requirement.txt from the one-time signing setup before releasing. Without it, a changed certificate could silently break existing Screen Recording grants."
-              exit 1
-            fi
-            Scripts/import_signing_identity.sh > /dev/null
-            echo "require-stable=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ -n "$GLINT_SIGNING_P12_BASE64" || -n "$GLINT_SIGNING_P12_PASSWORD" ]]; then
-            echo "::error title=Incomplete signing secrets::Set both GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD (only one of them is set)."
-            exit 1
-          fi
-          if [[ "$ALLOW_ADHOC_RELEASE" == true ]]; then
-            echo "::warning title=Ad-hoc release::GLINT_ALLOW_ADHOC_RELEASE is true and the signing secrets are missing, so this release is signed ad-hoc. Every user who updates to it has to remove and re-add Glint under Screen Recording in System Settings (#39). Run 'make signing-cert' and add the GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets to fix this."
-            {
-              echo "identity=-"
-              echo "require-stable=0"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "::error title=Release signing certificate missing::The GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD secrets are not set. Without them the release would be signed ad-hoc, and macOS would reset Screen Recording permission for every user on every update (#39). Run 'make signing-cert' (Scripts/make_signing_cert.sh) once, add the two secrets it prints (or use --set-github-secrets), commit packaging/signing/designated-requirement.txt and push the tag again. To publish an ad-hoc release anyway, set the repository variable GLINT_ALLOW_ADHOC_RELEASE to true."
-          exit 1
+          Scripts/import_signing_identity.sh --require-developer-id > /dev/null
+
+      - name: Prepare notarization credentials
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GLINT_NOTARY_KEY_P8_BASE64: ${{ secrets.GLINT_NOTARY_KEY_P8_BASE64 }}
+          GLINT_NOTARY_KEY_ID: ${{ secrets.GLINT_NOTARY_KEY_ID }}
+          GLINT_NOTARY_ISSUER_ID: ${{ secrets.GLINT_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${GLINT_NOTARY_KEY_P8_BASE64:?Missing notarization key secret}"
+          export GLINT_NOTARY_KEY_PATH="$RUNNER_TEMP/glint-notary.p8"
+          printf '%s' "$GLINT_NOTARY_KEY_P8_BASE64" | base64 --decode > "$GLINT_NOTARY_KEY_PATH"
+          Scripts/notarize.sh --check-credentials
 
       - name: Show the toolchain
         if: steps.version.outputs.exists != 'true'
@@ -130,8 +121,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
-          GLINT_REQUIRE_STABLE_SIGNATURE: ${{ steps.signing.outputs.require-stable }}
-        run: Scripts/package_release.sh --version "$VERSION" --require-universal --build-number "$GITHUB_RUN_NUMBER"
+          GLINT_REQUIRE_STABLE_SIGNATURE: '1'
+          GLINT_NOTARY_KEY_PATH: ${{ runner.temp }}/glint-notary.p8
+          GLINT_NOTARY_KEY_ID: ${{ secrets.GLINT_NOTARY_KEY_ID }}
+          GLINT_NOTARY_ISSUER_ID: ${{ secrets.GLINT_NOTARY_ISSUER_ID }}
+        run: Scripts/package_release.sh --version "$VERSION" --require-universal --build-number "$GITHUB_RUN_NUMBER" --notarize
+
+      - name: Remove notarization credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/glint-notary.p8"
 
       - name: Remove the signing keychain
         if: always() && steps.signing.outputs.keychain != ''

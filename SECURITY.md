@@ -40,9 +40,11 @@ Automatic detection can miss sensitive information. Review every image before
 sharing. Blur is obfuscation, not safe redaction, and redaction does not erase
 original images or separately saved raw captures.
 
-Current releases use Glint's own signing certificate and are not notarized by
-Apple. This known limitation is not itself a new vulnerability, but reports of
-ways to bypass the documented integrity checks are welcome.
+Releases from 1.5.4 onward are signed with an Apple Developer ID certificate
+and notarized by Apple, and Gatekeeper checks stay enabled. Releases 1.5.3 and
+earlier are legacy builds signed with Glint's own certificate and are not
+notarized; they are not retroactively replaced. Reports of ways to bypass the
+documented signing, notarization or integrity checks are welcome.
 
 ## Response and disclosure
 

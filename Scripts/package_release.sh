@@ -4,7 +4,7 @@
 #
 # Usage:
 #   Scripts/package_release.sh [--version X.Y.Z] [--formats zip,dmg] [--build-number N]
-#                              [--require-universal] [--skip-build]
+#                              [--require-universal] [--skip-build] [--notarize]
 #
 #   --version X.Y.Z       Release version. Default: the contents of VERSION.
 #   --formats LIST        Comma-separated: zip, dmg. Default: zip,dmg.
@@ -22,8 +22,8 @@
 #
 # Environment: GLINT_SIGN_IDENTITY and GLINT_REQUIRE_STABLE_SIGNATURE (see build_app.sh). With
 # GLINT_REQUIRE_STABLE_SIGNATURE=1 the app and the app unpacked from the zip must carry the stable
-# "Glint Release Signing" signature (Scripts/verify_signature.sh --require-stable), so macOS keeps
-# Screen Recording permission across the update. Releases set both.
+# pinned signature. Production releases also pass --notarize, which requires Developer ID,
+# accepted notarization and validated tickets before checksums and the cask are generated.
 
 set -euo pipefail
 
@@ -43,7 +43,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage: Scripts/package_release.sh [--version X.Y.Z] [--formats zip,dmg] [--build-number N]
-                                  [--require-universal] [--skip-build]
+                                  [--require-universal] [--skip-build] [--notarize]
 
 Builds a universal dist/Glint.app and packages it:
   dist/Glint-<v>.zip + .sha256, dist/Glint-<v>.dmg + .sha256, dist/glint.rb (Homebrew cask)
@@ -53,6 +53,7 @@ Builds a universal dist/Glint.app and packages it:
   --build-number N      CFBundleVersion (default: $GITHUB_RUN_NUMBER, git commit count, or 1)
   --require-universal   fail instead of shipping an arm64-only app
   --skip-build          package the existing dist/Glint.app
+  --notarize            require Developer ID, notarize and staple app/DMG before packaging
 
 Environment: GLINT_SIGN_IDENTITY, GLINT_REQUIRE_STABLE_SIGNATURE=1 (fail on an ad-hoc signature).
 EOF
@@ -63,6 +64,7 @@ FORMATS="zip,dmg"
 BUILD_NUMBER=""
 REQUIRE_UNIVERSAL=0
 SKIP_BUILD=0
+NOTARIZE=0
 
 while (($#)); do
   case "$1" in
@@ -83,6 +85,7 @@ while (($#)); do
     --build-number=*) BUILD_NUMBER="${1#*=}" ;;
     --require-universal) REQUIRE_UNIVERSAL=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
+    --notarize) NOTARIZE=1 ;;
     -h | --help)
       usage
       exit 0
@@ -112,6 +115,12 @@ for format in "${format_list[@]}"; do
 done
 ((WANT_ZIP || WANT_DMG)) || die "no formats requested"
 
+if ((NOTARIZE)); then
+  [[ -n "${GLINT_SIGN_IDENTITY:-}" && "$GLINT_SIGN_IDENTITY" != "-" ]] \
+    || die "--notarize requires GLINT_SIGN_IDENTITY (Developer ID Application)"
+  "$ROOT/Scripts/notarize.sh" --check-credentials
+fi
+
 REQUIRE_STABLE=0
 case "${GLINT_REQUIRE_STABLE_SIGNATURE:-}" in
   1 | true | yes) REQUIRE_STABLE=1 ;;
@@ -122,7 +131,9 @@ fi
 
 # verify_stable APP: the release signature check (see Scripts/verify_signature.sh).
 verify_stable() {
-  if ((REQUIRE_STABLE)); then
+  if ((NOTARIZE)); then
+    "$ROOT/Scripts/verify_signature.sh" "$1" --require-developer-id
+  elif ((REQUIRE_STABLE)); then
     "$ROOT/Scripts/verify_signature.sh" "$1" --require-stable
   fi
 }
@@ -157,6 +168,10 @@ if ((REQUIRE_UNIVERSAL)) && [[ " $archs " != *" x86_64 "* || " $archs " != *" ar
 fi
 log "Packaging Glint $VERSION (archs: $archs)"
 
+if ((NOTARIZE)); then
+  "$ROOT/Scripts/notarize.sh" "$APP"
+fi
+
 write_checksum() {
   local file="$1"
   (cd "$(dirname "$file")" && shasum -a 256 "$(basename "$file")" >"$(basename "$file").sha256")
@@ -168,7 +183,6 @@ if ((WANT_ZIP)); then
   # --norsrc/--noextattr keep macOS provenance attributes out of the archive; they would
   # otherwise become ._* entries that plain `unzip` extracts into the signed bundle.
   ditto -c -k --norsrc --noextattr --keepParent "$APP" "$ZIP"
-  write_checksum "$ZIP"
   if unzip -Z1 "$ZIP" | grep -Eq '(^|/)\._|^__MACOSX/'; then
     die "${ZIP#"$ROOT"/} contains AppleDouble (._*) entries"
   fi
@@ -180,7 +194,11 @@ if ((WANT_ZIP)); then
   codesign --verify --deep --strict "$VERIFY_DIR/Glint.app" \
     || die "the app extracted from ${ZIP#"$ROOT"/} fails signature verification"
   verify_stable "$VERIFY_DIR/Glint.app"
+  if ((NOTARIZE)); then
+    "$ROOT/Scripts/verify_signature.sh" "$VERIFY_DIR/Glint.app" --require-notarized
+  fi
   rm -rf "$VERIFY_DIR"
+  write_checksum "$ZIP"
 fi
 
 if ((WANT_DMG)); then
@@ -189,6 +207,9 @@ if ((WANT_DMG)); then
   rm -f "$DMG" "$DMG.sha256"
   mkdir -p "$STAGE"
   ditto --norsrc --noextattr "$APP" "$STAGE/Glint.app"
+  if ((NOTARIZE)); then
+    "$ROOT/Scripts/verify_signature.sh" "$STAGE/Glint.app" --require-notarized
+  fi
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -quiet -volname "Glint $VERSION" -srcfolder "$STAGE" \
     -fs HFS+ -format UDZO -ov "$DMG"
@@ -197,6 +218,9 @@ if ((WANT_DMG)); then
     codesign --force --sign "$GLINT_SIGN_IDENTITY" --timestamp "$DMG"
   fi
   hdiutil verify -quiet "$DMG" || die "${DMG#"$ROOT"/} failed hdiutil verify"
+  if ((NOTARIZE)); then
+    "$ROOT/Scripts/notarize.sh" "$DMG"
+  fi
   write_checksum "$DMG"
 fi
 

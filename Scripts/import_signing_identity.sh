@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# import_signing_identity.sh - make the "Glint Release Signing" identity available to codesign.
+# import_signing_identity.sh - make a release or test identity available to codesign.
 #
 # Usage:
 #   Scripts/import_signing_identity.sh [--p12 FILE] [--password-env VAR] [--name CN]
@@ -12,7 +12,7 @@
 #                        search list (codesign only finds identities in the search list).
 #   --p12 FILE           Import this .p12 file instead of $GLINT_SIGNING_P12_BASE64.
 #   --password-env VAR   Read the .p12 password from $VAR. Default: GLINT_SIGNING_P12_PASSWORD.
-#   --name CN            Identity to look for. Default: "Glint Release Signing" (when the
+#   --name CN            Identity to look for. Default: "Glint Test Signing" (when the
 #                        keychain holds exactly one code-signing identity it is used regardless).
 #   --cleanup [KEYCHAIN] Delete the temporary keychain and remove it from the search list, keeping
 #                        every other entry. Default: $GLINT_SIGNING_KEYCHAIN, else every
@@ -44,16 +44,18 @@ into a temporary keychain at the front of the keychain search list and prints th
 
   --p12 FILE           import this .p12 instead of $GLINT_SIGNING_P12_BASE64
   --password-env VAR   environment variable holding the password (default GLINT_SIGNING_P12_PASSWORD)
-  --name CN            identity common name (default "Glint Release Signing")
+  --name CN            identity common name (default "Glint Test Signing")
+  --require-developer-id  accept only a valid Developer ID Application identity for Glint's team
   --cleanup [KEYCHAIN] delete the temporary keychain and drop it from the search list
 EOF
 }
 
 P12_FILE=""
 PASSWORD_ENV="GLINT_SIGNING_P12_PASSWORD"
-CN="Glint Release Signing"
+CN="Glint Test Signing"
 CLEANUP=0
 CLEANUP_KEYCHAIN=""
+REQUIRE_DEVELOPER_ID=0
 
 while (($#)); do
   case "$1" in
@@ -72,6 +74,10 @@ while (($#)); do
       shift
       ;;
     --name=*) CN="${1#*=}" ;;
+    --require-developer-id)
+      REQUIRE_DEVELOPER_ID=1
+      CN="Developer ID Application: Ashley Rhodes (TB3Z5R7SY8)"
+      ;;
     --cleanup)
       CLEANUP=1
       if [[ $# -gt 1 && "$2" != -* ]]; then
@@ -185,6 +191,11 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "keychain=$KEYCHAIN" >>"$GITHUB_OUTPUT"
+fi
 
 if [[ -n "$P12_FILE" ]]; then
   [[ -f "$P12_FILE" ]] || die "no such .p12: $P12_FILE"
@@ -221,7 +232,11 @@ set_search_list "${new_list[@]}"
 
 # A self-signed identity is listed as CSSMERR_TP_NOT_TRUSTED (not under "valid identities"),
 # which is fine for codesign. Lines look like:   1) <SHA-1> "<common name>" (...)
-identities="$(security find-identity -p codesigning "$KEYCHAIN")"
+if ((REQUIRE_DEVELOPER_ID)); then
+  identities="$(security find-identity -v -p codesigning "$KEYCHAIN")"
+else
+  identities="$(security find-identity -p codesigning "$KEYCHAIN")"
+fi
 hashes=()
 named=""
 while IFS= read -r line; do
@@ -240,7 +255,7 @@ done <<<"$identities"
 
 IDENTITY="$named"
 if [[ -z "$IDENTITY" ]]; then
-  if ((${#hashes[@]} == 1)); then
+  if ((!REQUIRE_DEVELOPER_ID)) && ((${#hashes[@]} == 1)); then
     IDENTITY="${hashes[0]}"
     warn "no identity named \"$CN\"; using the only code-signing identity in the .p12"
   else

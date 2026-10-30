@@ -1,39 +1,26 @@
 #!/usr/bin/env bash
 #
-# make_signing_cert.sh - create the persistent "Glint Release Signing" code-signing certificate.
-#
-# Run this once. Every release must be signed with the same certificate: when a user grants a
-# privacy permission such as Screen Recording, macOS stores the app's designated requirement.
-# For an ad-hoc signature that requirement is the cdhash of one exact build, so every update
-# lost the permission (#39). For a certificate-signed app it is
-#   identifier "io.github.mrashrhodes.glint" and certificate leaf = H"<certificate sha1>"
-# which every later build signed with the same certificate satisfies.
+# make_signing_cert.sh - create a throwaway self-signed certificate for continuity tests.
+# Production releases require Apple Developer ID; see packaging/signing/README.md.
 #
 # Usage:
 #   Scripts/make_signing_cert.sh [--out DIR] [--requirement-file PATH] [--force]
-#                                [--set-github-secrets] [--repo OWNER/NAME]
 #
 #   --out DIR                 Where the key, certificate and .p12 are written.
-#                             Default: ~/.glint-signing (outside the repository; never commit them).
+#                             Default: ~/.glint-signing/test (outside the repository).
 #   --requirement-file PATH   Where the designated requirement the certificate produces is written.
-#                             Default: packaging/signing/designated-requirement.txt (commit it;
-#                             releases are verified against it).
-#   --force                   Replace an existing certificate and requirement file. Rotating the
-#                             certificate makes every user re-grant Screen Recording once.
-#   --set-github-secrets      Store GLINT_SIGNING_P12_BASE64 and GLINT_SIGNING_P12_PASSWORD as
-#                             repository secrets with `gh secret set`.
-#   --repo OWNER/NAME         Repository for --set-github-secrets. Default: `gh repo view`.
+#                             Default: <out>/designated-requirement.txt.
+#   --force                   Replace an existing test certificate and test requirement.
 #
 # Environment: OPENSSL (default: openssl on PATH; OpenSSL 3+ and LibreSSL both work).
 #
-# The certificate is self-signed: Gatekeeper treats the app exactly like an ad-hoc build (the
-# Homebrew cask keeps clearing the quarantine attribute). It only makes permissions stick.
+# The test certificate is not trusted by Gatekeeper and cannot be used for notarization.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-CN="Glint Release Signing"
+CN="Glint Test Signing"
 KEY_BITS=3072
 DAYS=7300
 PLIST_SRC="$ROOT/Resources/Info.plist"
@@ -49,28 +36,22 @@ die() {
 usage() {
   cat <<'EOF'
 Usage: Scripts/make_signing_cert.sh [--out DIR] [--requirement-file PATH] [--force]
-                                    [--set-github-secrets] [--repo OWNER/NAME]
 
-Creates the self-signed "Glint Release Signing" certificate that every release is signed with,
-so macOS keeps Screen Recording permission across updates. Run it once and keep the output safe.
+Creates a self-signed "Glint Test Signing" certificate for local/CI continuity tests only.
+This cannot replace Developer ID or notarize a release. Never upload it as release credentials.
 
-  --out DIR                 output directory (default: ~/.glint-signing, outside the repository)
+  --out DIR                 output directory (default: ~/.glint-signing/test)
   --requirement-file PATH   designated requirement file to write
-                            (default: packaging/signing/designated-requirement.txt)
-  --force                   replace an existing certificate (every user re-grants permission once)
-  --set-github-secrets      run `gh secret set` for GLINT_SIGNING_P12_BASE64 and
-                            GLINT_SIGNING_P12_PASSWORD
-  --repo OWNER/NAME         repository for --set-github-secrets (default: `gh repo view`)
+                            (default: <out>/designated-requirement.txt)
+  --force                   replace an existing test certificate
 
 Environment: OPENSSL (default: openssl on PATH).
 EOF
 }
 
-OUT="$HOME/.glint-signing"
-REQ_FILE="$ROOT/packaging/signing/designated-requirement.txt"
+OUT="$HOME/.glint-signing/test"
+REQ_FILE=""
 FORCE=0
-SET_SECRETS=0
-REPO=""
 
 while (($#)); do
   case "$1" in
@@ -85,12 +66,6 @@ while (($#)); do
       ;;
     --requirement-file=*) REQ_FILE="${1#*=}" ;;
     --force) FORCE=1 ;;
-    --set-github-secrets) SET_SECRETS=1 ;;
-    --repo)
-      REPO="${2:?--repo needs a value}"
-      shift
-      ;;
-    --repo=*) REPO="${1#*=}" ;;
     -h | --help)
       usage
       exit 0
@@ -113,7 +88,15 @@ absolute() {
   esac
 }
 OUT="$(absolute "$OUT")"
+REQ_FILE="${REQ_FILE:-$OUT/designated-requirement.txt}"
 REQ_FILE="$(absolute "$REQ_FILE")"
+mkdir -p "$(dirname "$REQ_FILE")"
+REQ_FILE="$(cd "$(dirname "$REQ_FILE")" && pwd -P)/$(basename "$REQ_FILE")"
+for production_file in "$ROOT/packaging/signing/"{designated-requirement,developer-id-requirement}.txt; do
+  if [[ "$REQ_FILE" == "$production_file" || "$REQ_FILE" -ef "$production_file" ]]; then
+    die "refusing to overwrite a production signing requirement with a test certificate"
+  fi
+done
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd -P)"
 
@@ -136,13 +119,9 @@ done
 if ((${#existing[@]})); then
   if ((!FORCE)); then
     printf '    %s\n' "${existing[@]}" >&2
-    die "a signing certificate already exists (files above). Every release must be signed with the
-       same certificate, otherwise every user has to re-grant Screen Recording after updating.
-       Re-run with --force only if you really mean to rotate it."
+    die "a test signing certificate already exists (files above); use --force to replace it"
   fi
-  warn "--force: replacing the existing signing certificate. Releases signed with the new"
-  warn "certificate do not satisfy the old designated requirement, so every user has to re-grant"
-  warn "Screen Recording once after updating. Mention that in the release notes."
+  warn "--force: replacing the existing test certificate and test requirement"
 fi
 
 chmod 700 "$OUT"
@@ -246,48 +225,18 @@ chmod 600 "$KEY" "$CRT" "$P12" "$PW_FILE" "$B64_FILE"
 mkdir -p "$(dirname "$REQ_FILE")"
 (umask 022 && printf '%s\n' "$REQUIREMENT" >"$REQ_FILE")
 
-if ((SET_SECRETS)); then
-  command -v gh >/dev/null || die "gh not found; set the secrets by hand (commands below)"
-  if [[ -z "$REPO" ]]; then
-    REPO="$(cd "$ROOT" && gh repo view --json nameWithOwner --jq .nameWithOwner)" \
-      || die "could not determine the repository; pass --repo OWNER/NAME"
-  fi
-  log "Setting the signing secrets on $REPO"
-  gh secret set GLINT_SIGNING_P12_BASE64 --repo "$REPO" <"$B64_FILE"
-  gh secret set GLINT_SIGNING_P12_PASSWORD --repo "$REPO" <"$PW_FILE"
-fi
-
-repo_flag=""
-if [[ -n "$REPO" ]]; then
-  repo_flag=" --repo $REPO"
-fi
-
 cat <<EOF
 
-Created the "$CN" certificate.
+Created the "$CN" test certificate. Do not use it for releases.
     SHA-1 (certificate leaf):  $SHA1
     certificate:               $CRT
     private key:               $KEY
-    .p12 (for CI):             $P12
+    .p12 (for tests):          $P12
     .p12 password:             $PW_FILE
     .p12 as base64:            $B64_FILE
     designated requirement:    $REQ_FILE
         $REQUIREMENT
 
-EOF
-if ((!SET_SECRETS)); then
-  cat <<EOF
-Store the identity as GitHub Actions secrets:
-    gh secret set GLINT_SIGNING_P12_BASE64$repo_flag < "$B64_FILE"
-    gh secret set GLINT_SIGNING_P12_PASSWORD$repo_flag < "$PW_FILE"
-
-EOF
-fi
-case "$REQ_FILE" in
-  "$ROOT"/*) printf 'Commit %s so releases are verified against it.\n\n' "${REQ_FILE#"$ROOT"/}" ;;
-esac
-cat <<EOF
-Back up $P12 and its password (for example in a password manager).
-If they are lost, the next release has to use a new certificate and every user must re-grant
-Screen Recording once.
+For test builds set GLINT_REQUIREMENT_FILE="$REQ_FILE".
+Keep all private key material outside the repository and delete it when tests are finished.
 EOF

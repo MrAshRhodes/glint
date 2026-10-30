@@ -8,6 +8,16 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-10-30
+
+### Changed
+
+- Releases are now signed with an Apple Developer ID certificate and notarized by Apple, so macOS verifies the download instead of relying on the app's quarantine flag being cleared. **Action needed once:** when updating from 1.5.3 or earlier, grant Screen Recording one more time with **Re-authorize Screen Recording…** in Preferences → About, because the signing identity changed; later updates keep the permission. ([#44](https://github.com/MrAshRhodes/glint/issues/44))
+
+### Security
+
+- The release pipeline now requires Apple Developer ID signing, the hardened runtime, secure timestamps and accepted notarization with validated stapled tickets for the app and the DMG. Signing and notarization credentials live in a tag-restricted release environment, and incomplete signing or notarization stops publication. The Homebrew cask no longer removes the quarantine flag or bypasses Gatekeeper. Releases 1.5.3 and earlier are unchanged legacy builds. ([#44](https://github.com/MrAshRhodes/glint/issues/44))
+
 ## [1.5.3] - 2026-10-28
 
 ### Fixed
@@ -191,7 +201,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/MrAshRhodes/glint/compare/v1.5.0...v1.5.1
