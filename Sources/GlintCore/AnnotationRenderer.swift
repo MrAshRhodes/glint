@@ -80,6 +80,12 @@ public enum AnnotationRenderer {
     /// `source` supplies pixels for Blur and Magnify; if nil they fall back to solid colour.
     /// Secure redactions are removed from the sampling source before any Blur or Magnify is drawn.
     public static func draw(in ctx: CGContext, annotations: [Annotation], imageSize: CGSize, source: CGImage? = nil) {
+        draw(in: ctx, separateMagnifiers: false, annotations: annotations, imageSize: imageSize, source: source)
+    }
+
+    @discardableResult
+    private static func draw(in ctx: CGContext, separateMagnifiers: Bool, annotations: [Annotation],
+                             imageSize: CGSize, source: CGImage?) -> [ForegroundDrawing] {
         let ordered = annotations.enumerated().sorted {
             $0.element.z != $1.element.z ? $0.element.z < $1.element.z : $0.offset < $1.offset
         }.map(\.element)
@@ -103,6 +109,8 @@ public enum AnnotationRenderer {
                             y: -CGFloat(samplingSource.height) / imageSize.height)
             lens = lensCtx
         }
+        var foreground: [ForegroundDrawing] = []
+        var drawsAboveFrame = false
         for (i, a) in ordered.enumerated() {
             var snapshot: CGImage?
             if a.isMagnifier, let lensCtx = lens {
@@ -114,15 +122,23 @@ public enum AnnotationRenderer {
                 }
                 snapshot = lensCtx.makeImage()
             }
-            ctx.saveGState()
-            draw(a, in: ctx, imageSize: imageSize, source: samplingSource, lens: snapshot)
-            ctx.restoreGState()
+            if separateMagnifiers, a.isMagnifier { drawsAboveFrame = true }
+            if drawsAboveFrame {
+                foreground.append(ForegroundDrawing(annotation: a, source: samplingSource, lens: snapshot))
+            }
+            // Destroy redacted source pixels even when their visible replacement belongs to the foreground.
+            if !drawsAboveFrame || a.isRedaction {
+                ctx.saveGState()
+                draw(a, in: ctx, imageSize: imageSize, source: samplingSource, lens: snapshot)
+                ctx.restoreGState()
+            }
             if let lensCtx = lens, let lastMagnifier, i < lastMagnifier {
                 lensCtx.saveGState()
                 draw(a, in: lensCtx, imageSize: imageSize, source: samplingSource, lens: snapshot)
                 lensCtx.restoreGState()
             }
         }
+        return foreground
     }
 
     private static func redactedSource(_ source: CGImage, annotations: [Annotation], imageSize: CGSize) -> CGImage? {
@@ -144,6 +160,53 @@ public enum AnnotationRenderer {
     /// (image space) when given; the rest of the region stays transparent.
     public static func bake(source: CGImage, annotations: [Annotation], region: CGRect? = nil,
                             fill: RGBAColor = .clear, fillRect: CGRect? = nil) -> CGImage? {
+        bakeLayers(source: source, annotations: annotations, region: region, fill: fill,
+                   fillRect: fillRect, separateMagnifiers: false)?.base
+    }
+
+    struct BakedLayers {
+        var base: CGImage
+        var foreground: Foreground?
+    }
+
+    fileprivate struct ForegroundDrawing {
+        var annotation: Annotation
+        var source: CGImage?
+        var lens: CGImage?
+    }
+
+    struct Foreground {
+        var region: CGRect
+        var imageSize: CGSize
+        fileprivate var drawings: [ForegroundDrawing]
+
+        /// Replays the ordered foreground directly so blend modes and opacity see the decorated card.
+        func draw(in ctx: CGContext, rect: CGRect, rotation: Rotation, flipH: Bool, flipV: Bool) {
+            let swapsAxes = rotation == .cw90 || rotation == .cw270
+            let width = swapsAxes ? region.height : region.width
+            let height = swapsAxes ? region.width : region.height
+            ctx.saveGState()
+            ctx.clip(to: rect)
+            ctx.translateBy(x: rect.midX, y: rect.midY)
+            ctx.scaleBy(x: rect.width / width, y: rect.height / height)
+            ctx.scaleBy(x: flipH ? -1 : 1, y: flipV ? -1 : 1)
+            ctx.rotate(by: -CGFloat(rotation.rawValue) * .pi / 180)
+            ctx.translateBy(x: -region.width / 2, y: region.height / 2)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.translateBy(x: -region.minX, y: -region.minY)
+            for drawing in drawings {
+                ctx.saveGState()
+                AnnotationRenderer.draw(drawing.annotation, in: ctx, imageSize: imageSize,
+                                        source: drawing.source, lens: drawing.lens)
+                ctx.restoreGState()
+            }
+            ctx.restoreGState()
+        }
+    }
+
+    static func bakeLayers(source: CGImage, annotations: [Annotation], region: CGRect? = nil,
+                           fill: RGBAColor = .clear, fillRect: CGRect? = nil,
+                           separateMagnifiers: Bool = true) -> BakedLayers? {
         let full = CGRect(x: 0, y: 0, width: source.width, height: source.height)
         let r = (region ?? full).integral
         guard let ctx = GlintBitmap.makeContext(width: Int(r.width), height: Int(r.height)) else { return nil }
@@ -156,8 +219,11 @@ public enum AnnotationRenderer {
             ctx.fill(fillArea)
         }
         ImageDrawing.drawFlipped(source, in: full, ctx: ctx)
-        draw(in: ctx, annotations: annotations, imageSize: full.size, source: source)
-        return ctx.makeImage()
+        let drawings = draw(in: ctx, separateMagnifiers: separateMagnifiers,
+                            annotations: annotations, imageSize: full.size, source: source)
+        guard let base = ctx.makeImage() else { return nil }
+        let foreground = drawings.isEmpty ? nil : Foreground(region: r, imageSize: full.size, drawings: drawings)
+        return BakedLayers(base: base, foreground: foreground)
     }
 
     private static func applyStroke(_ a: Annotation, _ ctx: CGContext, widthScale: CGFloat = 1) {

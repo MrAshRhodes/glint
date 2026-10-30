@@ -45,10 +45,10 @@ public enum RenderError: Error, LocalizedError, Equatable {
 }
 
 public enum Compositor {
-    /// Burns `annotations` into `source`, cropped to `region` with `fill` outside the source.
-    typealias Baker = (_ source: CGImage, _ annotations: [Annotation], _ region: CGRect?, _ fill: RGBAColor) -> CGImage?
+    /// Burns screenshot annotations into the source and prepares the ordered foreground.
+    typealias Baker = (_ source: CGImage, _ annotations: [Annotation], _ region: CGRect?, _ fill: RGBAColor) -> AnnotationRenderer.BakedLayers?
 
-    static let defaultBaker: Baker = { AnnotationRenderer.bake(source: $0, annotations: $1, region: $2, fill: $3) }
+    static let defaultBaker: Baker = { AnnotationRenderer.bakeLayers(source: $0, annotations: $1, region: $2, fill: $3) }
 
     /// Output image of the full "beautify" pipeline. Deterministic for identical inputs.
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
@@ -83,6 +83,7 @@ public enum Compositor {
         let base = (region ?? imageBounds).integral
         let expanded = expandedRegion(base: base, annotations: annotations)
         var content = source
+        var foreground: AnnotationRenderer.Foreground?
         var contentRegion = imageBounds
         var overflow = FrameInsets.zero
         if expanded != base {
@@ -103,13 +104,15 @@ public enum Compositor {
             guard let baked = bake(bakeSource, bakeAnnotations, bakeRegion, .clear) else {
                 throw RenderError.annotationsNotApplied
             }
-            content = underlay(border?.color ?? .clear, in: fillBase, of: bakeRegion, beneath: baked)
+            content = underlay(border?.color ?? .clear, in: fillBase, of: bakeRegion, beneath: baked.base)
+            foreground = baked.foreground
             contentRegion = base
             overflow = FrameInsets(top: base.minY - expanded.minY, left: base.minX - expanded.minX,
                                    bottom: expanded.maxY - base.maxY, right: expanded.maxX - base.maxX)
         } else if region != nil || !annotations.isEmpty {
             if let baked = bake(source, annotations, region, border?.color ?? .clear) {
-                content = baked
+                content = baked.base
+                foreground = baked.foreground
                 contentRegion = base
             } else if !annotations.isEmpty {
                 // Fail closed: never fall back to the source when annotations (e.g. redactions) exist.
@@ -131,6 +134,7 @@ public enum Compositor {
                             backingScale: backingScale, overflow: overflow)
         let W = Int(layout.canvasSize.width), H = Int(layout.canvasSize.height)
         guard let ctx = GlintBitmap.makeContext(width: W, height: H) else {
+            if foreground != nil { throw RenderError.annotationsNotApplied }
             return RenderResult(image: content, layout: layout, border: border, region: contentRegion)
         }
         let k = layout.factor
@@ -146,20 +150,30 @@ public enum Compositor {
 
         // 5. card (+shadow), optionally tilted
         if settings.tilt.isFlat {
-            drawCard(in: ctx, content: content, layout: layout, settings: settings, insetColor: insetApplied ? insetColor : nil)
+            drawCard(in: ctx, content: content, foreground: foreground, layout: layout, settings: settings,
+                     insetColor: insetApplied ? insetColor : nil)
         } else if let layer = GlintBitmap.makeContext(width: W, height: H) {
-            drawCard(in: layer, content: content, layout: layout, settings: settings, insetColor: insetApplied ? insetColor : nil)
+            drawCard(in: layer, content: content, foreground: foreground, layout: layout, settings: settings,
+                     insetColor: insetApplied ? insetColor : nil)
             if let flat = layer.makeImage(), let tilted = perspective(flat, tilt: settings.tilt) {
                 ctx.draw(tilted, in: CGRect(x: 0, y: 0, width: W, height: H))
             } else if let flat = layer.makeImage() {
                 ctx.draw(flat, in: CGRect(x: 0, y: 0, width: W, height: H))
+            } else if foreground != nil {
+                throw RenderError.annotationsNotApplied
             }
+        } else if foreground != nil {
+            throw RenderError.annotationsNotApplied
         }
 
         // 6. watermark
         if settings.watermark.enabled { drawWatermark(settings.watermark, in: ctx, canvas: layout.canvasSize, factor: k) }
 
-        return RenderResult(image: ctx.makeImage() ?? content, layout: layout, border: border, region: contentRegion)
+        guard let rendered = ctx.makeImage() else {
+            if foreground != nil { throw RenderError.annotationsNotApplied }
+            return RenderResult(image: content, layout: layout, border: border, region: contentRegion)
+        }
+        return RenderResult(image: rendered, layout: layout, border: border, region: contentRegion)
     }
 
     /// Longest side, and largest area, in pixels the magnifier overflow may grow the content to (unless `base` is
@@ -283,7 +297,8 @@ public enum Compositor {
         CGRect(x: r.minX, y: canvasHeight - r.maxY, width: r.width, height: r.height)
     }
 
-    private static func drawCard(in ctx: CGContext, content: CGImage, layout: RenderLayout, settings: RenderSettings,
+    private static func drawCard(in ctx: CGContext, content: CGImage, foreground: AnnotationRenderer.Foreground?,
+                                 layout: RenderLayout, settings: RenderSettings,
                                  insetColor: RGBAColor?) {
         let H = layout.canvasSize.height, k = layout.factor
         let card = toBL(layout.cardRect, canvasHeight: H)
@@ -348,6 +363,9 @@ public enum Compositor {
             ctx.draw(content, in: overflow)
             ctx.restoreGState()
         }
+
+        foreground?.draw(in: ctx, rect: toBL(layout.overflowRect, canvasHeight: H), rotation: settings.rotation,
+                         flipH: settings.flipHorizontal, flipV: settings.flipVertical)
     }
 
     // MARK: Tilt

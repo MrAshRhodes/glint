@@ -390,6 +390,157 @@ struct MagnifierExpansionTests {
         #expect(try #require(PixelBuffer(r.image)).data == #require(PixelBuffer(reference.image)).data)
     }
 
+    @Test(arguments: [WindowFrameKind.none, .macOS, .retro, .arcade, .terminal, .phone],
+          MagnifierShape.allCases)
+    func insetFloatsAboveFrameCornersEffectsAndBorder(frame: WindowFrameKind, shape: MagnifierShape) throws {
+        var s = settings(frame: frame)
+        s.border.enabled = true
+        s.border.width = 12
+        s.border.color = .white
+        let inset = CGRect(x: -25, y: -25, width: 80, height: 80)
+        let m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: inset, shape: shape, outline: false, connector: false)
+        let result = try Compositor.renderDetailed(image: Scene.image(), settings: s, annotations: [m])
+        for p in [CGPoint(x: 1, y: 1), CGPoint(x: 5, y: -15), CGPoint(x: -15, y: 5)] {
+            let pixel = px(result.image, output(p, result))
+            #expect(pixel.r >= 250 && pixel.g <= 2 && pixel.b <= 2, "cut-in obscured at \(p), frame \(frame)")
+        }
+        #expect(isCyan(px(result.image, output(CGPoint(x: inset.minX + 1, y: inset.midY), result))))
+    }
+
+    @Test(arguments: [false, true])
+    func screenEffectsDoNotCoverFlatOrTiltedInsets(tilted: Bool) throws {
+        var s = settings(frame: .retro)
+        s.border.enabled = true
+        s.border.width = 12
+        s.border.color = .white
+        if tilted { s.tilt = Tilt(x: 10, y: -12) }
+        let m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: CGRect(x: 100, y: 20, width: 70, height: 70),
+                                shape: .rectangle, outline: false, connector: false)
+        let result = try Compositor.render(image: Scene.image(), settings: s, annotations: [m])
+        let pixels = try #require(PixelBuffer(result))
+        var pureRed = 0
+        for y in 0..<result.height { for x in 0..<result.width {
+            let (r, g, b, _) = pixels.pixel(x, y)
+            if r >= 250 && g <= 2 && b <= 2 { pureRed += 1 }
+        } }
+        // The original red source is only 100 pixels; the undecorated lens supplies thousands more.
+        #expect(pureRed > 2500)
+    }
+
+    @Test(arguments: [false, true])
+    func annotationsKeepTheirOrderOverInset(above: Bool) throws {
+        let inset = CGRect(x: 100, y: 20, width: 70, height: 70)
+        let m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: inset, shape: .rectangle, outline: false, connector: false, z: 1)
+        let mark = Annotation(z: above ? 2 : 0, kind: .rectangle(CGRect(x: 120, y: 40, width: 30, height: 30)),
+                              style: AnnotationStyle(color: Scene.blue, fill: Scene.blue, strokeWidth: 0))
+        let result = try Compositor.renderDetailed(image: Scene.image(), settings: settings(frame: .retro),
+                                                   annotations: [mark, m])
+        let pixel = px(result.image, output(CGPoint(x: 135, y: 55), result))
+        #expect(above ? isBlue(pixel) : isRed(pixel))
+    }
+
+    @Test(arguments: [false, true])
+    func floatingLensNeverRestoresRedactedPixels(pixelate: Bool) throws {
+        let source = CGRect(x: 40, y: 40, width: 10, height: 10)
+        let m = Scene.magnifier(source: source, inset: CGRect(x: -25, y: -25, width: 80, height: 80),
+                                shape: .rectangle, outline: false, connector: false)
+        let mask = Annotation(z: 2, kind: pixelate ? .pixelate(source) : .redact(source),
+                              style: AnnotationStyle(color: .black))
+        var s = settings(frame: .phone)
+        s.border.enabled = true
+        s.border.width = 12
+        let red = try Compositor.render(image: Scene.image(secret: Scene.red), settings: s, annotations: [m, mask])
+        let green = try Compositor.render(image: Scene.image(secret: Scene.green), settings: s, annotations: [m, mask])
+        #expect(try #require(PixelBuffer(red)).data == #require(PixelBuffer(green)).data)
+    }
+
+    @Test(arguments: [0.5, 1.0])
+    func translucentAnnotationsOverTransparentInsetsAreDrawnOnce(opacity: Double) throws {
+        var m = Scene.magnifier(source: CGRect(x: -20, y: 30, width: 40, height: 40),
+                                inset: CGRect(x: 100, y: 20, width: 80, height: 80),
+                                shape: .rectangle, outline: false, connector: false)
+        m.style.opacity = opacity
+        let mark = Annotation(z: 1, kind: .rectangle(CGRect(x: 105, y: 25, width: 70, height: 70)),
+                              style: AnnotationStyle(color: Scene.blue, fill: Scene.blue, strokeWidth: 0, opacity: 0.5))
+        let annotations = [m, mark]
+        let source = Scene.image()
+        let baked = try #require(AnnotationRenderer.bake(source: source, annotations: annotations))
+        let result = try Compositor.renderDetailed(image: source, settings: settings(), annotations: annotations)
+        for p in [CGPoint(x: 120, y: 55), CGPoint(x: 160, y: 55)] {
+            #expect(px(result.image, output(p, result)) == px(baked, p))
+        }
+    }
+
+    @Test func highlighterBlendsAgainstScreenshotAndInsetOnce() throws {
+        let m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: CGRect(x: 110, y: 20, width: 70, height: 70),
+                                shape: .rectangle, outline: false, connector: false)
+        let mark = Annotation(z: 1, kind: .highlighter([CGPoint(x: 80, y: 55), CGPoint(x: 165, y: 55)]),
+                              style: AnnotationStyle(color: Scene.yellow, strokeWidth: 15))
+        let annotations = [m, mark]
+        let source = Scene.image()
+        let baked = try #require(AnnotationRenderer.bake(source: source, annotations: annotations))
+        let result = try Compositor.renderDetailed(image: source, settings: settings(), annotations: annotations)
+        for p in [CGPoint(x: 90, y: 55), CGPoint(x: 145, y: 55)] {
+            #expect(px(result.image, output(p, result)) == px(baked, p))
+        }
+    }
+
+    @Test func redactionAboveInsetCoversEveryAntialiasedEdgePixel() throws {
+        let inset = CGRect(x: 100, y: 10, width: 80, height: 80)
+        var m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: inset, outline: false, connector: false)
+        m.style.strokeWidth = 0
+        let mask = Annotation(z: 1, kind: .redact(inset.insetBy(dx: -2, dy: -2)),
+                              style: AnnotationStyle(color: .black))
+        let result = try Compositor.renderDetailed(image: Scene.image(), settings: settings(frame: .retro),
+                                                   annotations: [m, mask])
+        for y in 10..<90 { for x in 100..<180 {
+            #expect(isBlack(px(result.image, output(CGPoint(x: x, y: y), result))))
+        } }
+    }
+
+    @Test func higherAnnotationsCoverSourceOutlineAndConnector() throws {
+        let m = Scene.magnifier(inset: CGRect(x: 110, y: 20, width: 70, height: 70))
+        let mark = Annotation(z: 1, kind: .rectangle(CGRect(x: 20, y: 20, width: 85, height: 65)),
+                              style: AnnotationStyle(color: Scene.blue, fill: Scene.blue, strokeWidth: 0))
+        let source = Scene.image()
+        let baked = try #require(AnnotationRenderer.bake(source: source, annotations: [m, mark]))
+        let result = try Compositor.renderDetailed(image: source, settings: settings(frame: .retro),
+                                                   annotations: [m, mark])
+        for p in [CGPoint(x: 30, y: 50), CGPoint(x: 85, y: 52)] {
+            #expect(isBlue(px(baked, p)))
+            #expect(px(result.image, output(p, result)) == px(baked, p))
+        }
+    }
+
+    @Test(arguments: [0.5, 1.5, 2.0])
+    func floatingInsetUsesOutputScale(scale: Double) throws {
+        var s = settings(frame: .phone)
+        s.outputScale = scale
+        let inset = CGRect(x: -25, y: -25, width: 80, height: 80)
+        let m = Scene.magnifier(source: CGRect(x: 40, y: 40, width: 10, height: 10),
+                                inset: inset, shape: .rectangle, outline: false, connector: false)
+        let result = try Compositor.renderDetailed(image: Scene.image(), settings: s, annotations: [m])
+        let center = CGPoint(x: result.layout.contentRect.minX + inset.midX * scale,
+                             y: result.layout.contentRect.minY + inset.midY * scale)
+        #expect(isRed(px(result.image, center)))
+    }
+
+    @Test func noMagnifiersKeepLegacyAnnotationPixels() throws {
+        let annotations = [Annotation(kind: .rectangle(CGRect(x: 110, y: 20, width: 50, height: 50)),
+                                      style: AnnotationStyle(color: Scene.blue, fill: Scene.blue, opacity: 0.5))]
+        let source = Scene.image()
+        let baked = try #require(AnnotationRenderer.bake(source: source, annotations: annotations))
+        let s = settings(frame: .retro)
+        let reference = try Compositor.render(image: baked, settings: s)
+        let result = try Compositor.render(image: source, settings: s, annotations: annotations)
+        #expect(try #require(PixelBuffer(result)).data == #require(PixelBuffer(reference)).data)
+    }
+
     @Test func onlyMagnifiersExpand() throws {
         let image = Scene.image()
         let arrow = Annotation(kind: .arrow(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 500, y: 300)))

@@ -54,7 +54,7 @@ Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + bord
 Compositor.layout(contentSize:insetApplied:settings:backingScale:overflow:) -> RenderLayout // canvas/card/screen/content/overflow rects (px, top-left); overflow defaults to none
 ```
 Pipeline: auto-balance crop → annotations baked into content (Solid and Pixelate replace covered pixels) → rotate/flip →
-inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → tilt → watermark.
+inset band → window frame → rounded card + two-layer shadow → background → aspect-ratio fit → floating zoom cut-ins → tilt → watermark.
 `RenderLayout.screenRect` is the content plus its inset band; the frame's insets surround it inside `cardRect`,
 so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
 deterministically by the compositor, so the editor preview and exports show the same frame.
@@ -64,7 +64,11 @@ baked content grows to include it; the auto-balance fill applies only inside the
 transparent. The card (inset band, frame, rounded corners, shadow, border) still wraps only the base content,
 and the overflow floats over the background, with padding applied around both. `contentRect` keeps marking the
 base content; `RenderLayout.overflowRect` is where the expanded content is drawn (equal to `contentRect` when
-nothing overflows, in which case output is unchanged). `RenderResult.region` is the base region in image pixels,
+nothing overflows). Zoom cut-ins, their borders, outlines and connectors are composited above frame chrome,
+screen effects, card corners and borders, even inside the card. Annotations ordered above a cut-in remain
+visible over its inset. The first cut-in and all higher-z annotations form an ordered foreground above the frame;
+lower-z annotations remain part of the screenshot. Redactions also replace their source pixels before the
+frame is drawn. `RenderResult.region` is the base region in image pixels,
 for mapping editor coordinates onto `contentRect`. Rotation, flips and tilt carry the overflow with the card.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
