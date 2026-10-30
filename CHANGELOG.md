@@ -8,6 +8,12 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-10-30
+
+### Fixed
+
+- Zoom cut-ins now float above window frames, screen effects, rounded corners and borders in both the editor preview and exported images, including when the card is tilted. Annotations above a cut-in stay visible and magnified content still respects redactions. ([#70])
+
 ## [1.5.4] - 2026-10-30
 
 ### Changed
@@ -201,7 +207,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/MrAshRhodes/glint/compare/v1.5.1...v1.5.2
@@ -241,3 +248,4 @@ First public release.
 [#61]: https://github.com/MrAshRhodes/glint/issues/61
 [#63]: https://github.com/MrAshRhodes/glint/issues/63
 [#65]: https://github.com/MrAshRhodes/glint/issues/65
+[#70]: https://github.com/MrAshRhodes/glint/issues/70
