@@ -36,14 +36,16 @@ jobs:
       - name: Test the product site
         run: node --test .github/scripts/site.test.cjs
 
+      - name: Test release failure gates
+        run: node --test .github/scripts/notarize.test.cjs
+
       - name: Check the changelog
         run: |
           node --test .github/scripts/changelog.test.cjs
           node .github/scripts/changelog.cjs check
 
-      # Releases are signed with one persistent certificate so that macOS keeps Screen Recording
-      # permission across updates (#39). The next steps prove it with a throwaway certificate:
-      # Glint.app is built and signed the way a release is, then rebuilt with another build
+      # Check signing continuity without exposing Developer ID credentials to pull requests.
+      # Glint.app is signed with a throwaway certificate, then rebuilt with another build
       # number; the rebuild must have a new cdhash yet satisfy the first build's designated
       # requirement (and ad-hoc copies of the same builds must not).
       - name: Create a throwaway signing certificate

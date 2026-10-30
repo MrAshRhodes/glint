@@ -27,9 +27,9 @@
 #                         (see Scripts/swiftw.sh).
 #
 # macOS keys privacy permissions such as Screen Recording to the app's designated requirement.
-# Releases are signed with the persistent "Glint Release Signing" certificate
-# (Scripts/make_signing_cert.sh, packaging/signing/README.md), whose requirement every later
-# release satisfies, so permissions survive updates. Local builds are signed ad-hoc unless
+# Releases use Apple Developer ID (packaging/signing/README.md), with a team-based requirement
+# that survives certificate renewal. The migration from self-signed releases needs a one-time
+# permission re-grant. Local builds are signed ad-hoc unless
 # GLINT_SIGN_IDENTITY is set; an ad-hoc requirement pins one build's cdhash, so permissions have
 # to be granted again after every rebuild.
 
@@ -59,7 +59,7 @@ Usage: Scripts/build_app.sh [--universal] [--require-universal] [--version X.Y.Z
                             [--build-number N] [--configuration release|debug]
 
 Builds the Glint SwiftPM product and assembles dist/Glint.app, signed ad-hoc unless
-GLINT_SIGN_IDENTITY names a certificate (releases use "Glint Release Signing").
+GLINT_SIGN_IDENTITY names a certificate (releases use Developer ID Application).
 
   --universal           arm64 + x86_64 slices merged with lipo (falls back to arm64 only
                         if the x86_64 build fails)

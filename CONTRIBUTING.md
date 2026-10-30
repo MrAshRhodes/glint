@@ -28,7 +28,7 @@ make run        # assemble dist/Glint.app and open it
 | `make zip` / `make dmg` | Release packaging into `dist/`: a universal build, the archive and its `.sha256`. |
 | `make tap` | Renders the Homebrew cask to `dist/glint.rb`. |
 | `make prepare-release VERSION=X.Y.Z` | Writes `VERSION` and moves the changelog's Unreleased entries into a dated `X.Y.Z` section, updating the comparison links. |
-| `make signing-cert` | One-time maintainer setup of the persistent release signing certificate. See [Release signing](#release-signing). |
+| `make signing-cert` | Create a throwaway self-signed certificate for local/CI tests, never release credentials. See [Release signing](#release-signing). |
 | `make icon` | Redraws `Resources/AppIcon.icns` and `docs/assets/icon-1024.png`. |
 | `make clean` | Removes `.build` and `dist`. |
 
@@ -252,11 +252,13 @@ Run `node --test .github/scripts/site.test.cjs` (Node.js 20+) for asset/link int
 
 `make zip` and `make dmg` (or `Scripts/package_release.sh --version X.Y.Z`) build a universal app and write to `dist/`: `Glint-<version>.zip`, `Glint-<version>.dmg`, a `.sha256` file for each, and the Homebrew cask `glint.rb`. If the x86_64 slice cannot be built, `Scripts/build_app.sh --universal` falls back to arm64 only and says so; pass `--require-universal` to make that an error. The release workflow does.
 
+These default local packages are not notarized and must not be published as releases. With Developer ID and notarization credentials configured, pass `--notarize --require-universal`; see the [signing and notarization guide](packaging/signing/README.md#local-packaging-and-verification).
+
 ### Cutting a release
 
 1. On a branch from `main`, run `make prepare-release VERSION=X.Y.Z`. It moves the Unreleased entries in the [changelog](CHANGELOG.md) into a new `## [X.Y.Z] - YYYY-MM-DD` section dated today, leaves an empty Unreleased section, updates the version comparison links and writes `VERSION`. It refuses an empty Unreleased section, an existing version or a version older than the latest release. Review the result (adjust the date if the release happens on another day), open the usual issue-linked pull request, merge it to `main` and wait for CI to pass. CI runs `node .github/scripts/changelog.cjs check`, which validates the sections, dates, ordering and links.
 2. Tag the merged commit and push the tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
-3. `.github/workflows/release.yml` first checks that `CHANGELOG.md` at the tag has a `## [1.2.3]` section and stops before building if it does not; to recover, delete the tag (`git push origin :refs/tags/v1.2.3 && git tag -d v1.2.3`), complete step 1 and tag again. It then builds the universal app, signed with the release certificate (see [Release signing](#release-signing)), creates the GitHub release with that changelog section followed by `.github/release-notes-header.md` as its notes, and attaches the zip, the dmg and their checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases, use the Unreleased entries as notes when they have no section of their own, and do not touch the Homebrew tap. Preview the notes with `node .github/scripts/changelog.cjs notes 1.2.3`.
+3. `.github/workflows/release.yml` first checks that `CHANGELOG.md` at the tag has a `## [1.2.3]` section and stops before building if it does not; to recover, delete the tag (`git push origin :refs/tags/v1.2.3 && git tag -d v1.2.3`), complete step 1 and tag again. It then builds the universal app, signs it with Apple Developer ID, notarizes and staples the app and DMG (see [Release signing](#release-signing)), and verifies the stapled app inside the ZIP. Only then does it create the GitHub release with that changelog section followed by `.github/release-notes-header.md` as its notes and attach the zip, the dmg and their final checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases, use the Unreleased entries as notes when they have no section of their own, and do not touch the Homebrew tap. Preview the notes with `node .github/scripts/changelog.cjs notes 1.2.3`.
 4. Update the tap. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow does it. Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
 
 Published releases are immutable. The cask pins the sha256 of the release zip, and every build differs byte for byte, so replacing an asset would break `brew install` for everyone. The workflow therefore never overwrites an existing release: a re-run only retries the tap update, and `--from-release` always hashes the zip that is actually published. To rebuild a broken release, delete the release and its tag first, or cut a new version.
@@ -269,42 +271,37 @@ Updates are manual: users quit Glint, run `brew update && brew upgrade --cask gl
 
 - Preview what a release would publish: `Scripts/update_tap.sh --version X.Y.Z --from-release --dry-run`. It prints the cask and diffs it against the tap without changing anything.
 - Create the tap repository the first time (needs `gh auth login`): `Scripts/update_tap.sh --create`.
-- The cask removes the quarantine flag in a `postflight_steps` block, because the app is not notarized. That skips Gatekeeper's check for this one app, which is why the cask caveats say so. Remove the block from the template if you would rather have users clear the flag themselves.
+- The cask preserves quarantine and Gatekeeper checks. Publish only Developer ID-signed, notarized artifacts; never restore a quarantine-removal workaround.
 
 ### Signing and permissions
 
-macOS ties the Screen Recording permission to the app's code signature, specifically its designated requirement. For an ad-hoc signature (`codesign --sign -`) that requirement is the build's own hash, so every rebuild looks like a different app: the old grant stops applying, even if Glint still looks switched on in System Settings ([#39](https://github.com/MrAshRhodes/glint/issues/39)). With a certificate, the requirement names the bundle identifier and the certificate, which every later build signed with the same certificate satisfies.
+macOS ties the Screen Recording permission to the app's code signature, specifically its designated requirement. For an ad-hoc signature (`codesign --sign -`) that requirement is the build's own hash, so every rebuild looks like a different app: the old grant stops applying, even if Glint still looks switched on in System Settings ([#39](https://github.com/MrAshRhodes/glint/issues/39)). Developer ID builds instead use the Apple trust chain, team identifier and bundle identifier, allowing later builds to satisfy the same requirement.
 
 - Local builds are signed ad-hoc by default, so after rebuilding you may have to grant the permission again: choose **Re-authorize Screen Recording…** in Preferences → About, or run `tccutil reset ScreenCapture io.github.mrashrhodes.glint`, then switch Glint on when macOS asks and relaunch. To avoid this, set `GLINT_SIGN_IDENTITY` to a code-signing identity of your own, for example a self-signed one created in Keychain Access. Switching between your build and an installed release still needs a re-grant, because they are signed with different certificates.
-- Releases are signed with the persistent **Glint Release Signing** certificate; see [Release signing](#release-signing). Set `GLINT_REQUIRE_STABLE_SIGNATURE=1` to make a build or package fail instead of producing an ad-hoc signature.
-- With an Apple Developer ID certificate, set `GLINT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"` and the build also enables the hardened runtime and a secure timestamp. Notarization is not scripted.
-- Before installing or updating a downloaded build, follow the [manual-download verification steps](README.md#install) using the ZIP or DMG and its matching `.sha256` file from the same official release. Continue only when verification succeeds and reports `OK`; otherwise stop without installing or clearing quarantine. If you trust the verified release and Gatekeeper blocks its first launch, clear the quarantine flag once: `xattr -dr com.apple.quarantine /Applications/Glint.app`. This bypasses the app's Gatekeeper quarantine check; do not ignore a malware warning.
+- The release pipeline requires **Developer ID Application** signing, hardened runtime and a secure timestamp. `GLINT_REQUIRE_STABLE_SIGNATURE=1` also prevents local builds or packages from using ad-hoc signing.
+- `Scripts/package_release.sh --notarize` requires Glint's Developer ID identity and configured notarization credentials, and fails unless the final artifacts pass ticket validation and Gatekeeper assessment. See [Release signing](#release-signing).
+- Before installing or updating a downloaded build, follow the [manual-download verification steps](README.md#install) using the ZIP or DMG and its matching `.sha256` file from the same official release. Continue only when verification succeeds and reports `OK`; otherwise stop without installing or clearing quarantine. If Gatekeeper rejects the app, stop and investigate rather than bypassing the warning.
 
 ### Release signing
 
-Releases are signed with one persistent, self-signed code-signing certificate named **Glint Release Signing**. Every release then has the same designated requirement, `identifier "io.github.mrashrhodes.glint" and certificate leaf = H"<certificate SHA-1>"`, so macOS keeps Screen Recording permission across updates. It is not an Apple Developer ID: releases are still not notarized, and Gatekeeper behaves as before.
+Glint uses Developer ID signing and notarization for direct GitHub/Homebrew distribution, not the Mac App Store. Follow the [maintainer signing guide](packaging/signing/README.md) for certificate setup, encrypted backup and recovery, the notarization API key, local packaging, and the five secrets in the protected GitHub **release** environment.
 
-One-time maintainer setup:
+The tag workflow requires the public Apple team and bundle requirements in `packaging/signing/`, notarizes and staples the app and DMG, verifies the app extracted from the ZIP, and generates checksums after stapling. Missing credentials, an invalid signature, incomplete notarization or Gatekeeper rejection stops publication. There is no unsigned or self-signed fallback. Temporary signing and notarization credentials are cleaned up even on failure.
 
-1. Run `make signing-cert` (`Scripts/make_signing_cert.sh`). It creates the certificate and its `.p12` in `~/.glint-signing`, outside the repository, writes the expected requirement to `packaging/signing/designated-requirement.txt`, and prints the `gh secret set` commands for the repository secrets `GLINT_SIGNING_P12_BASE64` and `GLINT_SIGNING_P12_PASSWORD`. Run the script with `--set-github-secrets` to set them for you.
-2. Commit `packaging/signing/designated-requirement.txt` through the usual issue-linked pull request.
-3. Back up the `.p12` and its password somewhere safe, such as a password manager. A lost certificate cannot be recreated.
+Pull-request CI uses `make signing-cert` only to create a throwaway **test** identity outside the repository. `Scripts/check_signing_continuity.sh` verifies that a rebuilt app satisfies the previous build's requirement without exposing production credentials; it does not prove end-user TCC behavior. The helper cannot overwrite production requirements.
 
-How releases use it:
-
-- The release workflow imports the identity from the secrets (`Scripts/import_signing_identity.sh`), signs the app with it and checks the result with `Scripts/verify_signature.sh` against the pinned `packaging/signing/designated-requirement.txt`. A different certificate fails the release instead of silently resetting everyone's permission.
-- CI checks continuity on every change: `Scripts/check_signing_continuity.sh` builds the app twice with a throwaway certificate and verifies that the second build satisfies the first build's designated requirement.
-- Without the signing secrets, the workflow refuses to publish an ad-hoc build. Setting the repository variable `GLINT_ALLOW_ADHOC_RELEASE` to `true` allows one as a last resort, but every user who installs it has to grant Screen Recording again, and users who re-grant it there must grant once more on the next certificate-signed release.
-- Losing or rotating the certificate changes the requirement, so every user grants Screen Recording once more after the next update. To rotate deliberately, run `Scripts/make_signing_cert.sh --force`, then update both secrets and commit the new `packaging/signing/designated-requirement.txt` in the same pull request, and call out the one-time re-grant in the changelog. Moving to an Apple Developer ID later works the same way (one more re-grant), but adds notarization.
+The first Developer ID update from 1.5.3 or earlier needs one Screen Recording re-grant because the legacy signing requirement changes. Subsequent same-team Developer ID updates should preserve the grant. Before renewing the certificate, verify the new build against the previous released app's actual requirement and perform the [manual upgrade checks](packaging/signing/README.md#permissions-renewal-and-tests). Never rotate production identity by running the test certificate helper.
 
 ### Environment variables
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
 | `VERSION`, `CONFIG`, `INSTALL_DIR` | `make` | Release version, `release` or `debug`, install location. |
-| `GLINT_SIGN_IDENTITY` | `build_app.sh`, `package_release.sh` | Code signing identity (default `-`, ad-hoc). Releases use `Glint Release Signing`. |
+| `GLINT_SIGN_IDENTITY` | `build_app.sh`, `package_release.sh` | Code signing identity (default `-`, ad-hoc). Releases require Glint's Developer ID Application identity. |
 | `GLINT_REQUIRE_STABLE_SIGNATURE` | `build_app.sh`, `package_release.sh` | `1` fails the build or package when the app would be signed ad-hoc. |
-| `GLINT_ALLOW_ADHOC_RELEASE` | release workflow (repository variable) | `true` lets a release be published without the signing certificate. See [Release signing](#release-signing). |
+| `GLINT_REQUIREMENT_FILE` | signing verification | Test requirement override; cannot replace the Apple policy enforced by `--require-developer-id` or `--require-notarized`. |
+| `GLINT_NOTARY_PROFILE`, `GLINT_NOTARY_KEYCHAIN` | `notarize.sh` | Stored notarytool Keychain profile and optional keychain path. |
+| `GLINT_NOTARY_KEY_PATH`, `GLINT_NOTARY_KEY_ID`, `GLINT_NOTARY_ISSUER_ID` | `notarize.sh` | Team API private-key path, key ID and issuer ID; all required when no profile is set. CI decodes the key from its environment secret. |
 | `SWIFTW_MODE`, `SWIFTW_BUILD_SYSTEM`, `SWIFTW_VERBOSE` | `swiftw.sh` and everything that calls it | See [Command Line Tools only](#command-line-tools-only). `build_app.sh` defaults the build system to `native`. |
 | `TAP_GITHUB_TOKEN` | `update_tap.sh` | Token used to push to the tap (default: your `gh` login). |
 

@@ -4,11 +4,11 @@
 #   VERSION      app/release version         (default: contents of the VERSION file)
 #   CONFIG       release | debug for app/universal/run/install   (default: release)
 #   INSTALL_DIR  where `make install` copies Glint.app           (default: /Applications)
-#   SIGNING_ARGS extra options for `make signing-cert`, e.g. SIGNING_ARGS=--set-github-secrets
+#   SIGNING_ARGS extra options for `make signing-cert`, e.g. SIGNING_ARGS=--force
 #
 # Local builds are signed ad-hoc, so macOS asks for Screen Recording again after every rebuild.
 # Set GLINT_SIGN_IDENTITY to a code-signing identity to keep the grant; releases are signed with
-# the persistent "Glint Release Signing" certificate (see packaging/signing/README.md).
+# Apple Developer ID and notarized (see packaging/signing/README.md).
 #
 # SwiftPM is run through Scripts/swiftw.sh, which adds what a Command Line Tools-only
 # machine needs. The SWIFTW_* environment variables it reads are documented there.
@@ -77,7 +77,7 @@ prepare-release: ## Set VERSION and move Unreleased changelog entries under it (
 	node .github/scripts/changelog.cjs release "$(VERSION)"
 	printf '%s\n' "$(VERSION)" > VERSION
 
-signing-cert: ## Create the release signing certificate, once (Scripts/make_signing_cert.sh)
+signing-cert: ## Create a self-signed TEST certificate, never release credentials
 	Scripts/make_signing_cert.sh $(SIGNING_ARGS)
 
 clean: ## Remove .build and dist

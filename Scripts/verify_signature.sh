@@ -31,12 +31,14 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: Scripts/verify_signature.sh path/to/Glint.app [--require-stable] [--requirement-file PATH]
+Usage: Scripts/verify_signature.sh path/to/Glint.app [--require-stable|--require-developer-id|--require-notarized] [--requirement-file PATH]
 
 Verifies the code signature of Glint.app and prints its designated requirement.
 
   --require-stable          fail if the app is signed ad-hoc (its requirement pins a cdhash, so
                             macOS drops Screen Recording permission on every update)
+  --require-developer-id    require Glint's Apple Developer ID, hardened runtime and timestamp
+  --require-notarized       also validate the stapled ticket and Gatekeeper assessment
   --requirement-file PATH   also require the designated requirement in PATH (default:
                             $GLINT_REQUIREMENT_FILE, else packaging/signing/designated-requirement.txt
                             when it exists and --require-stable is given)
@@ -45,11 +47,15 @@ EOF
 
 APP=""
 REQUIRE_STABLE=0
+REQUIRE_DEVELOPER_ID=0
+REQUIRE_NOTARIZED=0
 REQ_FILE="${GLINT_REQUIREMENT_FILE:-}"
 
 while (($#)); do
   case "$1" in
     --require-stable) REQUIRE_STABLE=1 ;;
+    --require-developer-id) REQUIRE_STABLE=1; REQUIRE_DEVELOPER_ID=1 ;;
+    --require-notarized) REQUIRE_STABLE=1; REQUIRE_DEVELOPER_ID=1; REQUIRE_NOTARIZED=1 ;;
     --requirement-file)
       REQ_FILE="${2:?--requirement-file needs a value}"
       shift
@@ -108,7 +114,21 @@ fi
 
 if ((REQUIRE_STABLE)); then
   if ((adhoc)); then
-    fail "$APP is signed ad-hoc: its designated requirement pins this exact build, so macOS would drop Screen Recording permission on every update (#39). Sign it with the persistent \"Glint Release Signing\" identity (GLINT_SIGN_IDENTITY; see packaging/signing/README.md)."
+    fail "$APP is signed ad-hoc: sign releases with Developer ID (GLINT_SIGN_IDENTITY; see packaging/signing/README.md)."
+  fi
+
+  if ((REQUIRE_DEVELOPER_ID)); then
+    codesign --verify --deep --strict -R="$(cat "$ROOT/packaging/signing/developer-id-requirement.txt")" "$APP" \
+      || fail "$APP is not signed with Glint's Apple Developer ID"
+    [[ "$(field Identifier)" == io.github.mrashrhodes.glint ]] || fail "unexpected bundle identifier"
+    archs="$(lipo -archs "$APP/Contents/MacOS/Glint")" || fail "cannot read executable architectures"
+    [[ -n "$archs" ]] || fail "the executable has no architectures"
+    for arch in $archs; do
+      arch_details="$(codesign --display --arch "$arch" --verbose=4 "$APP" 2>&1)"
+      grep -q '^CodeDirectory .*flags=.*runtime' <<<"$arch_details" || fail "$arch is missing the hardened runtime"
+      grep -q '^Timestamp=.' <<<"$arch_details" || fail "$arch is missing a secure timestamp"
+    done
+    REQ_FILE="$DEFAULT_REQ_FILE"
   fi
   if [[ "$flags" != *runtime* ]]; then
     warn "$APP is not signed with the hardened runtime"
@@ -123,16 +143,22 @@ if [[ -n "$REQ_FILE" ]]; then
   expected="$(sed -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$REQ_FILE")"
   [[ -n "$expected" ]] || fail "$REQ_FILE is empty"
   if ! codesign --verify --deep --strict -R="$expected" "$APP"; then
-    fail "$APP does not satisfy the designated requirement in ${REQ_FILE#"$ROOT"/} ($expected). It was signed with a different certificate, so every user would have to re-grant Screen Recording after updating. Sign with the original \"Glint Release Signing\" certificate (secrets GLINT_SIGNING_P12_BASE64 / GLINT_SIGNING_P12_PASSWORD). If rotating the certificate is intentional, regenerate the file with Scripts/make_signing_cert.sh --force and warn users in the release notes."
+    fail "$APP does not satisfy ${REQ_FILE#"$ROOT"/}. Use the intended signing identity; do not replace the production requirement with a self-signed test certificate."
   fi
   log "Satisfies the designated requirement in ${REQ_FILE#"$ROOT"/}"
 elif ((REQUIRE_STABLE)); then
-  msg="No ${DEFAULT_REQ_FILE#"$ROOT"/}: cannot check that this build keeps the permissions granted to earlier releases. Commit the file written by Scripts/make_signing_cert.sh."
+  msg="No ${DEFAULT_REQ_FILE#"$ROOT"/}: cannot check signing continuity."
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     printf '::warning title=Code signature::%s\n' "$msg"
   else
     warn "$msg"
   fi
+
+fi
+
+if ((REQUIRE_NOTARIZED)); then
+  xcrun stapler validate "$APP" || fail "$APP has no valid stapled notarization ticket"
+  spctl --assess --type execute --verbose=2 "$APP" || fail "$APP failed Gatekeeper assessment"
 fi
 
 if ((REQUIRE_STABLE)); then
