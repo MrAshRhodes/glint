@@ -53,17 +53,21 @@ Requires macOS 14 or later. On first launch grant **Screen Recording** permissio
 
 ## Updates
 
-Glint does **not** automatically download or install updates. **Check for Updates…** in the menu bar (also in Preferences → About) checks GitHub for a newer release and explains how to install it.
+Direct downloads released after **1.5.5** can update themselves with [Sparkle](https://sparkle-project.org). A copy installed with Homebrew is left to Homebrew. Glint never downloads or installs an update without asking first.
 
-For a Homebrew installation, save your work, quit Glint, then run:
+- **Check by hand:** choose **Check for Updates…** from the menu bar menu or the app menu, or **Check Now** in Preferences → About. If a newer release exists, Glint shows what changed and asks before it downloads the update, then again before it installs it and relaunches.
+- **Check on a schedule (optional):** automatic checks are **off** by default, so a new installation contacts nothing until you check by hand. To turn them on, pick **Daily**, **Weekly** or **Monthly** under **Check for updates automatically** in Preferences → About; pick **Never** to turn them off again. A scheduled check still asks before downloading anything.
+- **Verified first:** the update feed and every update archive are signed with Glint's update signing key, and Glint rejects anything whose signature doesn't match. Sparkle also checks the new app's code signature before installing it. A check fetches one feed file from GitHub; Glint sends no system profile with it.
+
+For a Homebrew installation, Glint never replaces itself, so Homebrew's records stay correct. **Check for Updates…** shows this command with a **Copy Command** button. Save your work, quit Glint, then run:
 
 ```sh
 brew update && brew upgrade --cask glint
 ```
 
-Reopen Glint afterward. `brew update` refreshes Homebrew's package list; only `brew upgrade` installs the newer app. A release must also be published to the Homebrew tap before it appears there.
+Reopen Glint afterward. `brew update` refreshes Homebrew's package list; only `brew upgrade` installs the newer app. A release must also be published to the Homebrew tap before it appears there. To move an installation between Homebrew and a direct download, see [Switching an install between Homebrew and direct downloads](https://mrashrhodes.github.io/glint/guide.html#switching-installs).
 
-For a manual installation, save your work and quit Glint, then download the latest ZIP or DMG and its matching `.sha256` file. Follow the [verification steps above](#install) before extracting or opening the download and replacing `/Applications/Glint.app`, then reopen Glint. Your separately stored preferences, presets and images remain in place. See the [update guide](https://mrashrhodes.github.io/glint/guide.html#updates).
+**Glint 1.5.5 and earlier can't update themselves.** Update once with Homebrew as above, or save your work, quit Glint and download the latest ZIP or DMG and its matching `.sha256` file. Follow the [verification steps above](#install) before extracting or opening the download and replacing `/Applications/Glint.app`, then reopen Glint. Your separately stored preferences, presets and images remain in place. From then on, a downloaded copy can update itself. Source builds without the release update key explain that they can't update themselves. See the [update guide](https://mrashrhodes.github.io/glint/guide.html#updates).
 
 **Updating from 1.5.3 or earlier to 1.5.4 or later** changes the signing requirement, so macOS needs Screen Recording permission once more. Choose **Re-authorize Screen Recording…** in Preferences → About (Glint also opens its setup window if a capture fails for lack of access), allow Glint in System Settings, then relaunch Glint. If macOS cannot reset the old entry, Glint explains how to remove it and add it back manually. Subsequent Developer ID updates are expected to keep the permission ([#44](https://github.com/MrAshRhodes/glint/issues/44)).
 

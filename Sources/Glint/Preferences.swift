@@ -1278,25 +1278,20 @@ private struct AboutTab: View {
                     .textSelection(.enabled)
             }
             HStack(spacing: 10) {
-                Button("Check for Updates") { UpdateChecker.check() }
                 Link(destination: GlintInfo.repositoryURL) {
                     Label("GitHub", systemImage: "arrow.up.right.square")
                 }
                 .buttonStyle(.bordered)
             }
             .padding(.top, 16)
-            VStack(spacing: 4) {
-                Text("Updates are manual. Glint does not download or install them automatically.")
-                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Link("How to update with Homebrew or a download", destination: UpdateChecker.guideURL)
-                    .font(.footnote)
+            GroupBox {
+                UpdatesSection(updater: UpdateController.shared).padding(6)
             }
-            .padding(.top, 10)
+            .padding(.top, 20)
             GroupBox {
                 PermissionsPane().padding(6)
             }
-            .padding(.top, 20)
+            .padding(.top, 12)
             Text(copyright)
                 .font(.footnote)
                 .foregroundStyle(.tertiary)

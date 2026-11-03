@@ -17,11 +17,21 @@
 # Environment:
 #   GLINT_SIGN_IDENTITY   codesign identity (name or SHA-1). Default "-" (ad-hoc). A real
 #                         identity also turns on the hardened runtime and a secure timestamp.
+#                         The exception is a self-signed test identity (make signing-cert): it has
+#                         no Team ID, so the hardened runtime's library validation would refuse to
+#                         load Sparkle.framework and the app would crash at launch. Those builds
+#                         are signed without the hardened runtime; Developer ID builds always get it.
 #   GLINT_REQUIRE_STABLE_SIGNATURE
 #                         1 = fail unless the app is signed with a certificate (not ad-hoc) and,
 #                         when packaging/signing/designated-requirement.txt (or
 #                         $GLINT_REQUIREMENT_FILE) exists, satisfies that requirement
 #                         (Scripts/verify_signature.sh --require-stable). Releases set this.
+#   GLINT_SPARKLE_PUBLIC_KEY
+#                         Base64 Ed25519 public key (32 bytes) written to SUPublicEDKey, the key
+#                         every update is verified against. Required with any real signing
+#                         identity (releases); an ad-hoc build without it runs but cannot update
+#                         itself. Generate the pair with Sparkle's generate_keys (see
+#                         packaging/signing/README.md); only the public half belongs here.
 #   SWIFTW_BUILD_SYSTEM   SwiftPM build system. Default "native": per-architecture --triple
 #                         builds merged with lipo behave the same on every toolchain there
 #                         (see Scripts/swiftw.sh).
@@ -69,7 +79,8 @@ GLINT_SIGN_IDENTITY names a certificate (releases use Developer ID Application).
   --configuration C     release (default) or debug
 
 Environment: GLINT_SIGN_IDENTITY (default "-", ad-hoc), GLINT_REQUIRE_STABLE_SIGNATURE=1
-(fail on an ad-hoc signature), SWIFTW_BUILD_SYSTEM (default native).
+(fail on an ad-hoc signature), GLINT_SPARKLE_PUBLIC_KEY (update verification key, required
+with a real signing identity), SWIFTW_BUILD_SYSTEM (default native).
 EOF
 }
 
@@ -148,6 +159,17 @@ if ((REQUIRE_STABLE)) && [[ "$SIGN_IDENTITY" == "-" ]]; then
   die "GLINT_REQUIRE_STABLE_SIGNATURE is set but GLINT_SIGN_IDENTITY is empty or ad-hoc: an ad-hoc release makes every user re-grant Screen Recording after updating (#39). Import the release identity (Scripts/import_signing_identity.sh) and pass its SHA-1."
 fi
 
+PUBLIC_KEY="${GLINT_SPARKLE_PUBLIC_KEY:-}"
+if [[ -n "$PUBLIC_KEY" ]]; then
+  key_re='^[A-Za-z0-9+/]{43}=$'
+  [[ $PUBLIC_KEY =~ $key_re && "$(printf '%s' "$PUBLIC_KEY" | base64 --decode | wc -c | tr -d ' ')" == 32 ]] \
+    || die "GLINT_SPARKLE_PUBLIC_KEY must be a base64-encoded 32-byte Ed25519 public key"
+elif [[ "$SIGN_IDENTITY" != "-" ]]; then
+  die "Builds signed with a real identity require GLINT_SPARKLE_PUBLIC_KEY; refusing to ship an app that cannot verify updates"
+else
+  warn "No GLINT_SPARKLE_PUBLIC_KEY: this build cannot update itself"
+fi
+
 export SWIFTW_BUILD_SYSTEM="${SWIFTW_BUILD_SYSTEM:-native}"
 
 # build_slice [arch]: builds every target for one architecture (host arch when empty).
@@ -195,7 +217,7 @@ fi
 
 log "Assembling ${APP#"$ROOT"/}"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 if [[ -n "$X86_DIR" ]]; then
   lipo -create "$ARM_DIR/$PRODUCT" "$X86_DIR/$PRODUCT" -output "$APP/Contents/MacOS/$PRODUCT"
@@ -212,6 +234,9 @@ set_plist_string() {
 }
 set_plist_string CFBundleShortVersionString "$VERSION"
 set_plist_string CFBundleVersion "$BUILD_NUMBER"
+if [[ -n "$PUBLIC_KEY" ]]; then
+  set_plist_string SUPublicEDKey "$PUBLIC_KEY"
+fi
 plutil -lint "$PLIST" >/dev/null
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
@@ -231,16 +256,45 @@ for bundle in "$RESOURCE_DIR"/*.bundle; do
 done
 log "Copied $bundles SwiftPM resource bundle(s)"
 
-sign_flags=(--force --deep --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS")
+# Sparkle ships as a prebuilt, universal framework that SwiftPM leaves next to the executable.
+# The executable finds it through the @executable_path/../Frameworks rpath set in Package.swift.
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+[[ -d "$RESOURCE_DIR/Sparkle.framework" ]] || die "SwiftPM did not produce Sparkle.framework in $RESOURCE_DIR"
+ditto "$RESOURCE_DIR/Sparkle.framework" "$FRAMEWORK"
+# Glint is not sandboxed, so Sparkle's XPC services (which exist only for sandboxed apps) are dead weight.
+# The installer helpers (Autoupdate, Updater.app) stay.
+rm -rf "$FRAMEWORK/Versions/B/XPCServices"
+rm -f "$FRAMEWORK/XPCServices"
+log "Embedded Sparkle.framework"
+
+sign_flags=(--force --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   sign_flags+=(--timestamp=none)
   log "Signing ad-hoc (privacy permissions such as Screen Recording must be re-granted after every rebuild)"
 else
   sign_flags+=(--options runtime --timestamp)
-  log "Signing with '$SIGN_IDENTITY' (hardened runtime)"
+  log "Signing with '$SIGN_IDENTITY'"
 fi
 xattr -cr "$APP"
-codesign "${sign_flags[@]}" "$APP"
+# Inside-out, and not --deep: Sparkle's helpers get the same identity, hardened runtime and timestamp
+# (notarization requires all three on every nested executable) but not the app's entitlements.
+codesign "${sign_flags[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
+# The hardened runtime turns on library validation: the app may only load frameworks signed by Apple or
+# by its own Team ID. A self-signed test identity has no Team ID, so Sparkle.framework would never load
+# and the app would crash at launch. Without a Team ID there is nothing to enforce, so drop the runtime.
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  team_id="$(codesign --display --verbose=4 "$FRAMEWORK/Versions/B/Autoupdate" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+  if [[ -z "$team_id" || "$team_id" == "not set" ]]; then
+    sign_flags=(--force --sign "$SIGN_IDENTITY" --timestamp)
+    log "No Team ID (a self-signed test identity): signing without the hardened runtime so Sparkle.framework can load"
+    codesign "${sign_flags[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
+  else
+    log "Hardened runtime on (Team ID $team_id)"
+  fi
+fi
+codesign "${sign_flags[@]}" "$FRAMEWORK/Versions/B/Updater.app"
+codesign "${sign_flags[@]}" "$FRAMEWORK"
+codesign "${sign_flags[@]}" --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 log "Designated requirement: $(codesign --display --requirements - "$APP" 2>&1 | sed -n 's/^[# ]*designated => //p')"
 if ((REQUIRE_STABLE)); then

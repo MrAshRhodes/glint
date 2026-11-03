@@ -37,7 +37,9 @@ Verifies the code signature of Glint.app and prints its designated requirement.
 
   --require-stable          fail if the app is signed ad-hoc (its requirement pins a cdhash, so
                             macOS drops Screen Recording permission on every update)
-  --require-developer-id    require Glint's Apple Developer ID, hardened runtime and timestamp
+  --require-developer-id    require Glint's Apple Developer ID, hardened runtime and timestamp, plus the
+                            Sparkle update settings (public key, signed feed, opt-in checks) and Sparkle's
+                            nested helpers signed the same way
   --require-notarized       also validate the stapled ticket and Gatekeeper assessment
   --requirement-file PATH   also require the designated requirement in PATH (default:
                             $GLINT_REQUIREMENT_FILE, else packaging/signing/designated-requirement.txt
@@ -89,6 +91,42 @@ fail() {
   die "$1"
 }
 
+EXPECTED_FEED_URL="https://github.com/MrAshRhodes/glint/releases/latest/download/appcast.xml"
+
+# The update path ships with the app, so a release must not go out with an updater that cannot verify
+# updates, that is allowed to install unattended, or whose Sparkle helpers are not signed like the app.
+verify_sparkle() {
+  local plist="$APP/Contents/Info.plist" value key key_re='^[A-Za-z0-9+/]{43}=$'
+  plist_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null || true; }
+
+  value="$(plist_value SUPublicEDKey)"
+  [[ -n "$value" ]] || fail "$APP has no Sparkle public key (SUPublicEDKey): build with GLINT_SPARKLE_PUBLIC_KEY"
+  [[ $value =~ $key_re && "$(printf '%s' "$value" | base64 --decode | wc -c | tr -d ' ')" == 32 ]] \
+    || fail "SUPublicEDKey is not a base64-encoded 32-byte Ed25519 public key"
+  [[ "$(plist_value SUFeedURL)" == "$EXPECTED_FEED_URL" ]] || fail "SUFeedURL must be $EXPECTED_FEED_URL"
+  for key in SURequireSignedFeed SUVerifyUpdateBeforeExtraction; do
+    [[ "$(plist_value "$key")" == true ]] || fail "$key must be true in Info.plist"
+  done
+  for key in SUEnableAutomaticChecks SUAutomaticallyUpdate SUAllowsAutomaticUpdates SUEnableSystemProfiling; do
+    [[ "$(plist_value "$key")" == false ]] || fail "$key must be false in Info.plist (updates are opt-in and never installed unattended)"
+  done
+
+  local framework="$APP/Contents/Frameworks/Sparkle.framework" nested arch nested_details
+  for nested in "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app" "$framework"; do
+    [[ -e "$nested" ]] || fail "missing Sparkle component: ${nested#"$APP"/}"
+    codesign --verify --strict --all-architectures -R="$(cat "$ROOT/packaging/signing/developer-id-requirement.txt")" "$nested" \
+      || fail "${nested#"$APP"/} is not signed with Glint's Apple Developer ID"
+    for arch in $(lipo -archs "$APP/Contents/MacOS/Glint"); do
+      nested_details="$(codesign --display --arch "$arch" --verbose=4 "$nested" 2>&1)" \
+        || fail "cannot read the $arch signature of ${nested#"$APP"/}"
+      grep -q '^CodeDirectory .*flags=.*runtime' <<<"$nested_details" \
+        || fail "${nested#"$APP"/} ($arch) is missing the hardened runtime"
+      grep -q '^Timestamp=.' <<<"$nested_details" || fail "${nested#"$APP"/} ($arch) is missing a secure timestamp"
+    done
+  done
+  log "Sparkle: feed URL, signing key, signed-feed checks and nested signatures are in order"
+}
+
 codesign --verify --deep --strict "$APP" || fail "$APP has an invalid code signature"
 
 details="$(codesign --display --verbose=4 "$APP" 2>&1)" || fail "codesign cannot read the signature of $APP"
@@ -128,10 +166,11 @@ if ((REQUIRE_STABLE)); then
       grep -q '^CodeDirectory .*flags=.*runtime' <<<"$arch_details" || fail "$arch is missing the hardened runtime"
       grep -q '^Timestamp=.' <<<"$arch_details" || fail "$arch is missing a secure timestamp"
     done
+    verify_sparkle
     REQ_FILE="$DEFAULT_REQ_FILE"
   fi
   if [[ "$flags" != *runtime* ]]; then
-    warn "$APP is not signed with the hardened runtime"
+    warn "$APP is not signed with the hardened runtime (expected for a self-signed test identity, which has no Team ID; releases require it)"
   fi
   if [[ -z "$REQ_FILE" && -f "$DEFAULT_REQ_FILE" ]]; then
     REQ_FILE="$DEFAULT_REQ_FILE"

@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         Self.applyActivationPolicy()
         Self.applyTheme()
         installMainMenu()
+        // Starts a schedule the user chose; with the default (never) nothing is requested.
+        _ = UpdateController.shared
         PreferencesWindowController.shared = PreferencesWindowController(prefs: prefs, store: presetStore)
         pipeline.onStatusTitle = { [weak self] title in self?.statusItem?.button?.title = title ?? "" }
         menu.delegate = self
@@ -222,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         add(menu, "Show Raw Folder", #selector(showRaw))
         menu.addItem(.separator())
         add(menu, "Preferences…", #selector(showPreferences), key: ",")
-        add(menu, "Check for Updates…", #selector(checkUpdates))
+        add(menu, "Check for Updates…", #selector(UpdateController.checkForUpdates(_:)), target: UpdateController.shared)
         add(menu, "About Glint", #selector(showAbout))
         menu.addItem(.separator())
         add(menu, "Quit Glint", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
@@ -258,7 +260,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     @objc private func openRecent(_ sender: NSMenuItem) { if let u = sender.representedObject as? URL { pipeline.openFile(u) } }
     @objc private func clearRecent() { RecentFiles.clear() }
     @objc private func reopenLastImage() { Task { await pipeline.reopenLastImage() } }
-    @objc private func checkUpdates() { UpdateChecker.check() }
 
     /// Menu validation must never wait for the index lock or disk; menu opening refreshes this cache asynchronously.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -322,6 +323,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         }
         let app = submenu(GlintInfo.name)
         app.addItem(withTitle: "About Glint", action: #selector(showAbout), keyEquivalent: "").target = self
+        let updatesItem = app.addItem(
+            withTitle: "Check for Updates…",
+            action: #selector(UpdateController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updatesItem.target = UpdateController.shared
         app.addItem(.separator())
         let prefsItem = app.addItem(withTitle: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
         prefsItem.target = self

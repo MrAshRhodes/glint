@@ -15,7 +15,22 @@ function fixture(t, config = {}) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
-  fs.mkdirSync(path.join(dir, 'Glint.app'));
+  const contents = path.join(dir, 'Glint.app/Contents');
+  const framework = path.join(contents, 'Frameworks/Sparkle.framework/Versions/B');
+  fs.mkdirSync(path.join(framework, 'Updater.app'), { recursive: true });
+  fs.writeFileSync(path.join(framework, 'Autoupdate'), 'mock Sparkle helper');
+  const plist = path.join(contents, 'Info.plist');
+  fs.copyFileSync(path.join(root, 'Resources/Info.plist'), plist);
+  const values = {
+    SUPublicEDKey: ['string', Buffer.alloc(32).toString('base64')],
+    ...config.plist,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (value === null) continue;
+    const [type, content] = value;
+    const result = spawnSync('/usr/bin/plutil', ['-replace', key, `-${type}`, content, plist], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  }
   fs.writeFileSync(path.join(dir, 'Glint.dmg'), 'test disk image');
   const calls = path.join(dir, 'calls.jsonl');
   const mock = path.join(bin, 'mock.cjs');
@@ -44,6 +59,8 @@ if (tool === 'xcrun') {
     process.exit(99);
   }
 } else if (tool === 'codesign') {
+  const nested = args[args.length - 1].includes('/Sparkle.framework');
+  if (nested && config.nestedSignatureExit) process.exit(config.nestedSignatureExit);
   if (args.includes('--verify')) process.exit(config.signatureExit || 0);
   if (args.includes('--requirements')) {
     console.log('designated => identifier "io.github.mrashrhodes.glint" and anchor apple generic');
@@ -51,8 +68,10 @@ if (tool === 'xcrun') {
     const arch = args.includes('--arch') ? args[args.indexOf('--arch') + 1] : '';
     console.log('Identifier=' + (config.identifier || 'io.github.mrashrhodes.glint'));
     console.log(config.adhoc ? 'Signature=adhoc' : 'Authority=Developer ID Application: Test');
-    console.log('CodeDirectory v=20500 flags=' + (config.noRuntime === arch ? '0x0(none)' : '0x10000(runtime)'));
-    if (config.noTimestamp !== arch) console.log('Timestamp=Oct 30 2026');
+    const noRuntime = config.noRuntime === arch || (nested && config.nestedNoRuntime === arch);
+    const noTimestamp = config.noTimestamp === arch || (nested && config.nestedNoTimestamp === arch);
+    console.log('CodeDirectory v=20500 flags=' + (noRuntime ? '0x0(none)' : '0x10000(runtime)'));
+    if (!noTimestamp) console.log('Timestamp=Oct 30 2026');
   }
 } else if (tool === 'lipo') {
   if (config.lipoExit) process.exit(config.lipoExit);
@@ -175,6 +194,18 @@ for (const format of ['app', 'dmg']) {
     assert.deepEqual(stages, format === 'app'
       ? ['submit', 'staple', 'validate', 'validate', 'assess']
       : ['submit', 'staple', 'validate', 'assess']);
+    if (format === 'app') {
+      // Sparkle's nested helpers are verified before submission and again after stapling.
+      const components = ['Autoupdate', 'Updater.app', 'Sparkle.framework'];
+      const calls = f.calls();
+      const submitted = calls.findIndex(call => call.tool === 'xcrun' && call.args[1] === 'submit');
+      const stapled = calls.findIndex(call => call.tool === 'xcrun' && call.args[1] === 'staple');
+      const nested = (from, to) => calls.slice(from, to)
+        .filter(call => call.tool === 'codesign' && call.args.includes('--all-architectures'))
+        .map(call => path.basename(call.args.at(-1)));
+      assert.deepEqual(nested(0, submitted), components);
+      assert.deepEqual(nested(stapled), components);
+    }
     assert.equal(hasCall(f, 'ditto'), format === 'app');
     assert.deepEqual(fs.readdirSync(f.dir).filter(name => name.startsWith('glint-notary.')), []);
   });
@@ -215,6 +246,9 @@ for (const [name, config] of [
   ['missing timestamp in Intel slice', { noTimestamp: 'x86_64' }],
   ['unreadable architectures', { lipoExit: 1 }],
   ['empty architectures', { archs: '' }],
+  ['wrong Sparkle helper signature', { nestedSignatureExit: 1 }],
+  ['missing Sparkle helper hardened runtime in Intel slice', { nestedNoRuntime: 'x86_64' }],
+  ['missing Sparkle helper timestamp in Intel slice', { nestedNoTimestamp: 'x86_64' }],
 ]) {
   test(`require-notarized rejects ${name} even with a matching requirement file`, t => {
     const f = fixture(t, config);
@@ -225,6 +259,25 @@ for (const [name, config] of [
       assert.ok(!hasCall(f, 'spctl'));
     }
     if (config.assessExit) assert.ok(hasCall(f, 'spctl'));
+  });
+}
+
+for (const [key, value] of [
+  ['SUPublicEDKey', null],
+  ['SUPublicEDKey', ['string', 'not-a-key']],
+  ['SUFeedURL', ['string', 'https://example.test/updates.xml']],
+  ['SURequireSignedFeed', ['bool', 'false']],
+  ['SUVerifyUpdateBeforeExtraction', ['bool', 'false']],
+  ...['SUEnableAutomaticChecks', 'SUAutomaticallyUpdate', 'SUAllowsAutomaticUpdates', 'SUEnableSystemProfiling']
+    .map(key => [key, ['bool', 'true']]),
+]) {
+  test(`release verification rejects ${key}=${value?.[1] ?? 'missing'}`, t => {
+    const f = fixture(t, { plist: { [key]: value } });
+    const result = f.run('verify_signature.sh', ['Glint.app', '--require-notarized']);
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, new RegExp(key));
+    assert.ok(!hasCall(f, 'xcrun', 'stapler'));
+    assert.ok(!hasCall(f, 'spctl'));
   });
 }
 

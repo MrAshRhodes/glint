@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- Direct downloads can now check, download and install verified updates in-app with Sparkle 2, asking before downloading and again before installation and relaunch. Check manually from either menu or Preferences → About, or opt into Daily, Weekly or Monthly checks; automatic checks are off by default. Homebrew installations keep using Homebrew and show its update command with a copy button. **Updating from 1.5.5 or earlier:** install this release once manually or with Homebrew before using in-app updates. ([#72])
+
 ## [1.5.5] - 2026-10-30
 
 ### Fixed
@@ -249,3 +253,4 @@ First public release.
 [#63]: https://github.com/MrAshRhodes/glint/issues/63
 [#65]: https://github.com/MrAshRhodes/glint/issues/65
 [#70]: https://github.com/MrAshRhodes/glint/issues/70
+[#72]: https://github.com/MrAshRhodes/glint/issues/72
