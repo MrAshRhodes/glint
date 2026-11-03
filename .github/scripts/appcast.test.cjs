@@ -120,7 +120,9 @@ test('the app signature verifier rejects a modified signed bundle', t => {
   const f = fixture(t);
   const app = path.join(f.dir, 'dist/Glint.app');
   const script = path.join(root, 'Scripts/verify_signature.sh');
-  run('bash', [script, app]);
+  const intact = spawnSync('bash', [script, app], { encoding: 'utf8', timeout: 10000 });
+  assert.ifError(intact.error);
+  assert.equal(intact.status, 0, `${intact.stderr}\n${intact.stdout}`);
 
   run('/usr/bin/plutil', ['-replace', 'CFBundleShortVersionString', '-string', '9.9.9',
     path.join(app, 'Contents/Info.plist')]);
