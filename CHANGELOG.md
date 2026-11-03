@@ -8,6 +8,12 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-03
+
+### Added
+
+- Direct downloads can now check, download and install verified updates in-app with Sparkle 2, asking before downloading and again before installation and relaunch. Check manually from either menu or Preferences → About, or opt into Daily, Weekly or Monthly checks; automatic checks are off by default. Homebrew installations keep using Homebrew and show its update command with a copy button. **Updating from 1.5.5 or earlier:** install this release once manually or with Homebrew before using in-app updates. ([#72])
+
 ## [1.5.5] - 2026-10-30
 
 ### Fixed
@@ -207,7 +213,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/MrAshRhodes/glint/compare/v1.5.2...v1.5.3
@@ -249,3 +256,4 @@ First public release.
 [#63]: https://github.com/MrAshRhodes/glint/issues/63
 [#65]: https://github.com/MrAshRhodes/glint/issues/65
 [#70]: https://github.com/MrAshRhodes/glint/issues/70
+[#72]: https://github.com/MrAshRhodes/glint/issues/72

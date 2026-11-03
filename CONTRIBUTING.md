@@ -6,7 +6,7 @@ Thanks for helping to make Glint better. This guide covers building, testing, ho
 
 - macOS 14 (Sonoma) or later, Apple silicon or Intel.
 - A Swift 5.9+ toolchain: either full Xcode (CI uses Xcode 26) or only the Command Line Tools (`xcode-select --install`). See [Command Line Tools only](#command-line-tools-only).
-- Nothing else. There is no Xcode project and there are no third-party dependencies; Glint is a SwiftPM package plus a few shell scripts.
+- Nothing else. There is no Xcode project; Glint is a SwiftPM package plus a few shell scripts. Its only third-party dependency is [Sparkle](https://sparkle-project.org), which SwiftPM resolves for you.
 
 ## Build, run, test
 
@@ -152,7 +152,7 @@ Package.swift             Four targets plus the tests
 Sources/GlintCore         Models, compositor/renderer, auto-balance, OCR + redaction, export, presets
 Sources/GlintCapture      ScreenCaptureKit capture, selection overlay, window picker, global hotkeys
 Sources/GlintEditor       Annotation editor: canvas, tools, inspector sidebar, export actions
-Sources/Glint             App shell: menu bar item, preferences, quick-access overlay, URL scheme, updates
+Sources/Glint             App shell: menu bar item, preferences, quick-access overlay, URL scheme, in-app updates
 Tests/GlintCoreTests      Swift Testing suites for GlintCore
 Resources/                Info.plist, entitlements and the generated app icon
 Scripts/                  Build, packaging and release scripts
@@ -173,7 +173,7 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 - **GlintCore** is the foundation and has no dependency on the other targets. It holds the document model, the renderer that composites a screenshot onto a background, auto-balance, OCR and redaction, export, and presets. It stays free of windows and views so that it can be unit tested; Foundation, CoreGraphics, CoreImage and Vision are all fine here.
 - **GlintCapture** turns "the user wants a screenshot" into an image: ScreenCaptureKit, the selection overlay, the window picker and the global hotkeys.
 - **GlintEditor** is the annotation editor: the canvas, the tools and the inspector sidebar.
-- **Glint** is the app shell. It owns the menu bar item, preferences, the quick-access overlay, the `glint://` URL scheme and update checks, and wires the other targets together.
+- **Glint** is the app shell. It owns the menu bar item, preferences, the quick-access overlay, the `glint://` URL scheme and in-app updates, and wires the other targets together. `Updates.swift` holds `UpdateController`, which decides whether this copy can update itself (a direct install with a valid feed and key), is managed by Homebrew, or can't update, and which owns the "Check for Updates…" action and the opt-in schedule. `SparkleUpdateEngine.swift` is the only file that talks to Sparkle; tests replace it with a fake `UpdateEngine`. `UpdatesSection.swift` is the Preferences → About view, and the pure policy (frequencies, Homebrew receipt checks, feed and key validation) lives in `GlintCore/UpdatePolicy.swift`.
 
 ## Adding a feature
 
@@ -188,7 +188,7 @@ Glint (executable) ──► GlintCapture ──► GlintCore
 - Follow the [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/). Use four-space indentation and keep lines around 120 columns or fewer.
 - Prefer value types, small focused files and `let` over `var`. Mark UI code `@MainActor`. Avoid `!` and `try!` outside tests.
 - Document public API with `///` comments and explain why, not what.
-- Do not add a third-party dependency without discussing it in an issue first.
+- Do not add a third-party dependency without discussing it in an issue first. Sparkle is the only one today and is pinned in `Package.resolved`.
 
 ## Capture snapping and the content-detection gate
 
@@ -252,14 +252,14 @@ Run `node --test .github/scripts/site.test.cjs` (Node.js 20+) for asset/link int
 
 `make zip` and `make dmg` (or `Scripts/package_release.sh --version X.Y.Z`) build a universal app and write to `dist/`: `Glint-<version>.zip`, `Glint-<version>.dmg`, a `.sha256` file for each, and the Homebrew cask `glint.rb`. If the x86_64 slice cannot be built, `Scripts/build_app.sh --universal` falls back to arm64 only and says so; pass `--require-universal` to make that an error. The release workflow does.
 
-These default local packages are not notarized and must not be published as releases. With Developer ID and notarization credentials configured, pass `--notarize --require-universal`; see the [signing and notarization guide](packaging/signing/README.md#local-packaging-and-verification).
+These default local packages are not notarized and must not be published as releases. Without `GLINT_SPARKLE_PUBLIC_KEY`, ad-hoc builds warn that in-app updates are unavailable; builds using a signing identity refuse to proceed without the key. With Developer ID, notarization credentials and the public key configured, pass `--notarize --require-universal`; see the [signing and notarization guide](packaging/signing/README.md#local-packaging-and-verification).
 
 ### Cutting a release
 
 1. On a branch from `main`, run `make prepare-release VERSION=X.Y.Z`. It moves the Unreleased entries in the [changelog](CHANGELOG.md) into a new `## [X.Y.Z] - YYYY-MM-DD` section dated today, leaves an empty Unreleased section, updates the version comparison links and writes `VERSION`. It refuses an empty Unreleased section, an existing version or a version older than the latest release. Review the result (adjust the date if the release happens on another day), open the usual issue-linked pull request, merge it to `main` and wait for CI to pass. CI runs `node .github/scripts/changelog.cjs check`, which validates the sections, dates, ordering and links.
 2. Tag the merged commit and push the tag: `git tag v1.2.3 && git push origin v1.2.3`. Do not create the release by hand.
-3. `.github/workflows/release.yml` first checks that `CHANGELOG.md` at the tag has a `## [1.2.3]` section and stops before building if it does not; to recover, delete the tag (`git push origin :refs/tags/v1.2.3 && git tag -d v1.2.3`), complete step 1 and tag again. It then builds the universal app, signs it with Apple Developer ID, notarizes and staples the app and DMG (see [Release signing](#release-signing)), and verifies the stapled app inside the ZIP. Only then does it create the GitHub release with that changelog section followed by `.github/release-notes-header.md` as its notes and attach the zip, the dmg and their final checksums. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as pre-releases, use the Unreleased entries as notes when they have no section of their own, and do not touch the Homebrew tap. Preview the notes with `node .github/scripts/changelog.cjs notes 1.2.3`.
-4. Update the tap. If the repository secret `TAP_GITHUB_TOKEN` exists (a token that can push to the tap repository), the workflow does it. Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
+3. `.github/workflows/release.yml` first checks that `CHANGELOG.md` at the tag has a `## [1.2.3]` section and stops before building if it does not; to recover, delete the tag (`git push origin :refs/tags/v1.2.3 && git tag -d v1.2.3`), complete step 1 and tag again. It also checks the Sparkle public key and requires a build number higher than the latest release's. It then builds the universal app, signs it with Apple Developer ID, notarizes and staples the app and DMG (see [Release signing](#release-signing)), and verifies the stapled app inside the ZIP. For stable releases it also [signs the final ZIP and generates the signed update feed](packaging/signing/README.md#publishing-the-update-feed). Only then does it create the GitHub release with that changelog section followed by `.github/release-notes-header.md` as its notes and attach the ZIP, DMG and their final checksums, plus `appcast.xml` and its checksum for stable releases. Tags containing a `-` (for example `v1.3.0-beta.1`) are marked as prereleases, use the Unreleased entries as notes when they have no section of their own, and publish neither an update feed nor a tap update. They are never offered as in-app updates. Preview the notes with `node .github/scripts/changelog.cjs notes 1.2.3`.
+4. Update the tap. If `TAP_GITHUB_TOKEN` is configured in the protected **release environment**, the workflow does it. Use a fine-grained token limited to Contents read/write on `MrAshRhodes/homebrew-tap`, not a repository-scoped secret; see the [credential setup and migration steps](packaging/signing/README.md#github-actions-setup). Otherwise, once the release workflow has finished, run `Scripts/update_tap.sh --version 1.2.3 --from-release`.
 
 Published releases are immutable. The cask pins the sha256 of the release zip, and every build differs byte for byte, so replacing an asset would break `brew install` for everyone. The workflow therefore never overwrites an existing release: a re-run only retries the tap update, and `--from-release` always hashes the zip that is actually published. To rebuild a broken release, delete the release and its tag first, or cut a new version.
 
@@ -267,7 +267,7 @@ Published releases are immutable. The cask pins the sha256 of the release zip, a
 
 Users install with `brew install --cask mrashrhodes/tap/glint`. The cask lives in the `MrAshRhodes/homebrew-tap` repository and is rendered from `packaging/homebrew/glint.rb.tmpl` by `Scripts/render_cask.sh`.
 
-Updates are manual: users quit Glint, run `brew update && brew upgrade --cask glint`, then reopen it. `brew update` alone does not upgrade the app. Glint's Check for Updates action checks the latest GitHub release, not the tap; finish the tap update before announcing that Homebrew users can upgrade.
+Homebrew copies are updated only by Homebrew: users quit Glint, run `brew update && brew upgrade --cask glint`, then reopen it. `brew update` alone does not upgrade the app. Glint detects Caskroom ownership, never starts Sparkle for that copy, and shows the command with a **Copy Command** button instead of an in-app update. A Caskroom symlink still pointing to a manually replaced app is deliberately treated as Homebrew-owned; a different recorded version produces a hint, not permission to replace it. See [Switching an install between Homebrew and direct downloads](https://mrashrhodes.github.io/glint/guide.html#switching-installs). Finish the tap update before announcing that Homebrew users can upgrade.
 
 - Preview what a release would publish: `Scripts/update_tap.sh --version X.Y.Z --from-release --dry-run`. It prints the cask and diffs it against the tap without changing anything.
 - Create the tap repository the first time (needs `gh auth login`): `Scripts/update_tap.sh --create`.
@@ -279,14 +279,15 @@ macOS ties the Screen Recording permission to the app's code signature, specific
 
 - Local builds are signed ad-hoc by default, so after rebuilding you may have to grant the permission again: choose **Re-authorize Screen Recording…** in Preferences → About, or run `tccutil reset ScreenCapture io.github.mrashrhodes.glint`, then switch Glint on when macOS asks and relaunch. To avoid this, set `GLINT_SIGN_IDENTITY` to a code-signing identity of your own, for example a self-signed one created in Keychain Access. Switching between your build and an installed release still needs a re-grant, because they are signed with different certificates.
 - The release pipeline requires **Developer ID Application** signing, hardened runtime and a secure timestamp. `GLINT_REQUIRE_STABLE_SIGNATURE=1` also prevents local builds or packages from using ad-hoc signing.
+- Self-signed test builds have no Apple Team ID, so they omit the hardened runtime: its library validation would otherwise refuse the embedded Sparkle framework. Developer ID builds always enable it, and `Scripts/verify_signature.sh --require-developer-id` checks it on the app and Sparkle's nested executables.
 - `Scripts/package_release.sh --notarize` requires Glint's Developer ID identity and configured notarization credentials, and fails unless the final artifacts pass ticket validation and Gatekeeper assessment. See [Release signing](#release-signing).
 - Before installing or updating a downloaded build, follow the [manual-download verification steps](README.md#install) using the ZIP or DMG and its matching `.sha256` file from the same official release. Continue only when verification succeeds and reports `OK`; otherwise stop without installing or clearing quarantine. If Gatekeeper rejects the app, stop and investigate rather than bypassing the warning.
 
 ### Release signing
 
-Glint uses Developer ID signing and notarization for direct GitHub/Homebrew distribution, not the Mac App Store. Follow the [maintainer signing guide](packaging/signing/README.md) for certificate setup, encrypted backup and recovery, the notarization API key, local packaging, and the five secrets in the protected GitHub **release** environment.
+Glint uses Developer ID signing and notarization for direct GitHub/Homebrew distribution, not the Mac App Store. Follow the [maintainer signing guide](packaging/signing/README.md) for certificate setup, encrypted backup and recovery, the notarization API key, local packaging, and credentials in the protected GitHub **release** environment. In-app updates also require a separate [Sparkle EdDSA key pair](packaging/signing/README.md#sparkle-update-signing): keep its private key in an environment secret and its public key in an environment variable. The optional tap token belongs in that protected environment too.
 
-The tag workflow requires the public Apple team and bundle requirements in `packaging/signing/`, notarizes and staples the app and DMG, verifies the app extracted from the ZIP, and generates checksums after stapling. Missing credentials, an invalid signature, incomplete notarization or Gatekeeper rejection stops publication. There is no unsigned or self-signed fallback. Temporary signing and notarization credentials are cleaned up even on failure.
+The tag workflow requires the public Apple team and bundle requirements in `packaging/signing/`, notarizes and staples the app and DMG, verifies the app extracted from the ZIP, and generates checksums after stapling. Stable releases then generate the signed Sparkle feed from that final ZIP. Missing credentials, an invalid signature, incomplete notarization or Gatekeeper rejection stops publication. There is no unsigned or self-signed fallback. Temporary signing and notarization credentials are cleaned up even on failure.
 
 Pull-request CI uses `make signing-cert` only to create a throwaway **test** identity outside the repository. `Scripts/check_signing_continuity.sh` verifies that a rebuilt app satisfies the previous build's requirement without exposing production credentials; it does not prove end-user TCC behavior. The helper cannot overwrite production requirements.
 
@@ -299,11 +300,13 @@ The first Developer ID update from 1.5.3 or earlier needs one Screen Recording r
 | `VERSION`, `CONFIG`, `INSTALL_DIR` | `make` | Release version, `release` or `debug`, install location. |
 | `GLINT_SIGN_IDENTITY` | `build_app.sh`, `package_release.sh` | Code signing identity (default `-`, ad-hoc). Releases require Glint's Developer ID Application identity. |
 | `GLINT_REQUIRE_STABLE_SIGNATURE` | `build_app.sh`, `package_release.sh` | `1` fails the build or package when the app would be signed ad-hoc. |
+| `GLINT_SPARKLE_PUBLIC_KEY` | `build_app.sh`, `package_release.sh`, `generate_appcast.sh` | Public EdDSA key embedded in the app. Required with a signing identity; an ad-hoc build without it cannot update itself. Store as a **release environment variable**, not a secret. |
+| `GLINT_SPARKLE_PRIVATE_KEY` | `generate_appcast.sh` | Private EdDSA key from a **release environment secret**, passed to Sparkle tools on standard input. Never put it in a repository variable. The generator has no Keychain fallback. |
 | `GLINT_REQUIREMENT_FILE` | signing verification | Test requirement override; cannot replace the Apple policy enforced by `--require-developer-id` or `--require-notarized`. |
 | `GLINT_NOTARY_PROFILE`, `GLINT_NOTARY_KEYCHAIN` | `notarize.sh` | Stored notarytool Keychain profile and optional keychain path. |
 | `GLINT_NOTARY_KEY_PATH`, `GLINT_NOTARY_KEY_ID`, `GLINT_NOTARY_ISSUER_ID` | `notarize.sh` | Team API private-key path, key ID and issuer ID; all required when no profile is set. CI decodes the key from its environment secret. |
 | `SWIFTW_MODE`, `SWIFTW_BUILD_SYSTEM`, `SWIFTW_VERBOSE` | `swiftw.sh` and everything that calls it | See [Command Line Tools only](#command-line-tools-only). `build_app.sh` defaults the build system to `native`. |
-| `TAP_GITHUB_TOKEN` | `update_tap.sh` | Token used to push to the tap (default: your `gh` login). |
+| `TAP_GITHUB_TOKEN` | `update_tap.sh` | Fine-grained token used to push to the tap (default: your `gh` login). CI reads it from a **release environment secret**. |
 
 ## Pull requests
 

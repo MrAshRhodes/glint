@@ -24,3 +24,15 @@ research/screens/
 .idea/
 .vscode/
 *.swp
+
+# Credentials and signing keys stay outside the repository (packaging/signing/README.md)
+*.p12
+*.pfx
+*.p8
+*.pem
+*.key
+*.keychain
+*.keychain-db
+*private?key*
+.env
+.env.*

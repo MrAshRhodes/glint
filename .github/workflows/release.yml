@@ -5,7 +5,12 @@ name: Release
 # updates the Homebrew cask. A published release is never rebuilt or overwritten, because the cask
 # pins the sha256 of its zip.
 #
-# Developer ID and notarization credentials live in the protected release environment.
+# Stable releases also publish appcast.xml, the EdDSA-signed Sparkle feed that installed copies of
+# Glint read from releases/latest/download/appcast.xml. Prereleases are never offered as updates.
+#
+# Developer ID and notarization credentials live in the protected release environment, next to the
+# Sparkle update-signing key pair: the variable GLINT_SPARKLE_PUBLIC_KEY (built into the app) and
+# the secret GLINT_SPARKLE_PRIVATE_KEY (signs the zip and the feed).
 # No unsigned/self-signed fallback is allowed. See packaging/signing/README.md.
 on:
   push:
@@ -82,6 +87,54 @@ jobs:
           node .github/scripts/changelog.cjs check
           node .github/scripts/changelog.cjs notes "$VERSION" ${flags[@]+"${flags[@]}"} > "$RUNNER_TEMP/changelog.md"
 
+      # Fails before the build when the update-signing keys are missing: an app built without the
+      # public key cannot verify updates, and a stable release without the private key has no feed.
+      - name: Require the update signing configuration
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GLINT_SPARKLE_PUBLIC_KEY: ${{ vars.GLINT_SPARKLE_PUBLIC_KEY }}
+          GLINT_SPARKLE_PRIVATE_KEY: ${{ secrets.GLINT_SPARKLE_PRIVATE_KEY }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set +x
+          : "${GLINT_SPARKLE_PUBLIC_KEY:?Set the release environment variable GLINT_SPARKLE_PUBLIC_KEY (see packaging/signing/README.md)}"
+          if [[ "$PRERELEASE" != true ]]; then
+            : "${GLINT_SPARKLE_PRIVATE_KEY:?Set the release environment secret GLINT_SPARKLE_PRIVATE_KEY (see packaging/signing/README.md)}"
+          fi
+
+      # Sparkle offers an update only when its build number (CFBundleVersion) is higher than the
+      # installed app's, and the build number is this workflow's run number. A recreated or renamed
+      # workflow would restart the count and silently stop every installed copy from updating.
+      - name: Check the build number
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          errors="$RUNNER_TEMP/latest-release.err"
+          if ! previous_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2> "$errors")"; then
+            if grep -q 'HTTP 404' "$errors"; then
+              echo "::notice title=No earlier release::There is no published release to compare the build number with."
+              exit 0
+            fi
+            cat "$errors" >&2
+            exit 1
+          fi
+          previous_dir="$RUNNER_TEMP/previous-release"
+          mkdir "$previous_dir"
+          gh release download "$previous_tag" --pattern 'Glint-*.zip' --dir "$previous_dir"
+          unzip -p "$previous_dir"/Glint-*.zip Glint.app/Contents/Info.plist > "$previous_dir/Info.plist"
+          previous_build="$(plutil -extract CFBundleVersion raw -o - "$previous_dir/Info.plist")"
+          if [[ ! "$previous_build" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Unexpected build number::$previous_tag has the build number '$previous_build', which is not a plain number."
+            exit 1
+          fi
+          if (( GITHUB_RUN_NUMBER <= 10#$previous_build )); then
+            echo "::error title=Build number too low::This run's number ($GITHUB_RUN_NUMBER) is not higher than $previous_tag's build number ($previous_build), so installed copies would not be offered this release."
+            exit 1
+          fi
+          echo "Build number $GITHUB_RUN_NUMBER is higher than $previous_tag's ($previous_build)."
+
       # Fails before the build when the signing secrets are missing: an ad-hoc release would
       # reset Screen Recording permission for every user who updates (#39).
       - name: Import the signing identity
@@ -115,17 +168,28 @@ jobs:
 
       # With the signing identity, build_app.sh and package_release.sh verify that the app (and
       # the app inside the zip) has a stable signature that satisfies
-      # packaging/signing/designated-requirement.txt.
+      # packaging/signing/designated-requirement.txt, and that it carries the Sparkle public key.
       - name: Build and package
         if: steps.version.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
           GLINT_REQUIRE_STABLE_SIGNATURE: '1'
+          GLINT_SPARKLE_PUBLIC_KEY: ${{ vars.GLINT_SPARKLE_PUBLIC_KEY }}
           GLINT_NOTARY_KEY_PATH: ${{ runner.temp }}/glint-notary.p8
           GLINT_NOTARY_KEY_ID: ${{ secrets.GLINT_NOTARY_KEY_ID }}
           GLINT_NOTARY_ISSUER_ID: ${{ secrets.GLINT_NOTARY_ISSUER_ID }}
         run: Scripts/package_release.sh --version "$VERSION" --require-universal --build-number "$GITHUB_RUN_NUMBER" --notarize
+
+      # Signs the final, notarized zip and the appcast, then verifies both against the public key
+      # inside the packaged app. Nothing may modify the zip afterwards.
+      - name: Generate and verify the signed update feed
+        if: steps.version.outputs.exists != 'true' && steps.version.outputs.prerelease != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GLINT_SPARKLE_PUBLIC_KEY: ${{ vars.GLINT_SPARKLE_PUBLIC_KEY }}
+          GLINT_SPARKLE_PRIVATE_KEY: ${{ secrets.GLINT_SPARKLE_PRIVATE_KEY }}
+        run: Scripts/generate_appcast.sh "$VERSION"
 
       - name: Remove notarization credentials
         if: always()
@@ -153,6 +217,9 @@ jobs:
           flags=()
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease)
+          else
+            # Prereleases are never offered as updates, so only stable releases carry the signed feed.
+            assets+=("dist/appcast.xml" "dist/appcast.xml.sha256")
           fi
           # The changelog section comes first, then the install and update instructions.
           {

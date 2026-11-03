@@ -66,15 +66,29 @@
         </section>
         <section id="updates">
           <h2>Update Glint</h2>
-          <p><strong>Glint does not automatically download or install updates.</strong> Choose <strong>Check for Updates…</strong> from the menu bar, or use the button in Preferences → About. This contacts GitHub to compare your installed version with the latest stable release.</p>
+          <p>Direct downloads of Glint released after <strong>1.5.5</strong> include in-app updates powered by Sparkle. <strong>Automatic checks are off by default, and Glint never installs an update without asking.</strong> Homebrew-managed copies keep using Homebrew instead.</p>
+          <h3 id="checking-for-updates">Check for updates</h3>
+          <p>Choose <strong>Check for Updates…</strong> from Glint's menu bar icon or the Glint app menu, or click <strong>Check Now</strong> in Preferences → About. If an update is available, Sparkle shows what changed. Choose <strong>Install Update</strong> to download it; Sparkle asks again before quitting Glint, replacing the app and relaunching it. Save any open edits before installing. macOS may ask for an administrator password if the app's folder is not writable.</p>
+          <h3 id="automatic-checks">Automatic checks</h3>
+          <p>In Preferences → About, set <strong>Check for updates automatically</strong> to <strong>Daily</strong>, <strong>Weekly</strong> or <strong>Monthly</strong> to opt in. Choose <strong>Never</strong> to turn scheduled checks off again. The Updates section also shows when Glint last checked. Scheduled checks still ask before downloading or installing anything.</p>
+          <p>Each check fetches <code>appcast.xml</code> from the latest stable GitHub release. Glint does not send a system profile. With the schedule set to Never, no update request is made until you check by hand.</p>
+          <h3 id="update-verification">How updates are verified</h3>
+          <p>Sparkle fetches the update feed over HTTPS and verifies EdDSA signatures on both the feed and the downloaded archive, then checks the app's code signature before installing. Official releases continue to use an Apple Developer ID certificate and Apple notarization, introduced in 1.5.4. Updates with the same signing requirement are expected to retain Screen Recording permission.</p>
+          <p>Source builds without the release update key cannot update themselves; Glint explains this instead of contacting the feed. Use an <a href="https://github.com/MrAshRhodes/glint/releases/latest">official release</a> for in-app updates.</p>
           <h3>If you installed with Homebrew</h3>
+          <p><strong>Check for Updates…</strong> and Preferences → About show the Homebrew update command with a <strong>Copy Command</strong> button. Sparkle does not check or replace a Homebrew-managed app.</p>
           <ol><li>Save any open edits and quit Glint.</li><li>Run the command below.</li><li>Open Glint from Applications again. Check the version in About Glint.</li></ol>
           <pre class="code"><code>brew update &amp;&amp; brew upgrade --cask glint</code></pre>
           <p><code>brew update</code> refreshes Homebrew and its taps; it does <strong>not</strong> install a newer Glint. The <code>brew upgrade</code> part does that. Keep using Homebrew for an app it manages rather than replacing the app manually.</p>
-          <p>If Glint reports a new release but Homebrew says it is already current, the tap may still be catching up. Try again after the release's tap update has finished. You can inspect the available version with <code>brew info --cask glint</code>.</p>
-          <h3>If you installed from a ZIP or DMG</h3>
+          <p>If GitHub has a new release but Homebrew says Glint is already current, the tap may still be catching up. Try again after the release's tap update has finished. You can inspect the available version with <code>brew info --cask glint</code>.</p>
+          <h3>Updating from 1.5.5 or earlier</h3>
+          <p>These versions cannot install updates in-app. If Homebrew manages your copy, use the command above. Otherwise, update once by hand:</p>
           <ol><li>Save your edits and quit Glint.</li><li><a href="https://github.com/MrAshRhodes/glint/releases/latest">Download the new release</a> from GitHub, including the ZIP or DMG and its matching <code>.sha256</code> file.</li><li>Follow the <a href="#install">manual-download verification steps</a> before extracting the ZIP or opening the DMG. Continue only if verification succeeds and reports <code>OK</code>.</li><li>Replace Glint.app in Applications with the verified new copy, then reopen it.</li></ol>
-          <p>Replacing the app keeps your separately stored preferences, presets and image files. Do not delete those folders to update.</p>
+          <p>After this one-time update, the directly downloaded copy can update itself. Replacing the app keeps your separately stored preferences, presets and image files. Do not delete those folders to update.</p>
+          <h3 id="switching-installs">Switching an install between Homebrew and direct downloads</h3>
+          <p><strong>Homebrew → direct download:</strong> save your edits, quit Glint, then run <code>brew uninstall --cask glint</code>. This removes the managed Glint.app, not your separately stored preferences, presets or image files; do not use <code>--zap</code>. Then <a href="#install">verify and install the official ZIP or DMG</a>. The new copy uses in-app updates.</p>
+          <p><strong>Direct download → Homebrew:</strong> save your edits, quit Glint and move the existing Glint.app from Applications to the Trash. Add the tap if needed with <code>brew tap MrAshRhodes/tap</code>, then run <code>brew install --cask glint</code>. Homebrew now manages updates.</p>
+          <p>Replacing Glint.app by hand without uninstalling its cask leaves it Homebrew-managed. About shows the version recorded by Homebrew and flags it when it differs from the running app. Use <code>brew reinstall --cask glint</code> to restore Homebrew's copy, or follow the Homebrew → direct download steps above to switch fully.</p>
           <div class="callout"><p><strong>After an update:</strong> moving from 1.5.3 or earlier to 1.5.4 or later changes the signing requirement, so macOS needs Screen Recording permission once more. Choose <strong>Re-authorize Screen Recording…</strong> in Preferences → About (Glint also opens its setup window if a capture fails for lack of access), allow Glint in System Settings, then relaunch Glint. Subsequent Developer ID updates use the same signing requirement and are expected to keep the permission.</p></div>
         </section>
         <section id="permissions">
@@ -132,7 +146,7 @@
           <p>Preview, saved files, clipboard images, shared images and the copies Glint keeps for Reopen Last Image use the same replacement style and colours. Exported images are flattened: they do not contain editable redaction layers or an embedded original. You can still undo edits while the editor is open; your original image and any separately saved raw capture are not erased.</p>
           <p>Optional <strong>Auto-redact</strong> uses on-device text recognition to find patterns such as email addresses, phone numbers, credit card numbers, IP addresses and common API tokens. It is off by default and always uses solid fill, regardless of the manual mode. You can choose detection categories, custom words and the solid color, but not blur or pixelate.</p>
           <div class="callout"><p><strong>Review before you share.</strong> Detection is not a guarantee and can miss information. Use Solid or Pixelate redaction for sensitive details and inspect the exported image. If raw history is enabled, the untouched capture may still contain the information you removed from the styled output.</p></div>
-          <p>Glint does not upload your screenshots. The manual update check contacts GitHub; opening web links or sharing an image uses the destination you select.</p>
+          <p>Glint does not upload your screenshots. Update checks contact GitHub only when you check by hand or have chosen a schedule; automatic checks are off by default. Opening web links or sharing an image uses the destination you select.</p>
         </section>
         <section id="presets">
           <h2>Presets</h2>
@@ -182,7 +196,7 @@
         <section id="preferences">
           <h2>Preferences</h2>
           <p>Open Preferences with <kbd>⌘ ,</kbd>. General controls launch at login, menu bar and Dock visibility, sounds and notifications. Capture controls cursor visibility, remembering the last area, <a href="#selection-snapping">selection snapping</a> and hiding Glint windows during capture.</p>
-          <p>Output controls capture actions and files, including whether Glint keeps copied and dragged screenshots for reopening and for how long (see <a href="#reopen-last-image">Reopen Last Image</a>). Editor controls the default preset, <strong>Remember settings</strong>, auto-balance and auto-redact. Presets adds, edits, renames, deletes, imports and exports presets and sets your default look; see <a href="#presets">Presets</a>. About shows the version, Screen Recording permission (with <strong>Re-authorize Screen Recording…</strong>) and manual update check.</p>
+          <p>Output controls capture actions and files, including whether Glint keeps copied and dragged screenshots for reopening and for how long (see <a href="#reopen-last-image">Reopen Last Image</a>). Editor controls the default preset, <strong>Remember settings</strong>, auto-balance and auto-redact. Presets adds, edits, renames, deletes, imports and exports presets and sets your default look; see <a href="#presets">Presets</a>. About shows the version, Screen Recording permission (with <strong>Re-authorize Screen Recording…</strong>) and <a href="#updates">Updates</a>: Check Now, the automatic-check schedule and the last check time for direct downloads, or the update command for Homebrew installs.</p>
         </section>
         <section id="automation">
           <h2>Automation</h2>
@@ -220,6 +234,8 @@ glint://open?file=%2FUsers%2Fyou%2FDesktop%2Fimage.png</code></pre>
           <p>It is dimmed when Glint has no kept image to open. Keeping images is opt-in: turn on <strong>Keep copied and dragged screenshots for reopening</strong> and <strong>Keep history</strong> in Preferences → Output, then copy or drag the image again. An image copied or dragged before you opted in cannot be recovered. A kept image also leaves the menu after you delete it, after it expires under <strong>Keep screenshots in Output for</strong>, or when you switch to a different history folder, because Glint only looks in the current Output folder. See <a href="#reopen-last-image">Reopen Last Image</a>.</p>
           <h3>Homebrew does not offer the release yet</h3>
           <p>Run <code>brew update</code>, then <code>brew info --cask glint</code>. The cask must be updated after the release publishes. Check the <a href="https://github.com/MrAshRhodes/homebrew-tap">tap</a> if the displayed version is behind.</p>
+          <h3>An update check or install fails</h3>
+          <p>If signature verification fails, the update is not installed. Do not bypass the check. Try again later, or <a href="#install">verify and install an official download</a> by hand; Homebrew users should use the Homebrew update command instead. If the problem persists, report the error message, Glint version and macOS version in an <a href="https://github.com/MrAshRhodes/glint/issues">issue</a>, without including private information.</p>
           <h3>Something else is wrong</h3>
           <p>Check <a href="https://github.com/MrAshRhodes/glint/issues">existing issues</a> or report the problem with the steps, macOS version and Glint version. Review <code>--diagnose</code> output for private information before including it.</p>
         </section>

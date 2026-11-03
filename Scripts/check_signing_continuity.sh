@@ -14,6 +14,8 @@
 # Environment:
 #   GLINT_SIGN_IDENTITY     Required: a certificate identity (SHA-1 or name), not "-" (ad-hoc).
 #   GLINT_REQUIREMENT_FILE  Optional: both builds must also satisfy this designated requirement.
+#   GLINT_SPARKLE_PUBLIC_KEY  Required by build_app.sh for any certificate-signed build; any
+#                           well-formed base64 Ed25519 public key will do for this check.
 #
 # macOS stores an app's designated requirement with every privacy grant (Screen Recording,
 # TCC) and honours the grant for any later build that satisfies it. This script rebuilds

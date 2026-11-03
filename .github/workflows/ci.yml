@@ -39,6 +39,10 @@ jobs:
       - name: Test release failure gates
         run: node --test .github/scripts/notarize.test.cjs
 
+      # Runs Sparkle's real signing tools, which the Build step above resolves into .build/artifacts.
+      - name: Test the update feed generator
+        run: node --test .github/scripts/appcast.test.cjs
+
       - name: Check the changelog
         run: |
           node --test .github/scripts/changelog.test.cjs
@@ -60,12 +64,15 @@ jobs:
           GLINT_SIGNING_P12_PASSWORD="$(cat "$cert_dir/glint-signing.p12.password")" \
             Scripts/import_signing_identity.sh --p12 "$cert_dir/glint-signing.p12" > /dev/null
 
+      # build_app.sh requires an update verification key for any certificate-signed build. This one is
+      # a well-formed placeholder: these CI builds are never shipped or offered to anyone.
       - name: Assemble Glint.app
         env:
           SWIFTW_BUILD_SYSTEM: native
           GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
           GLINT_REQUIRE_STABLE_SIGNATURE: '1'
           GLINT_REQUIREMENT_FILE: ${{ runner.temp }}/glint-signing-cert/designated-requirement.txt
+          GLINT_SPARKLE_PUBLIC_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
         run: make app
 
       - name: Check that updates keep Screen Recording permission
@@ -73,6 +80,7 @@ jobs:
           SWIFTW_BUILD_SYSTEM: native
           GLINT_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
           GLINT_REQUIREMENT_FILE: ${{ runner.temp }}/glint-signing-cert/designated-requirement.txt
+          GLINT_SPARKLE_PUBLIC_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
         run: Scripts/check_signing_continuity.sh --previous dist/Glint.app
 
       - name: Remove the throwaway signing keychain

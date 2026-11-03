@@ -138,6 +138,36 @@ test("every local HTML asset and fragment resolves under the Pages project path"
   }
 });
 
+test("README update-guide links resolve to published guide sections", () => {
+  const readme = fs.readFileSync(path.join(root, "../README.md"), "utf8");
+  const fragments = [...readme.matchAll(/https:\/\/mrashrhodes\.github\.io\/glint\/guide\.html#([\w-]+)/g)]
+    .map((match) => match[1]);
+  const guide = pageSource("guide.html");
+  for (const fragment of ["updates", "switching-installs"]) {
+    assert.ok(fragments.includes(fragment), `README: missing guide link for ${fragment}`);
+  }
+  for (const fragment of fragments) {
+    assert.ok(guide.includes(`id="${fragment}"`), `README: missing guide target #${fragment}`);
+  }
+});
+
+test("the update guide covers consent, opt-in schedules, Homebrew and legacy installs", () => {
+  const section = pageSource("guide.html").match(/<section id="updates">([\s\S]*?)<\/section>/);
+  assert.ok(section, "missing update guide section");
+  const text = section[1].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ");
+  assert.match(text, /Check for Updates/);
+  assert.match(text, /Check Now/);
+  assert.match(text, /asks again before quitting Glint/);
+  assert.match(text, /Automatic checks are off by default/i);
+  assert.match(text, /Daily.*Weekly.*Monthly.*opt in/);
+  assert.match(text, /Never.*scheduled checks off/);
+  assert.match(text, /Scheduled checks still ask before downloading or installing/);
+  assert.match(text, /brew update && brew upgrade --cask glint/);
+  assert.match(text, /Updating from 1\.5\.5 or earlier.*cannot install updates in-app/);
+  assert.match(text, /brew uninstall --cask glint/);
+  assert.match(text, /do not use.*--zap/);
+});
+
 test("all two subjects by five views have real WebP assets", () => {
   for (const sample of ["terminal", "dashboard"]) {
     for (const preset of ["raw", "default", "clean", "social", "transparent"]) {

@@ -46,6 +46,27 @@ earlier are legacy builds signed with Glint's own certificate and are not
 notarized; they are not retroactively replaced. Reports of ways to bypass the
 documented signing, notarization or integrity checks are welcome.
 
+## Update integrity and credentials
+
+Direct downloads released after 1.5.5 use Sparkle 2. Update checks fetch the latest
+stable release's appcast over HTTPS and require its EdDSA signature. Downloaded
+archives must pass EdDSA verification before extraction, and Sparkle also checks
+the app's code signature before installation. This update key is separate from
+the Apple Developer ID identity; releases still require Apple notarization.
+Homebrew-managed copies do not use Sparkle to replace themselves.
+
+Automatic checks are off by default. No update request is made until the user
+checks manually or opts into a schedule, and no system profile is sent. Downloads
+and installation both require user confirmation. Source builds without the
+release public key cannot use in-app updates.
+
+Private signing and notarization material belongs in the protected GitHub
+**release** environment and secure local storage, never in source, app bundles,
+logs, command history or public variables. Only the Sparkle **public** key is
+embedded in the app. See the [maintainer signing guide](packaging/signing/README.md)
+for Keychain storage, encrypted backups and CI setup. Report suspected key
+exposure privately using the reporting channel above.
+
 ## Response and disclosure
 
 Glint is maintained on a reasonable-effort basis. We will investigate reports

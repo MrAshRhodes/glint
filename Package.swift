@@ -8,6 +8,10 @@ let package = Package(
         .executable(name: "Glint", targets: ["Glint"]),
         .library(name: "GlintCore", targets: ["GlintCore"]),
     ],
+    dependencies: [
+        // Pinned exactly: the updater verifies what gets installed, so a new Sparkle is a reviewed change.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+    ],
     targets: [
         // Pure logic: models, compositor/renderer, auto-balance, OCR + redaction, export, presets.
         .target(name: "GlintCore", path: "Sources/GlintCore"),
@@ -18,8 +22,12 @@ let package = Package(
         // App shell: menu bar item, preferences, quick-access overlay, URL scheme, updates.
         .executableTarget(
             name: "Glint",
-            dependencies: ["GlintCore", "GlintCapture", "GlintEditor"],
-            path: "Sources/Glint"
+            dependencies: ["GlintCore", "GlintCapture", "GlintEditor", .product(name: "Sparkle", package: "Sparkle")],
+            path: "Sources/Glint",
+            // Sparkle.framework is embedded in Contents/Frameworks by Scripts/build_app.sh.
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+            ]
         ),
         .testTarget(name: "GlintCoreTests", dependencies: ["GlintCore"], path: "Tests/GlintCoreTests"),
         .testTarget(name: "GlintAppTests", dependencies: ["Glint"], path: "Tests/GlintAppTests"),
