@@ -250,6 +250,9 @@ numbers keep increasing, and test it before tagging.
 Only the protected tag workflow generates the real feed. `node --test .github/scripts/appcast.test.cjs`
 exercises `generate_appcast.sh` with Sparkle's real tools and a published RFC 8032 test-vector
 key, never a release key; it needs the Sparkle tools that `Scripts/swiftw.sh build` resolves.
+It also verifies that Sparkle rejects a modified archive and an invalid archive signature, and
+that `verify_signature.sh` rejects a modified ad-hoc-signed fixture app. These are local integrity
+checks, not proof that the running updater rejects an update before replacing an installed app.
 
 ## Permissions, renewal and tests
 
@@ -287,11 +290,20 @@ clearing quarantine, launch and capture after granting Screen Recording. Also te
 from a legacy release (one re-grant) and between two Developer ID builds (grant retained).
 Local signature checks alone do not establish those end-user behaviors.
 
-The first release that includes Sparkle can only be installed by hand, so the first real in-app
-update can be tested only once a second release exists. Before announcing in-app updates, test it
-on a clean Mac: install the older notarized release from a browser download, choose
+Versions without Sparkle need one manual or Homebrew upgrade to reach the first updater-enabled
+release. Testing installation and relaunch needs two updater-enabled signed builds; an isolated
+test installation and feed are suitable, and must not replace the user's installed Glint. Before
+announcing production in-app updates, test with two notarized releases on a clean Mac: install
+the older release from a browser download, choose
 **Check for Updates…**, and confirm that Glint asks before downloading and again before installing
-and relaunching. Afterward confirm that Screen Recording is still granted and that the replaced app
+and relaunching. Afterward confirm that settings, Launch at Login and Screen Recording are preserved,
+and that the replaced app
 passes `Scripts/verify_signature.sh PATH_TO_GLINT.APP --require-notarized`, which includes the
 Gatekeeper assessment. Also check that a Homebrew-managed copy shows its command and is never
 replaced by Sparkle.
+
+On the isolated installation, also exercise an up-to-date feed, an available update, a failed
+download and invalid feed, archive and app signatures. Check the user-facing errors and confirm
+that every rejected update leaves the original app in place and launchable. Keep these live
+updater checks separate from the credential-free tests above; an up-to-date response alone
+does not verify replacement, relaunch or permission retention.

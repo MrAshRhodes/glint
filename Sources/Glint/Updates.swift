@@ -105,6 +105,10 @@ final class UpdateController: NSObject, ObservableObject, NSMenuItemValidation {
         switch availability {
         case .ready:
             guard let engine, startIfNeeded(reportingErrors: true) else { return }
+            guard engine.canCheckForUpdates else {
+                refresh()
+                return
+            }
             engine.checkForUpdates()
             refresh()
         case .homebrew(let hint):

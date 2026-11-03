@@ -65,7 +65,7 @@ function fixture(t, { plist = {}, notes = changelog } = {}) {
   };
 }
 
-test('real Sparkle tools sign the final archive and feed, and tampering is rejected', t => {
+test('real Sparkle tools sign the final archive and feed, and feed tampering is rejected', t => {
   const f = fixture(t);
   const result = f.generate();
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
@@ -84,6 +84,51 @@ test('real Sparkle tools sign the final archive and feed, and tampering is rejec
     input: seed, encoding: 'utf8', timeout: 10000,
   });
   assert.notEqual(verify.status, 0, 'a tampered appcast was accepted');
+});
+
+test('real Sparkle tools reject a tampered archive and an invalid archive signature', t => {
+  const f = fixture(t);
+  const result = f.generate();
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const xml = fs.readFileSync(f.feed, 'utf8');
+  const signature = xml.match(/sparkle:edSignature="([^"]+)"/)?.[1];
+  assert.ok(signature, 'the generated feed must include an archive signature');
+  const archive = path.join(f.dir, 'dist/Glint-1.0.0.zip');
+  const verify = suppliedSignature => {
+    const result = spawnSync(path.join(tools, 'sign_update'),
+      ['--ed-key-file', '-', '--verify', archive, suppliedSignature], {
+        input: seed, encoding: 'utf8', timeout: 10000,
+      });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, 'verification must finish, not be killed');
+    return result;
+  };
+
+  const valid = verify(signature);
+  assert.equal(valid.status, 0, `${valid.stdout}\n${valid.stderr}`);
+
+  const invalidSignature = Buffer.from(signature, 'base64');
+  invalidSignature[0] ^= 1;
+  assert.notEqual(verify(invalidSignature.toString('base64')).status, 0,
+    'a well-formed but invalid signature was accepted');
+
+  fs.appendFileSync(archive, 'tampered');
+  assert.notEqual(verify(signature).status, 0, 'a tampered archive was accepted');
+});
+
+test('the app signature verifier rejects a modified signed bundle', t => {
+  const f = fixture(t);
+  const app = path.join(f.dir, 'dist/Glint.app');
+  const script = path.join(root, 'Scripts/verify_signature.sh');
+  run('bash', [script, app]);
+
+  run('/usr/bin/plutil', ['-replace', 'CFBundleShortVersionString', '-string', '9.9.9',
+    path.join(app, 'Contents/Info.plist')]);
+  const result = spawnSync('bash', [script, app], { encoding: 'utf8', timeout: 10000 });
+  assert.ifError(result.error);
+  assert.equal(result.signal, null, 'verification must finish, not be killed');
+  assert.notEqual(result.status, 0, 'a modified signed app was accepted');
+  assert.match(result.stderr, /invalid code signature/);
 });
 
 test('a public key that differs from the one embedded in the app never yields a feed', t => {

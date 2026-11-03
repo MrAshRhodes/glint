@@ -42,13 +42,20 @@ struct UpdateControllerTests {
     }
 
     @Test(arguments: UpdateCheckFrequency.allCases)
-    func manualCheckWorksAtEveryFrequency(_ frequency: UpdateCheckFrequency) {
+    func manualChecksWaitForThePreviousCheckAtEveryFrequency(_ frequency: UpdateCheckFrequency) {
         let engine = FakeUpdateEngine()
         engine.automaticallyChecksForUpdates = frequency != .never
         engine.updateCheckInterval = frequency.interval ?? 86_400
         engine.events = []
         let controller = makeController(engine)
         controller.checkForUpdates(nil)
+        controller.checkForUpdates(nil)
+        #expect(engine.events == ["start", "check"])
+        #expect(!controller.canCheckNow)
+
+        engine.canCheckForUpdates = true
+        engine.onChange?()
+        #expect(controller.canCheckNow)
         controller.checkForUpdates(nil)
         #expect(engine.events == ["start", "check", "check"])
         #expect(controller.frequency == frequency)
@@ -313,6 +320,7 @@ private final class FakeUpdateEngine: UpdateEngine {
     func start() throws {
         events.append("start")
         if let startError { throw startError }
+        canCheckForUpdates = true
     }
 
     func checkForUpdates() {
