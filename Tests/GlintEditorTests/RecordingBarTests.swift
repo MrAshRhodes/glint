@@ -76,11 +76,14 @@ struct RecordingBarTests {
         window.orderBack(nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         let timestamp = ProcessInfo.processInfo.systemUptime
-        let points: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
-            + (1...5).map { step in
-                (.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * CGFloat(step) / 5,
-                                           y: start.y + (end.y - start.y) * CGFloat(step) / 5))
-            } + [(.leftMouseUp, end)]
+        var points: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
+        for step in 1...5 {
+            let progress = CGFloat(step) / 5
+            let point = CGPoint(x: start.x + (end.x - start.x) * progress,
+                                y: start.y + (end.y - start.y) * progress)
+            points.append((.leftMouseDragged, point))
+        }
+        points.append((.leftMouseUp, end))
         for (index, point) in points.enumerated() {
             let event = try #require(NSEvent.mouseEvent(with: point.0, location: point.1, modifierFlags: [],
                                                        timestamp: timestamp + Double(index) * 0.02,
