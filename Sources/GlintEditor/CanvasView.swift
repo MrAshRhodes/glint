@@ -69,11 +69,16 @@ final class CanvasView: NSView, NSTextViewDelegate {
         super.init(frame: .zero)
         wantsLayer = true
         model.objectWillChange
-            .sink { [weak self] in DispatchQueue.main.async { self?.needsDisplay = true; self?.window?.invalidateCursorRects(for: self!) } }
+            .sink { [weak self] in DispatchQueue.main.async {
+                guard let self else { return }
+                self.needsDisplay = true
+                self.positionEditor()
+                self.window?.invalidateCursorRects(for: self)
+            } }
             .store(in: &bag)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
-        setAccessibilityLabel("Screenshot preview")
+        setAccessibilityLabel(model.isRecording ? "Recording preview" : "Screenshot preview")
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -154,7 +159,9 @@ final class CanvasView: NSView, NSTextViewDelegate {
             if !model.isDesigningPreset { drawHint("Reset rotation, flip and 3D tilt to edit annotations") }
             return
         }
-        for a in model.selectedAnnotations where a.id != model.editingID { drawSelection(a, single: model.selection.count == 1) }
+        for a in model.selectedAnnotations where a.id != model.editingID && model.isVisible(a) {
+            drawSelection(a, single: model.selection.count == 1)
+        }
         if case .zoom(let start, let end, let square) = drag { drawZoomMarquee(from: start, to: end, square: square) }
     }
 
@@ -225,7 +232,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     // MARK: Hit testing
 
     private func handleHit(at v: CGPoint) -> (UUID, HandleID)? {
-        guard model.selection.count == 1, let a = model.selectedAnnotations.first else { return nil }
+        guard model.selection.count == 1, let a = model.selectedAnnotations.first, model.isVisible(a) else { return nil }
         for (id, pt) in AnnotationGeometry.handles(of: a) {
             let hv = toView(pt)
             if hypot(hv.x - v.x, hv.y - v.y) <= 8 { return (a.id, id) }
@@ -235,7 +242,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private func annotation(at imagePoint: CGPoint) -> Annotation? {
         let tol = 6 / max(viewPerImage, 0.01)
-        for a in model.annotations.sorted(by: { $0.z > $1.z }) where AnnotationGeometry.hit(a, at: imagePoint, tol: tol) { return a }
+        for a in model.visibleAnnotations.sorted(by: { $0.z > $1.z }) where AnnotationGeometry.hit(a, at: imagePoint, tol: tol) { return a }
         return nil
     }
 
@@ -467,6 +474,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private func positionEditor() {
         guard let tv = editor, let id = editingBaseID, let a = model.annotations.first(where: { $0.id == id }) else { return }
+        tv.isHidden = !model.isVisible(a)
         var style = a.style
         style.fontSize = a.style.fontSize * Double(viewPerImage)
         tv.font = AnnotationGeometry.font(for: style)

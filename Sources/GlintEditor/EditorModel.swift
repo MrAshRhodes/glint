@@ -127,6 +127,7 @@ final class EditorModel: ObservableObject {
         didSet { requestRender() }
     }
     @Published var selection: Set<UUID> = []
+    @Published private(set) var recordingTime: TimeInterval = 0
     @Published var tool: EditorTool = .select {
         didSet { if tool != oldValue { onBeginEditing?() } }
     }
@@ -176,10 +177,10 @@ final class EditorModel: ObservableObject {
 
     typealias Renderer = @Sendable (_ image: CGImage, _ settings: RenderSettings, _ annotations: [Annotation],
                                     _ backingScale: CGFloat, _ backgroundImage: CGImage?,
-                                    _ wallpaper: CGImage?) throws -> RenderResult
-    static let compositorRenderer: Renderer = { image, settings, annotations, scale, background, wallpaper in
+                                    _ wallpaper: CGImage?, _ annotationTime: TimeInterval?) throws -> RenderResult
+    static let compositorRenderer: Renderer = { image, settings, annotations, scale, background, wallpaper, time in
         try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
-                                      backgroundImage: background, wallpaper: wallpaper)
+                                      backgroundImage: background, wallpaper: wallpaper, annotationTime: time)
     }
     /// Composes previews and final output; replaceable so tests can force render failures.
     var renderer: Renderer = EditorModel.compositorRenderer
@@ -227,6 +228,18 @@ final class EditorModel: ObservableObject {
     }
 
     var selectedAnnotations: [Annotation] { annotations.filter { selection.contains($0.id) } }
+
+    func isVisible(_ annotation: Annotation) -> Bool {
+        !isRecording || annotation.isVisible(at: recordingTime)
+    }
+
+    var visibleAnnotations: [Annotation] { annotations.filter { isVisible($0) } }
+
+    var hasTimeLimitedRedactions: Bool {
+        isRecording && annotations.contains {
+            $0.visibleRange != nil && ($0.isRedaction || $0.isObfuscation)
+        }
+    }
 
     private func redactionMode(of annotation: Annotation) -> RedactionStyle? {
         switch annotation.kind {
@@ -323,11 +336,12 @@ final class EditorModel: ObservableObject {
         let wallpaper = wallpaperImage
         let img = image, scale = backingScale
         let anns = annotations.filter { $0.id != editingID }
+        let time = isRecording ? recordingTime : nil
         let renderer = self.renderer
         Task.detached(priority: .userInitiated) { [weak self] in
             let r: RenderResult
             do {
-                r = try renderer(img, s, anns, scale, bg, wallpaper)
+                r = try renderer(img, s, anns, scale, bg, wallpaper, time)
             } catch {
                 // Fail closed: never fall back to unannotated pixels; keep the last good preview.
                 let message = error.localizedDescription
@@ -361,16 +375,18 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    /// Full-resolution output with every annotation burned in.
+    /// Full-resolution output with annotations visible at the current recording time burned in.
     /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     func renderFinal() throws -> CGImage {
-        try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage).image
+        try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage,
+                     isRecording ? recordingTime : nil).image
     }
 
     /// A frame update is not an edit: it uses the existing latest-dirty preview queue without undo or preference writes.
-    func updateRecordingFrame(_ frame: CGImage) {
+    func updateRecordingFrame(_ frame: CGImage, at time: TimeInterval) {
         guard isRecording else { return }
         image = frame
+        recordingTime = time
         requestRender()
     }
 
@@ -378,15 +394,73 @@ final class EditorModel: ObservableObject {
     func recordingFrameRenderer() -> RecordingExporter.FrameRenderer {
         let settings = settings, annotations = annotations, scale = backingScale
         let background = backgroundImage(for: settings), wallpaper = wallpaperImage
-        return { frame in
+        return { frame, time in
             // A missing background must not be lazily read halfway through the clip if the file reappears.
             if case .image = settings.background, background == nil { throw CocoaError(.fileReadNoSuchFile) }
             return try Compositor.render(image: frame, settings: settings, annotations: annotations,
-                                         backingScale: scale, backgroundImage: background, wallpaper: wallpaper)
+                                         backingScale: scale, backgroundImage: background, wallpaper: wallpaper,
+                                         annotationTime: time)
         }
     }
 
     // MARK: Annotation editing
+
+    func setAnnotationBoundary(_ seconds: TimeInterval, isStart: Bool, ids: Set<UUID>,
+                               sourceDuration: TimeInterval, live: Bool = false) {
+        guard isRecording else { return }
+        guard seconds.isFinite, sourceDuration.isFinite, sourceDuration > 0 else {
+            statusMessage = "Enter a finite annotation time within the recording."
+            return
+        }
+        let minimum = min(1.0 / 600, sourceDuration)
+        let updated = annotations.map { annotation -> Annotation in
+            guard ids.contains(annotation.id) else { return annotation }
+            var annotation = annotation
+            let range = annotation.visibleRange ?? AnnotationTiming(start: 0, end: sourceDuration)
+            let start: TimeInterval
+            let end: TimeInterval
+            if isStart {
+                end = min(max(range.end, minimum), sourceDuration)
+                start = min(max(seconds, 0), end - minimum)
+            } else {
+                start = min(max(range.start, 0), sourceDuration - minimum)
+                end = min(max(seconds, start + minimum), sourceDuration)
+            }
+            annotation.visibleRange = start == 0 && end == sourceDuration
+                ? nil : AnnotationTiming(start: start, end: end)
+            return annotation
+        }
+        if live { updateLive(updated) }
+        else { setAnnotations(updated, actionName: "Change Annotation Timing") }
+    }
+
+    func moveAnnotationRange(to seconds: TimeInterval, id: UUID,
+                             sourceDuration: TimeInterval, live: Bool = false) {
+        guard isRecording else { return }
+        guard seconds.isFinite, sourceDuration.isFinite, sourceDuration > 0 else {
+            statusMessage = "Enter a finite annotation time within the recording."
+            return
+        }
+        let updated = annotations.map { annotation -> Annotation in
+            guard annotation.id == id, let range = annotation.visibleRange else { return annotation }
+            let span = min(range.end - range.start, sourceDuration)
+            let start = min(max(seconds, 0), sourceDuration - span)
+            var annotation = annotation
+            annotation.visibleRange = span == sourceDuration ? nil : AnnotationTiming(start: start, end: start + span)
+            return annotation
+        }
+        if live { updateLive(updated) }
+        else { setAnnotations(updated, actionName: "Move Annotation Timing") }
+    }
+
+    func showAnnotationsThroughout(_ ids: Set<UUID>) {
+        guard isRecording else { return }
+        setAnnotations(annotations.map { annotation in
+            var annotation = annotation
+            if ids.contains(annotation.id) { annotation.visibleRange = nil }
+            return annotation
+        }, actionName: "Show Throughout Recording")
+    }
 
     private func nextZ() -> Int { (annotations.map(\.z).max() ?? -1) + 1 }
 

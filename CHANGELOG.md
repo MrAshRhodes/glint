@@ -8,9 +8,17 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-05
+
 ### Added
 
-- Screen recording. Choose **Record Screen…** from the menu bar icon or press ⌃⌥⌘9, select and adjust an area, then record immediately or after a 3, 5 or 10 second countdown. A floating bar shows the elapsed time and a Stop button; stop with it, with the same shortcut or from the menu bar. Recordings are capped at 10 minutes, have no audio, and leave Glint's own windows out. A finished recording opens in the same editor as screenshots, with the same tools, annotations, frames, backgrounds and presets applied to the whole clip. Trim it, then export an animated GIF or an MP4, or copy, save, share or drag it out. Annotations stay in place for the entire clip; automatic redaction and Auto-balance are off for recordings so the picture never shifts. ([#74])
+- Screen recording. Choose **Record Screen…** from the menu bar icon or press ⌃⌥⌘9, select and adjust an area, then record immediately or after a 3, 5 or 10 second countdown. A floating bar shows the elapsed time and a Stop button; stop with it, with the same shortcut or from the menu bar. Recordings are capped at 10 minutes, have no audio, and leave Glint's own windows out. A finished recording opens in the same editor as screenshots, with the same tools, annotations, frames, backgrounds and presets applied to the whole clip by default. Trim it, then export an animated GIF or an MP4, or copy, save, share or drag it out. Annotations stay in a fixed position; automatic redaction and Auto-balance are off for recordings so the picture never shifts. ([#74])
+- Each annotation on a recording can now appear for a chosen time range, including zoom cut-ins and redactions. All start on **Whole clip**. Adjust each annotation's timeline lane with start/end handles, numeric times, **Start at playhead** / **End at playhead** or **Shift+I** / **Shift+O**; drag a shortened range's named bar to move it without changing its duration. Lanes align with the trim timeline, with range times on the right. **Whole clip** removes its limits. Keyboard and VoiceOver controls are supported. Ranges use original-recording times and follow trimming; preview playback, scrubbing, GIF/MP4 exports and copied clips respect them. Glint warns that a time-limited redaction, Pixelate or Blur effect exposes content outside its range. Annotations do not fade or track moving content. ([#75])
+- GlintCore API: `AnnotationTiming(start:end:)`, optional `Annotation.visibleRange` (`nil` means throughout), and `Annotation.isVisible(at:)`. `Compositor.render` and `renderDetailed` accept an optional `annotationTime` in source-recording seconds, filtering visibility without changing the canvas layout. ([#75])
+
+### Changed
+
+- **Breaking for recording-export API callers:** `RecordingExporter.FrameRenderer` now receives `(CGImage, TimeInterval)` rather than only an image. The second argument is the frame's source-recording time, not time since the trim start; pass it to the compositor's `annotationTime` to apply annotation ranges. ([#75])
 
 ## [1.6.0] - 2026-11-03
 
@@ -217,7 +225,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...v1.5.4
@@ -262,3 +271,4 @@ First public release.
 [#70]: https://github.com/MrAshRhodes/glint/issues/70
 [#72]: https://github.com/MrAshRhodes/glint/issues/72
 [#74]: https://github.com/MrAshRhodes/glint/issues/74
+[#75]: https://github.com/MrAshRhodes/glint/issues/75

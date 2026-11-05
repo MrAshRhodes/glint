@@ -12,7 +12,7 @@ final class RecordingPlayback: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var frameProblem: String?
-    var onFrame: ((CGImage) -> Void)? {
+    var onFrame: ((CGImage, TimeInterval) -> Void)? {
         didSet { if onFrame != nil { requestFrame(at: currentTime) } }
     }
 
@@ -155,7 +155,7 @@ final class RecordingPlayback: ObservableObject {
                     guard !Task.isCancelled, !self.isShutDown else { break }
                     if revision == self.seekRevision {
                         self.frameProblem = nil
-                        self.onFrame?(result.image)
+                        self.onFrame?(result.image, seconds)
                     }
                 } catch {
                     guard !Task.isCancelled, !self.isShutDown else { break }

@@ -8,7 +8,7 @@ struct RecordingBarView: View {
     @ObservedObject var recording: RecordingEditorModel
     @ObservedObject var playback: RecordingPlayback
     @ObservedObject var actions: EditorActions
-    static let contentHeight: CGFloat = 172
+    static let contentHeight: CGFloat = 320
 
     @StateObject private var presentation = RecordingBarPresentation()
 
@@ -18,6 +18,8 @@ struct RecordingBarView: View {
                 VStack(spacing: 4) {
                     transport.frame(height: 46)
                     trimAndFormat.frame(height: 32)
+                    RecordingAnnotationTimeline(editor: editor, recording: recording, playback: playback, actions: actions)
+                        .frame(height: 144)
                     status.frame(height: 22)
                 }
                 .padding(6)
@@ -32,10 +34,10 @@ struct RecordingBarView: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RecordingTimelineMetrics.spacing) {
             Button { playback.togglePlayback() } label: {
                 Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                    .frame(width: 40, height: 40)
+                    .frame(width: RecordingTimelineMetrics.controlWidth, height: 40)
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
@@ -48,7 +50,9 @@ struct RecordingBarView: View {
             Text("\(GIFLimits.format(seconds: max(playback.currentTime - recording.trim.start, 0))) / \(GIFLimits.format(seconds: recording.trim.duration))")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 100, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: RecordingTimelineMetrics.timeWidth, alignment: .trailing)
                 .accessibilityLabel("Playback position")
                 .accessibilityValue("\(GIFLimits.format(seconds: max(playback.currentTime - recording.trim.start, 0))) of \(GIFLimits.format(seconds: recording.trim.duration))")
                 .help("Elapsed time within the trimmed recording")
@@ -170,9 +174,13 @@ struct RecordingBarView: View {
             }
         } else {
             HStack(spacing: 8) {
-                Text(recording.sourceProblem ?? playback.frameProblem ?? recording.statusText ?? editor.statusMessage ?? "Annotations appear throughout the recording.")
+                if editor.hasTimeLimitedRedactions {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange).accessibilityHidden(true)
+                }
+                Text(statusDescription)
                     .lineLimit(1)
-                    .help(recording.sourceProblem ?? playback.frameProblem ?? recording.statusText ?? editor.statusMessage ?? "Annotations are static and appear on every exported frame, throughout the trimmed recording.")
+                    .help(statusDescription)
                 Spacer(minLength: 0)
                 Text([recording.outputSizeText, recording.estimatedSizeText].compactMap { $0 }.joined(separator: " · "))
                     .lineLimit(1)
@@ -182,6 +190,14 @@ struct RecordingBarView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+    }
+
+    private var statusDescription: String {
+        if let problem = recording.sourceProblem ?? playback.frameProblem ?? editor.statusMessage { return problem }
+        if editor.hasTimeLimitedRedactions {
+            return "Time-limited redactions expose content outside their range. Check the whole clip before sharing."
+        }
+        return recording.statusText ?? "Annotations cover the whole clip unless you adjust their ranges."
     }
 
     private var exportRow: some View {

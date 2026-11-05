@@ -78,6 +78,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     let recording: RecordingEditorModel?
     let playback: RecordingPlayback?
     private let canvas: CanvasView
+    private weak var recordingControls: NSView?
     private var dragFiles: Set<URL> = []
     private var retryID: UUID?
     private var presetSaved = false
@@ -140,6 +141,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.share = { [weak self] in self?.share() }
         actions.openRaw = { [weak self] in self?.openRaw() }
         actions.close = { [weak self] in self?.window?.close() }
+        actions.commitEditing = { [weak self] in self?.canvas.endEditing() }
         actions.savePreset = { [weak self] in self?.savePresetAndClose() }
         actions.dragFileURL = { [weak self] in self?.prepareDragFile() }
         actions.selectTool = { [weak self] in self?.selectTool($0) }
@@ -172,6 +174,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let bottomHeight: CGFloat
         if let recording, let playback {
             bottom = Self.host(RecordingBarView(editor: model, recording: recording, playback: playback, actions: actions), sizing: [])
+            recordingControls = bottom
             bottomHeight = RecordingBarView.contentHeight
         } else {
             bottom = designing
@@ -484,8 +487,21 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             }
             return true
         }
+        if flags == .shift, let recording, let playback, key == "i" || key == "o" {
+            guard !recording.isExporting, !model.selection.isEmpty else { return false }
+            canvas.endEditing()
+            playback.pause()
+            model.setAnnotationBoundary(playback.currentTime, isStart: key == "i", ids: model.selection,
+                                        sourceDuration: recording.trim.sourceDuration)
+            return true
+        }
         if flags.isEmpty {
             if let recording, let playback {
+                if [123, 124].contains(event.keyCode), let controls = recordingControls,
+                   let focused = window?.firstResponder as? NSView,
+                   focused === controls || focused.isDescendant(of: controls) {
+                    return false
+                }
                 switch event.keyCode {
                 case 49: canvas.endEditing(); playback.togglePlayback(); return true
                 case 123: playback.pause(); playback.seek(to: playback.currentTime - 1.0 / 30); return true

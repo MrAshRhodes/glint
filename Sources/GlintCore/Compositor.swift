@@ -52,26 +52,31 @@ public enum Compositor {
 
     /// Output image of the full "beautify" pipeline. Deterministic for identical inputs.
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
+    /// `annotationTime` is in source-recording seconds; `nil` draws every annotation for screenshots.
     public static func render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                               backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                              wallpaper: CGImage? = nil) throws -> CGImage {
+                              wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil) throws -> CGImage {
         try renderDetailed(image: image, settings: settings, annotations: annotations,
-                           backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper).image
+                           backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper,
+                           annotationTime: annotationTime).image
     }
 
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
+    /// Timed-out annotations are not drawn, but still contribute to layout so video dimensions stay constant.
     public static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                       backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                                      wallpaper: CGImage? = nil) throws -> RenderResult {
+                                      wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil) throws -> RenderResult {
         try renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
-                           backgroundImage: backgroundImage, wallpaper: wallpaper, bake: defaultBaker)
+                           backgroundImage: backgroundImage, wallpaper: wallpaper, bake: defaultBaker,
+                           annotationTime: annotationTime)
     }
 
     static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                               wallpaper: CGImage? = nil, bake: Baker) throws -> RenderResult {
+                               wallpaper: CGImage? = nil, bake: Baker, annotationTime: TimeInterval? = nil) throws -> RenderResult {
         let source = image.glintSRGB()
         let imageBounds = CGRect(origin: .zero, size: source.pixelSize)
+        let visibleAnnotations = annotationTime.map { time in annotations.filter { $0.isVisible(at: time) } } ?? annotations
 
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
         var border: BorderInfo?
@@ -90,14 +95,14 @@ public enum Compositor {
             // Magnifier insets reach beyond the base content: bake them as well, transparent outside the base.
             // Crop the source to the visible base first so balanced-away borders and full-image effects
             // (spotlight dimming) never appear in the overflow area.
-            var bakeSource = source, bakeAnnotations = annotations
+            var bakeSource = source, bakeAnnotations = visibleAnnotations
             var bakeRegion = expanded, fillBase = base
             let visible = base.intersection(imageBounds).integral
             if visible != imageBounds, !visible.isNull, visible.width >= 1, visible.height >= 1,
                let cropped = source.cropping(to: visible) {
                 let d = CGSize(width: -visible.minX, height: -visible.minY)
                 bakeSource = cropped
-                bakeAnnotations = annotations.map { $0.translated(by: d) }
+                bakeAnnotations = visibleAnnotations.map { $0.translated(by: d) }
                 bakeRegion = expanded.offsetBy(dx: d.width, dy: d.height)
                 fillBase = base.offsetBy(dx: d.width, dy: d.height)
             }
@@ -109,12 +114,12 @@ public enum Compositor {
             contentRegion = base
             overflow = FrameInsets(top: base.minY - expanded.minY, left: base.minX - expanded.minX,
                                    bottom: expanded.maxY - base.maxY, right: expanded.maxX - base.maxX)
-        } else if region != nil || !annotations.isEmpty {
-            if let baked = bake(source, annotations, region, border?.color ?? .clear) {
+        } else if region != nil || !visibleAnnotations.isEmpty {
+            if let baked = bake(source, visibleAnnotations, region, border?.color ?? .clear) {
                 content = baked.base
                 foreground = baked.foreground
                 contentRegion = base
-            } else if !annotations.isEmpty {
+            } else if !visibleAnnotations.isEmpty {
                 // Fail closed: never fall back to the source when annotations (e.g. redactions) exist.
                 throw RenderError.annotationsNotApplied
             }
