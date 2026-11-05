@@ -42,7 +42,7 @@
     <header class="guide-hero wrap"><span class="kicker">Glint / The field guide</span><h1>From first capture<br>to final file.</h1><p>Installation, updates and all the useful details in between. Keep this page close; the rest happens on your Mac.</p></header>
     <div class="guide wrap">
       <nav class="toc" aria-label="On this page"><h2>On this page</h2><ol>
-        <li><a href="#install">Install</a></li><li><a href="#updates">Update Glint</a></li><li><a href="#permissions">Permissions</a></li><li><a href="#capture">Capture</a></li><li><a href="#editor">Style your image</a></li><li><a href="#annotations">Annotations</a></li><li><a href="#redaction">Redaction &amp; privacy</a></li><li><a href="#presets">Presets</a></li><li><a href="#export">Export &amp; folders</a></li><li><a href="#preferences">Preferences</a></li><li><a href="#automation">Automation</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#source">Build from source</a></li>
+        <li><a href="#install">Install</a></li><li><a href="#updates">Update Glint</a></li><li><a href="#permissions">Permissions</a></li><li><a href="#capture">Capture</a></li><li><a href="#recording">Record your screen</a></li><li><a href="#editor">Style your image</a></li><li><a href="#annotations">Annotations</a></li><li><a href="#redaction">Redaction &amp; privacy</a></li><li><a href="#presets">Presets</a></li><li><a href="#export">Export &amp; folders</a></li><li><a href="#preferences">Preferences</a></li><li><a href="#automation">Automation</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#source">Build from source</a></li>
       </ol></nav>
       <article class="prose" aria-label="Glint user guide">
         <section id="install">
@@ -101,9 +101,9 @@
           <p>Use the menu bar icon to capture an area, a window or the full screen. <strong>Capture with Timer</strong> gives you 3, 5 or 10 seconds to get ready. <strong>Repeat Last Area</strong> captures the same region again.</p>
           <p>Default shortcuts use Control + Option + Command:</p>
           <table><caption class="visually-hidden">Default capture shortcuts</caption><thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th></tr></thead><tbody>
-            <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr>
+            <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr><tr><td><kbd>⌃⌥⌘ 9</kbd></td><td>Record screen (start, stop)</td></tr>
           </tbody></table>
-          <p>Cancel a selection with <kbd>Esc</kbd>. Change the shortcuts in Preferences if another app uses the same combination.</p>
+          <p>Cancel a selection with <kbd>Esc</kbd>. Change the shortcuts in Preferences if another app uses the same combination. To record a video clip instead of a still image, see <a href="#recording">Record your screen</a>.</p>
           <h3 id="capturing-menus">Capture open menus and pop-ups</h3>
           <p>Open the menu, context menu or pop-up first, then press the shortcut for an area, window, text or full-screen capture. If a pop-up is open when an area, window or text selection starts, Glint grabs the screen before showing the overlay and shows that still image while you select. macOS closes the real menu as the overlay appears, but your capture still includes it. In window mode (<kbd>Space</kbd>), click the menu to capture just that menu.</p>
           <p>Start these captures with a shortcut. Clicking the menu bar icon closes the menu you have open, because macOS dismisses a menu when you click elsewhere. To capture a menu that you open after choosing the area, use <strong>Capture with Timer</strong>: select the area, then open the menu before the countdown ends.</p>
@@ -112,6 +112,52 @@
           <p>While selecting an area, the anchor and moving corner can align to nearby visible window bounds or display edges. Guides show the active alignment, and the captured rectangle is the one shown in the preview. This also applies to area-to-clipboard, Capture Text and timed area selection. The selection stays on the display where the drag began.</p>
           <p>Hold <kbd>⌘</kbd> to temporarily invert the setting: with snapping off, hold to snap; with it on, hold for free selection. Releasing the key restores the saved setting, even without moving the mouse. The overlay hint shows the current state. <kbd>Shift</kbd>-drag still makes a square; <kbd>Shift</kbd>-arrow still nudges by 10 points. <kbd>Space</kbd> switches area/window mode, <kbd>Return</kbd> confirms, and <kbd>Esc</kbd> or right-click cancels.</p>
           <p>Targets are sampled when the overlay opens. Restart selection if another window moves. Snapping uses rectangular window bounds, not shadows, rounded contours, controls, cards or images inside a window. Arbitrary visual-content detection is not enabled, and snapping does not take an extra screen image or request Accessibility permission.</p>
+        </section>
+        <section id="recording">
+          <h2>Record your screen</h2>
+          <p>Record an area of your screen as a short clip, trim it in the editor, then export it as a GIF or MP4. Recording uses the same Screen Recording access as screenshots (see <a href="#permissions">Permissions</a>); without it, Glint opens its setup window instead of recording. Clips have no audio.</p>
+          <h3 id="recording-start">Start a recording</h3>
+          <ol>
+            <li>Choose <strong>Record Screen…</strong> from the menu bar icon, or press <kbd>⌃⌥⌘ 9</kbd>. To change the shortcut, use <strong>Global shortcuts</strong> in Preferences → Capture.</li>
+            <li>Drag to select an area, as you do for a screenshot; <a href="#selection-snapping">snapping to edges</a> applies too. Press <kbd>Space</kbd> to pick a window instead. Glint then records the screen area that window covers. The area stays on the display where you selected it.</li>
+            <li>Adjust the area if you need to: drag inside it to move it, or drag an edge or corner to resize it. The control bar shows its size in points. Choose a <strong>Timer</strong> of 3, 5 or 10 seconds if you want a countdown first.</li>
+            <li>Choose <strong>Record</strong> or press <kbd>Return</kbd>.</li>
+          </ol>
+          <p>While recording, a floating bar shows the elapsed time, a red outline surrounds the area and the menu bar shows <strong>● REC</strong>. Neither the bar nor the outline appears in the clip. To stop, click <strong>Stop</strong>, press <kbd>⌃⌥⌘ 9</kbd> again or choose <strong>Stop Recording</strong> from the menu bar icon; the shortcut and the menu work from any app. The editor then opens with your clip.</p>
+          <p>Before recording starts, including during a countdown, you can cancel with <kbd>Esc</kbd>, the bar's <strong>Cancel</strong> button, the shortcut or <strong>Cancel Recording</strong> in the menu. <kbd>Esc</kbd> does not stop a recording that is already running.</p>
+          <h3 id="recording-editor">Edit the clip</h3>
+          <p>The clip opens in the usual editor. Frames, backgrounds, presets, padding, shadows and annotations work as they do for a screenshot and apply to every frame; see <a href="#editor">Style your image</a> and <a href="#annotations">Annotations</a>. Auto-balance and Auto-redact are not available for recordings, and your changes are not remembered for the next capture.</p>
+          <p>The bar below the canvas handles playback and trimming:</p>
+          <ul>
+            <li>Press <kbd>Space</kbd> or click the play button to play the trimmed part on a loop. Any edit pauses playback.</li>
+            <li>Click or drag the timeline to move the playhead. Drag the two handles on it to trim, or type <strong>Start</strong> and <strong>End</strong> times in seconds; the steppers move in 0.1 s steps. The circular arrow button restores the whole recording. A trim must be at least 0.2 s long.</li>
+            <li>In the editor, <kbd>←</kbd> and <kbd>→</kbd> step by one frame (1/30 s), <kbd>I</kbd> sets the trim start at the playhead and <kbd>O</kbd> sets the trim end.</li>
+          </ul>
+          <div class="callout"><p><strong>Review before you share.</strong> Annotations and manual redactions stay in the same place across the whole clip; they do not follow moving content. Auto-redact is unavailable for recordings, so check every frame. Anything visible in the area, such as other apps or notification banners, is recorded.</p></div>
+          <h3 id="recording-export">Export a GIF or MP4</h3>
+          <p>Choose <strong>GIF</strong> or <strong>MP4</strong> beside the trim controls:</p>
+          <ul>
+            <li>A <strong>GIF</strong> loops forever. The GIF options button sets the frame rate (10, 15 or 20 fps; 15 by default) and the maximum width (480, 640 or 720 px, or Original, capped at 1280 px; 640 px by default).</li>
+            <li>An <strong>MP4</strong> is an H.264 video that keeps the recording's frame timing, at up to 30 fps.</li>
+          </ul>
+          <p>Neither format supports transparency, so transparent areas become white. A readout shows the output size and, for a GIF, an estimated file size.</p>
+          <p>A GIF can be at most 30 seconds and 450 frames long, which means 30 s at 10 or 15 fps and 22.5 s at 20 fps. If your trim is longer, Glint shows the limit and a <strong>Fit to limit</strong> button, which shortens the end of the trim and keeps the start. You can also lower the frame rate or choose MP4. The export buttons stay disabled until the clip fits, and Glint never shortens it silently.</p>
+          <ul>
+            <li><strong>Save</strong> (<kbd>⌘ S</kbd>) and <strong>Save As…</strong> (<kbd>⇧⌘ S</kbd>) both ask where to save, suggesting a name such as <code>Glint Recording 2026-11-05 at 14.29.16.gif</code>. They ignore the Output folder and file name template in Preferences, and recordings are not added to history.</li>
+            <li><strong>Copy</strong> (<kbd>⌘ C</kbd>) puts the file on the clipboard so you can paste it into another app. The editor stays open afterwards.</li>
+            <li>The share button opens the macOS share sheet. To drag the file instead, use the <strong>Drag to share</strong> tile: the first drag prepares the file, and when the status says <strong>Ready to share — drag again to export</strong>, drag again. Prepare it again after any further edit.</li>
+          </ul>
+          <p>The recording is temporary: closing the editor deletes it, so save or copy what you need first. Use <strong>Cancel</strong> to stop an export in progress, or <strong>Retry</strong> if one fails.</p>
+          <h3 id="recording-limits">Limits and good to know</h3>
+          <ul>
+            <li>A recording stops by itself after 10 minutes. Glint keeps the footage, opens the editor and shows a notification.</li>
+            <li>Glint's own windows, such as the selection frame, control bar and countdown, are left out of the clip. The mouse pointer is always recorded; the cursor setting in Preferences → Capture does not change that.</li>
+            <li>Very large areas are scaled down, keeping their proportions.</li>
+            <li>Screenshot shortcuts do nothing while a recording is being set up, running or finishing. If a screenshot capture is already in progress, starting a recording beeps and does nothing.</li>
+            <li>If macOS itself stops the capture, for example from the screen-recording indicator in the menu bar, Glint keeps what was recorded and opens the editor. Any other recording error discards the footage and shows a <strong>Recording failed</strong> notification.</li>
+            <li>Quitting Glint while a recording is running or finishing asks you to confirm, because it stops the recording and deletes it. Choose <strong>Keep Recording</strong> to carry on.</li>
+            <li>When you copy a clip, Glint keeps the file in its cache so you can paste it. Copies older than 24 hours are removed the next time you copy a clip.</li>
+          </ul>
         </section>
         <section id="editor">
           <h2>Style your image</h2>

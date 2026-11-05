@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- Screen recording. Choose **Record Screen…** from the menu bar icon or press ⌃⌥⌘9, select and adjust an area, then record immediately or after a 3, 5 or 10 second countdown. A floating bar shows the elapsed time and a Stop button; stop with it, with the same shortcut or from the menu bar. Recordings are capped at 10 minutes, have no audio, and leave Glint's own windows out. A finished recording opens in the same editor as screenshots, with the same tools, annotations, frames, backgrounds and presets applied to the whole clip. Trim it, then export an animated GIF or an MP4, or copy, save, share or drag it out. Annotations stay in place for the entire clip; automatic redaction and Auto-balance are off for recordings so the picture never shifts. ([#74])
+
 ## [1.6.0] - 2026-11-03
 
 ### Added
@@ -257,3 +261,4 @@ First public release.
 [#65]: https://github.com/MrAshRhodes/glint/issues/65
 [#70]: https://github.com/MrAshRhodes/glint/issues/70
 [#72]: https://github.com/MrAshRhodes/glint/issues/72
+[#74]: https://github.com/MrAshRhodes/glint/issues/74

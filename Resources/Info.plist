@@ -93,11 +93,11 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>Glint saves the screenshots you export to your Desktop folder.</string>
+	<string>Glint saves the screenshots and screen recordings you export to your Desktop folder.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>Glint saves the screenshots you export to your Documents folder.</string>
+	<string>Glint saves the screenshots and screen recordings you export to your Documents folder.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>Glint saves the screenshots you export to your Downloads folder.</string>
+	<string>Glint saves the screenshots and screen recordings you export to your Downloads folder.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
@@ -105,7 +105,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Glint captures your screen only when you ask it to, so it can turn screenshots into polished images. Captures stay on your Mac.</string>
+	<string>Glint captures your screen only when you ask it to, so it can turn screenshots and screen recordings into polished images and clips. Captures stay on your Mac.</string>
 	<key>SUAllowsAutomaticUpdates</key>
 	<false/>
 	<key>SUAutomaticallyUpdate</key>

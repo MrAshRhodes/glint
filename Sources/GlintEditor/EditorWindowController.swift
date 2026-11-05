@@ -75,6 +75,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     let model: EditorModel
     private let exportServices: EditorExportServices
     let actions = EditorActions()
+    let recording: RecordingEditorModel?
+    let playback: RecordingPlayback?
     private let canvas: CanvasView
     private var dragFiles: Set<URL> = []
     private var retryID: UUID?
@@ -100,8 +102,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
                   title: context.windowTitle, exportServices: exportServices)
     }
 
-    private init(model: EditorModel, title: String, exportServices: EditorExportServices) {
+    init(model: EditorModel, title: String, exportServices: EditorExportServices = EditorExportServices(),
+         recording: RecordingEditorModel? = nil, playback: RecordingPlayback? = nil) {
         self.model = model
+        self.recording = recording
+        self.playback = playback
         self.exportServices = exportServices
         self.canvas = CanvasView(model: model)
 
@@ -138,6 +143,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.savePreset = { [weak self] in self?.savePresetAndClose() }
         actions.dragFileURL = { [weak self] in self?.prepareDragFile() }
         actions.selectTool = { [weak self] in self?.selectTool($0) }
+        if let recording {
+            actions.retryExport = { [weak recording] in recording?.retry() }
+        }
     }
 
     @available(*, unavailable)
@@ -160,9 +168,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             ? Self.host(PresetDesignHeaderView(model: model), sizing: [.intrinsicContentSize])
             : Self.host(ToolStripView(model: model, actions: actions), sizing: [.intrinsicContentSize])
         toolbar.setContentHuggingPriority(.required, for: .horizontal)
-        let bottom: NSView = designing
-            ? Self.host(PresetDesignBarView(model: model, actions: actions), sizing: [])
-            : Self.host(BottomBarView(model: model, actions: actions), sizing: [])
+        let bottom: NSView
+        let bottomHeight: CGFloat
+        if let recording, let playback {
+            bottom = Self.host(RecordingBarView(editor: model, recording: recording, playback: playback, actions: actions), sizing: [])
+            bottomHeight = RecordingBarView.contentHeight
+        } else {
+            bottom = designing
+                ? Self.host(PresetDesignBarView(model: model, actions: actions), sizing: [])
+                : Self.host(BottomBarView(model: model, actions: actions), sizing: [])
+            bottomHeight = metrics.bottomBarHeight
+        }
 
         let inspectorContent = Self.host(InspectorView(model: model), sizing: [])
         inspectorContent.wantsLayer = true
@@ -202,11 +218,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - pad),
             bottom.trailingAnchor.constraint(equalTo: inspector.leadingAnchor, constant: -(inset - pad)),
             bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -(inset - pad)),
-            bottom.heightAnchor.constraint(equalToConstant: metrics.bottomBarHeight + 2 * pad),
+            bottom.heightAnchor.constraint(equalToConstant: bottomHeight + 2 * pad),
         ])
         canvas.contentInsets = NSEdgeInsets(top: metrics.toolbarRowHeight,
                                             left: inset,
-                                            bottom: metrics.bottomBarHeight + 2 * inset,
+                                            bottom: bottomHeight + 2 * inset,
                                             right: metrics.inspectorWidth + 2 * inset)
     }
 
@@ -238,6 +254,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     private func copyToClipboard(closeAfterSuccess: Bool) -> Bool {
         canvas.endEditing()
+        if let recording {
+            playback?.pause()
+            recording.copy()
+            return false // A recording export is asynchronous; never report a synchronous still-image success.
+        }
         let retry: (EditorWindowController) -> Void = { _ = $0.copyToClipboard(closeAfterSuccess: closeAfterSuccess) }
         guard let image = renderForExport(failure: "Copy failed", retry: retry) else { return false }
         if exportServices.copy(image) {
@@ -255,6 +276,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// Writes the composed output to the save directory and reports the URL through `onExported`.
     public func saveOutput() {
+        if let recording {
+            canvas.endEditing()
+            playback?.pause()
+            recording.save(in: window)
+            return
+        }
         let format = currentFormat()
         let url = model.preferences.outputPaths.saveURL(format: format)
         write(to: url, format: format)
@@ -264,7 +291,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// Renders the final output, or reports the failure and returns nil so nothing unredacted is exported.
     private func renderForExport(failure: String, retry: @escaping (EditorWindowController) -> Void) -> CGImage? {
-        guard !model.isDesigningPreset else { return nil }
+        guard !model.isDesigningPreset, recording == nil else { return nil }
         do {
             return try model.renderFinal()
         } catch {
@@ -314,6 +341,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func saveAs() {
+        if recording != nil { saveOutput(); return }
         let panel = NSSavePanel()
         let format = currentFormat()
         panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
@@ -337,6 +365,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private func share() {
         guard let content = window?.contentView else { return }
         canvas.endEditing()
+        if let recording {
+            playback?.pause()
+            recording.prepareFile { [weak self] url in
+                guard let self, self.window?.isVisible == true else { return }
+                let anchor = self.actions.shareAnchor ?? content
+                let picker = NSSharingServicePicker(items: [url])
+                picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+            }
+            return
+        }
         guard let image = renderForExport(failure: "Share failed", retry: { $0.share() }) else { return }
         clearRetry()
         model.statusMessage = "Choose where to share"
@@ -350,6 +388,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     /// Renders the output to a cache file used as the drag-out payload.
     func prepareDragFile() -> URL? {
         canvas.endEditing()
+        if let recording {
+            playback?.pause()
+            return recording.prepareFile()
+        }
         let dir = exportServices.dragDirectory
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
         let retry: (EditorWindowController) -> Void = { controller in
@@ -443,6 +485,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             return true
         }
         if flags.isEmpty {
+            if let recording, let playback {
+                switch event.keyCode {
+                case 49: canvas.endEditing(); playback.togglePlayback(); return true
+                case 123: playback.pause(); playback.seek(to: playback.currentTime - 1.0 / 30); return true
+                case 124: playback.pause(); playback.seek(to: playback.currentTime + 1.0 / 30); return true
+                default: break
+                }
+                if key == "i" { recording.setTrimStart(playback.currentTime); return true }
+                if key == "o" { recording.setTrimEnd(playback.currentTime); return true }
+            }
             guard let tool = EditorTool(shortcutKey: key) else { return false }
             selectTool(tool)
             return true
@@ -453,6 +505,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     /// Selects a tool; toolbar clicks and tool shortcuts both come through here so they behave identically.
     /// Choosing the current tool again cycles its variant, and any inline text edit is committed.
     func selectTool(_ tool: EditorTool) {
+        playback?.pause()
         model.pressToolKey(tool)
         canvas.endEditing()
     }
