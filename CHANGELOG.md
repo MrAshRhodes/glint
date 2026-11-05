@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-05
+
 ### Added
 
 - Screen recording. Choose **Record Screen…** from the menu bar icon or press ⌃⌥⌘9, select and adjust an area, then record immediately or after a 3, 5 or 10 second countdown. A floating bar shows the elapsed time and a Stop button; stop with it, with the same shortcut or from the menu bar. Recordings are capped at 10 minutes, have no audio, and leave Glint's own windows out. A finished recording opens in the same editor as screenshots, with the same tools, annotations, frames, backgrounds and presets applied to the whole clip by default. Trim it, then export an animated GIF or an MP4, or copy, save, share or drag it out. Annotations stay in a fixed position; automatic redaction and Auto-balance are off for recordings so the picture never shifts. ([#74])
@@ -223,7 +225,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/MrAshRhodes/glint/compare/v1.5.3...v1.5.4
