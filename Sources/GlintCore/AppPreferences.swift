@@ -66,7 +66,7 @@ public struct KeyCombo: Codable, Equatable, Hashable, Sendable {
 }
 
 public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
-    case captureArea, captureAreaToClipboard, captureWindow, captureFullscreen, captureText, repeatLast
+    case captureArea, captureAreaToClipboard, captureWindow, captureFullscreen, captureText, repeatLast, recordScreen
 
     public var displayName: String {
         switch self {
@@ -76,6 +76,7 @@ public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
         case .captureFullscreen: return "Capture full screen"
         case .captureText: return "Capture text (OCR)"
         case .repeatLast: return "Repeat last capture area"
+        case .recordScreen: return "Record screen (start / stop)"
         }
     }
 
@@ -88,6 +89,7 @@ public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
         case .captureFullscreen: return KeyCombo(keyCode: 20, modifiers: m) // ⌃⌥⌘3
         case .captureText: return KeyCombo(keyCode: 26, modifiers: m) // ⌃⌥⌘7
         case .repeatLast: return KeyCombo(keyCode: 15, modifiers: m) // ⌃⌥⌘R
+        case .recordScreen: return KeyCombo(keyCode: 25, modifiers: m) // ⌃⌥⌘9
         }
     }
 }

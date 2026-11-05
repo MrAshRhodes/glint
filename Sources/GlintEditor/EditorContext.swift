@@ -11,13 +11,16 @@ public struct EditorContext {
     /// flattened: no frame, background, padding or shadow is applied again, it is not auto-redacted a second
     /// time, and look changes made in the session are not remembered for the next capture.
     public let isComposed: Bool
+    public let isRecording: Bool
 
-    public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false) {
+    public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
+                isRecording: Bool = false) {
         self.image = image
         self.backingScale = backingScale
         self.rawURL = rawURL
         self.source = source
         self.isComposed = isComposed
+        self.isRecording = isRecording
     }
 
     var windowTitle: String {
@@ -64,7 +67,8 @@ public enum EditorHeadless {
                               onWallpaperFailure: (DesktopWallpaperError) -> Void = {
                                   FileHandle.standardError.write(Data("warning: \($0.localizedDescription)\n".utf8))
                               }) throws -> CGImage {
-        let settings: RenderSettings = context.isComposed ? .passThrough : initialSettings(preferences: preferences)
+        var settings: RenderSettings = context.isComposed ? .passThrough : initialSettings(preferences: preferences)
+        if context.isRecording { settings.autoBalance = false }
         var wallpaper: CGImage?
         if settings.usesDesktopWallpaper {
             switch wallpaperProvider() {
@@ -73,7 +77,7 @@ public enum EditorHeadless {
             }
         }
         var annotations: [Annotation] = []
-        if preferences.autoRedact, !context.isComposed, let lines = try? recognizeText(context.image) {
+        if preferences.autoRedact, !context.isComposed, !context.isRecording, let lines = try? recognizeText(context.image) {
             var options = AutoRedactOptions(detector: preferences.autoRedactOptions, color: preferences.redactColor)
             options.padding = 3 * Double(context.backingScale)
             annotations = AutoRedact.annotations(for: lines, options: options, imageSize: context.image.pixelSize)

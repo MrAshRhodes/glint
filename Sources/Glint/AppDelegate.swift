@@ -7,6 +7,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     let prefs: AppPreferences
     let presetStore = PresetStore()
     lazy var pipeline = CapturePipeline(prefs: prefs, presetStore: presetStore)
+    lazy var recorder: RecordingCoordinator = {
+        let pipeline = pipeline
+        let prefs = prefs
+        return RecordingCoordinator(
+            services: .init(preferences: prefs, presetStore: presetStore),
+            snapToEdges: { prefs.snapToEdges },
+            isCaptureBusy: { pipeline.isBusy }
+        )
+    }()
     lazy var urlCaptureHandler: URLCaptureHandler = {
         let pipeline = pipeline
         return URLCaptureHandler(services: .init(
@@ -21,6 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// How long quitting waits for kept screenshots that are still being written.
     var terminationGrace: Duration = .seconds(3)
     var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
+    /// Asked before quitting while footage is being recorded; returning false keeps Glint running.
+    var confirmDiscardRecording: @MainActor () -> Bool = {
+        let alert = NSAlert()
+        alert.messageText = "Discard the recording in progress?"
+        alert.informativeText = "Quitting now stops the recording and deletes it."
+        alert.addButton(withTitle: "Keep Recording")
+        alert.addButton(withTitle: "Discard and Quit")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
+    }
     private var cleanupObserver: NSObjectProtocol?
     private var statusItem: NSStatusItem?
     private let menu: NSMenu
@@ -42,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         _ = UpdateController.shared
         PreferencesWindowController.shared = PreferencesWindowController(prefs: prefs, store: presetStore)
         pipeline.onStatusTitle = { [weak self] title in self?.statusItem?.button?.title = title ?? "" }
+        pipeline.isRecordingActive = { [weak self] in self?.recorder.isActive ?? false }
+        recorder.onStatusTitle = { [weak self] title in self?.statusItem?.button?.title = title ?? "" }
         menu.delegate = self
         updateStatusItem()
         registerHotkeys()
@@ -88,6 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     /// Quitting right after a copy must not lose the kept screenshot that is still being written.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if recorder.isActive {
+            if recorder.isCapturing, !confirmDiscardRecording() { return .terminateCancel }
+            recorder.cancel()
+        }
         guard pipeline.isKeepingScreenshots else { return .terminateNow }
         Task { @MainActor [pipeline, terminationGrace, replyToTermination] in
             let drained = await pipeline.waitForRetention(timeout: terminationGrace)
@@ -157,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         case .captureFullscreen: pipeline.start(.fullscreen)
         case .captureText: pipeline.start(.text)
         case .repeatLast: pipeline.start(.repeatLast)
+        case .recordScreen: recorder.toggle()
         }
     }
 
@@ -187,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         add(menu, "Capture Fullscreen", #selector(captureFullscreen), hotkey: .captureFullscreen)
         add(menu, "Capture Text (OCR)", #selector(captureText), hotkey: .captureText)
         add(menu, "Repeat Last Area", #selector(repeatLast), hotkey: .repeatLast)
+        add(menu, Self.recordingMenuTitle(for: recorder.phase, isActive: recorder.isActive),
+            #selector(toggleRecording), hotkey: .recordScreen)
 
         let timer = NSMenuItem(title: "Capture with Timer", action: nil, keyEquivalent: "")
         let sub = NSMenu()
@@ -252,6 +280,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     @objc private func captureFullscreen() { pipeline.start(.fullscreen) }
     @objc private func captureText() { pipeline.start(.text) }
     @objc private func repeatLast() { pipeline.start(.repeatLast) }
+    @objc private func toggleRecording() { recorder.toggle() }
+
+    static func recordingMenuTitle(for phase: RecordingPhase, isActive: Bool) -> String {
+        guard isActive else { return "Record Screen…" }
+        switch phase {
+        case .recording: return "Stop Recording"
+        case .finishing: return "Finishing Recording…"
+        case .idle, .selecting, .ready, .countdown: return "Cancel Recording"
+        }
+    }
     @objc private func timerCapture(_ sender: NSMenuItem) { pipeline.start(.timer(sender.tag)) }
     @objc private func toggleSnapToEdges() {
         prefs.snapToEdges.toggle()
@@ -264,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// Menu validation must never wait for the index lock or disk; menu opening refreshes this cache asynchronously.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(reopenLastImage) { return pipeline.canReopenLastImage }
+        if item.action == #selector(toggleRecording) { return recorder.phase != .finishing }
         return true
     }
 

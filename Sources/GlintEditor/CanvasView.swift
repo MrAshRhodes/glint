@@ -242,6 +242,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     // MARK: Mouse
 
     override func mouseDown(with event: NSEvent) {
+        model.onBeginEditing?()
         window?.makeFirstResponder(self)
         endEditing()
         guard !model.isDesigningPreset else { return }

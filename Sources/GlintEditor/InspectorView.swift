@@ -322,7 +322,8 @@ struct InspectorView: View {
                 }
                 Spacer()
                 Toggle("Auto-balance", isOn: s.autoBalance).toggleStyle(.switch).controlSize(.mini)
-                    .help("Crop uniform borders and even out the margins")
+                    .disabled(model.isRecording)
+                    .help(model.isRecording ? "Unavailable for recordings so the crop stays fixed between frames." : "Crop uniform borders and even out the margins")
             }
         }
     }
@@ -744,7 +745,9 @@ struct InspectorView: View {
                     model.redactOptions.customWords = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                     model.preferences.autoRedactOptions = model.redactOptions
                 })).textFieldStyle(.roundedBorder)
-            Text("Auto-redact always uses solid fill. Review the image before sharing; detection can miss information.")
+            Text(model.isRecording
+                 ? "Automatic redaction is unavailable for recordings. Manual annotations stay fixed across the whole clip; review every frame before sharing."
+                 : "Auto-redact always uses solid fill. Review the image before sharing; detection can miss information.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 ColorPicker("Colour", selection: colorBinding({ model.redactColor }) { model.setRedactColor($0) }, supportsOpacity: false)
@@ -753,9 +756,10 @@ struct InspectorView: View {
             Toggle("Auto-redact new screenshots", isOn: Binding(
                 get: { model.preferences.autoRedact }, set: { model.preferences.autoRedact = $0 }))
                 .toggleStyle(.switch).controlSize(.mini)
+                .disabled(model.isRecording)
             Divider()
             HStack {
-                Button("Redact Sensitive Info") { Task { await model.runAutoRedact() } }.disabled(model.isBusy)
+                Button("Redact Sensitive Info") { Task { await model.runAutoRedact() } }.disabled(model.isBusy || model.isRecording)
                 if model.isBusy { ProgressView().controlSize(.small) }
             }
             if let summary = model.lastRedactSummary {

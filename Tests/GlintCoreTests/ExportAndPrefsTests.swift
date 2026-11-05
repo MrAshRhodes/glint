@@ -265,6 +265,7 @@ struct ExportAndPrefsTests {
         let combo = HotkeyAction.captureArea.defaultCombo
         #expect(combo.displayString == "⌃⌥⌘4")
         #expect(HotkeyAction.captureAreaToClipboard.defaultCombo.displayString == "⌃⌥⌘5")
+        #expect(HotkeyAction.recordScreen.defaultCombo.displayString == "⌃⌥⌘9")
         #expect(combo.carbonModifiers == 0x1000 | 0x800 | 0x100)
         #expect(Set(HotkeyAction.allCases.map { $0.defaultCombo }).count == HotkeyAction.allCases.count)
 

@@ -96,7 +96,9 @@ struct Preview {
 
 @MainActor
 final class EditorModel: ObservableObject {
-    let image: CGImage
+    private(set) var image: CGImage
+    let isRecording: Bool
+    var onBeginEditing: (() -> Void)?
     let backingScale: CGFloat
     let rawURL: URL?
     let source: String?
@@ -110,7 +112,9 @@ final class EditorModel: ObservableObject {
 
     @Published var settings: RenderSettings {
         didSet {
+            if isRecording, settings.autoBalance { settings.autoBalance = false }
             guard settings != oldValue else { return }
+            onBeginEditing?()
             if settings.usesDesktopWallpaper != oldValue.usesDesktopWallpaper { refreshWallpaper() }
             if remembersSettings {
                 preferences.lastRenderSettings = settings
@@ -123,7 +127,9 @@ final class EditorModel: ObservableObject {
         didSet { requestRender() }
     }
     @Published var selection: Set<UUID> = []
-    @Published var tool: EditorTool = .select
+    @Published var tool: EditorTool = .select {
+        didSet { if tool != oldValue { onBeginEditing?() } }
+    }
     @Published var shapeVariant: ShapeVariant = .rectangle
     @Published var arrowIsLine = false
     @Published var redactStyle: RedactionStyle = .solid
@@ -134,7 +140,12 @@ final class EditorModel: ObservableObject {
     @Published var magnifierShowsConnector = true
     @Published var defaultStyle: AnnotationStyle
     @Published var editingID: UUID? {
-        didSet { if editingID != oldValue { requestRender() } }
+        didSet {
+            if editingID != oldValue {
+                if editingID != nil { onBeginEditing?() }
+                requestRender()
+            }
+        }
     }
     @Published private(set) var preview: Preview?
     @Published private(set) var wallpaperProblem: String?
@@ -177,6 +188,7 @@ final class EditorModel: ObservableObject {
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
          wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
         self.image = context.image
+        self.isRecording = context.isRecording
         self.backingScale = max(context.backingScale, 1)
         self.rawURL = context.rawURL
         self.source = context.source
@@ -187,8 +199,10 @@ final class EditorModel: ObservableObject {
         self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
-        self.settings = design?.settings
+        var initialSettings = design?.settings
             ?? (context.isComposed ? .passThrough : EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore))
+        if context.isRecording { initialSettings.autoBalance = false }
+        self.settings = initialSettings
         self.redactOptions = preferences.autoRedactOptions
         self.redactColor = preferences.redactColor
         var style = AnnotationStyle(color: preferences.annotationColor)
@@ -200,13 +214,13 @@ final class EditorModel: ObservableObject {
         self.designMakeDefault = designIsDefault
         refreshWallpaper()
         requestRender()
-        if preferences.autoRedact, design == nil, !isComposed { Task { await self.runAutoRedact(announce: false) } }
+        if preferences.autoRedact, design == nil, !isComposed, !isRecording { Task { await self.runAutoRedact(announce: false) } }
     }
 
     // MARK: State helpers
 
     /// A normal capture remembers its look for the next one; a preset designer or reopened image must not overwrite it.
-    private var remembersSettings: Bool { design == nil && !isComposed }
+    private var remembersSettings: Bool { design == nil && !isComposed && !isRecording }
 
     var isEditable: Bool {
         settings.tilt.isFlat && settings.rotation == .none && !settings.flipHorizontal && !settings.flipVertical
@@ -353,6 +367,25 @@ final class EditorModel: ObservableObject {
         try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage).image
     }
 
+    /// A frame update is not an edit: it uses the existing latest-dirty preview queue without undo or preference writes.
+    func updateRecordingFrame(_ frame: CGImage) {
+        guard isRecording else { return }
+        image = frame
+        requestRender()
+    }
+
+    /// Capture every rendering input now; subsequent edits or wallpaper changes cannot alter an in-flight clip.
+    func recordingFrameRenderer() -> RecordingExporter.FrameRenderer {
+        let settings = settings, annotations = annotations, scale = backingScale
+        let background = backgroundImage(for: settings), wallpaper = wallpaperImage
+        return { frame in
+            // A missing background must not be lazily read halfway through the clip if the file reappears.
+            if case .image = settings.background, background == nil { throw CocoaError(.fileReadNoSuchFile) }
+            return try Compositor.render(image: frame, settings: settings, annotations: annotations,
+                                         backingScale: scale, backgroundImage: background, wallpaper: wallpaper)
+        }
+    }
+
     // MARK: Annotation editing
 
     private func nextZ() -> Int { (annotations.map(\.z).max() ?? -1) + 1 }
@@ -360,6 +393,7 @@ final class EditorModel: ObservableObject {
     func setAnnotations(_ new: [Annotation], actionName: String?) {
         let old = annotations
         guard old != new else { return }
+        onBeginEditing?()
         styleCoalesceKey = nil
         // Mid-interaction, this change undoes back to the interaction's start; see rebaseInteraction.
         let undoState = rebaseInteraction(from: old, to: new) ?? old
@@ -389,7 +423,10 @@ final class EditorModel: ObservableObject {
         return base
     }
 
-    func beginInteraction() { interactionBase = annotations }
+    func beginInteraction() {
+        onBeginEditing?()
+        interactionBase = annotations
+    }
 
     /// Applies a live (non-undoable) change during a drag.
     func updateLive(_ new: [Annotation]) { annotations = new }
@@ -769,6 +806,10 @@ final class EditorModel: ObservableObject {
     // MARK: OCR / redaction
 
     func runAutoRedact(announce: Bool = true) async {
+        guard !isRecording else {
+            lastRedactSummary = "Automatic redaction is unavailable for recordings. Manual annotations stay fixed across the whole clip; review every frame before sharing."
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         preferences.autoRedactOptions = redactOptions

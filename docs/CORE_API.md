@@ -249,6 +249,67 @@ public final class OutputActiveFiles: @unchecked Sendable {
   it. `begin` waits briefly if `cleanUp()` is moving that very file to the Trash at that moment, so check that the
   file still exists after calling it.
 
+## Recording
+Recording model, GIF/MP4 exporter, and file and clipboard helpers (`Recording.swift`, `RecordingExport*.swift`,
+`RecordingPasteboard.swift`). GlintCapture hands over a `RecordedVideo`; the recording editor trims and exports it. None
+of these types is `Codable`. Shortcut: `HotkeyAction.recordScreen` (see Preferences).
+```swift
+public enum RecordingExporter {
+    public typealias ProgressHandler = @Sendable (Double) -> Void
+    public typealias FrameRenderer = @Sendable (CGImage) throws -> CGImage
+    public static func export(source: URL, range: ClosedRange<TimeInterval>, options: RecordingExportOptions,
+                              outputDirectory: URL? = nil, progress: ProgressHandler? = nil,
+                              frameRenderer: FrameRenderer? = nil) async throws -> URL
+}
+```
+- `RecordedVideo(url:duration:pixelSize:)`: `url` is a unique temporary `.mp4` that the recording editor owns and
+  deletes when it closes; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
+  status text): `.idle`, `.selecting`, `.ready`, `.countdown(Int)` (seconds left), `.recording`, `.finishing`.
+- `export` returns a new `RecordingExport-<UUID>.gif|mp4` in `outputDirectory` (default
+  `RecordingExportFiles.defaultWorkingDirectory`, created if missing); the caller owns it, and `source` is only read.
+  `validatedRange(_:sourceDuration:)` runs before any frame is read: it throws `invalidRange`, or `rangeTooShort` under
+  0.2 s (the whole file if shorter), and clamps an end up to 0.1 s past the duration. `readableDuration(of:)` gives an
+  `AVAsset`'s duration (`sourceUnreadable` if it isn't a playable video). `progress` gets 0…1 off the main thread,
+  ending with 1. Cancelling the surrounding `Task` deletes the partial file and throws `CancellationError`.
+- `frameRenderer` is called for every exported frame with the oriented source frame at full size, before any resizing.
+  The editor passes `Compositor.render` with the settings, annotations (redactions included) and background captured at
+  export start. It must return a constant size (else `encodingFailed`). If it throws, the export deletes the partial
+  file and rethrows it unchanged; no unrendered frame is ever substituted. Transparency is flattened on white.
+- GIF: `GIFLimits.frameCount(duration:framesPerSecond:)` frames (rounded, at least 1), one every `1/framesPerSecond` s
+  from the start of `range`, rendered, scaled down to `maxWidth` (never up) and written one at a time (memory stays near
+  one frame), looping forever. A range over the limits throws `gifLimitExceeded` and is never truncated; a rate outside
+  `GIFLimits.frameRates` throws `unsupportedFrameRate`.
+- MP4 without `frameRenderer`: the whole file is passed through (re-encoded if that fails), a trimmed range gets a
+  highest-quality re-encode (a passthrough cut can only start on a keyframe). With one, each frame is decoded, rendered
+  and re-encoded as H.264 at its source timing, without audio; odd sizes get white padding at the right and bottom.
+- Options: `RecordingExportOptions(format:gif:)`; `RecordingFileFormat` `.gif`/`.mp4` (`fileExtension`, `displayName`,
+  `utType`); `GIFExportOptions(framesPerSecond:maxWidth:)`; defaults are `.gif`, 15 fps and `.w640`. `GIFMaxWidth`
+  `.w480`/`.w640`/`.w720`/`.original` (`pixelCap` 480/640/720/1280; `outputSize(for:)` keeps the aspect ratio).
+- `GIFLimits`: `frameRates` `[10, 15, 20]`, `defaultFrameRate`, `maxDuration` 30 s, `maxFrameCount` 450,
+  `originalWidthCap` 1280; `maxDuration(framesPerSecond:)` is the shorter of 30 s and 450 frames (22.5 s at 20 fps);
+  `isSupported(framesPerSecond:)`; `estimatedByteCount(duration:options:sourceSize:)` (rough); `format(seconds:)`
+  (`12.3 s`, `1:02.3`); `issue(duration:options:)` is nil when a range fits, else a `GIFLimitIssue` (`duration`,
+  `framesPerSecond`, `frameCount`, `maxDuration`, plain-language `message`).
+- `RecordingTrim(sourceDuration:)`: `start`, `end`, `duration`, `range`, `isFullRange`. `setStart(_:)` and `setEnd(_:)`
+  clamp to `0…sourceDuration`, keep the handles at least `shortestDuration` apart (`minimumDuration` 0.2 s, or the whole
+  file if shorter) and ignore non-finite values; `setSourceDuration(_:)` adopts the file's duration. To fit a GIF, call
+  `limitDuration(to: GIFLimits.maxDuration(framesPerSecond: fps))`: it shortens from the end, only when asked.
+- `RecordingExportError` (`LocalizedError`, `Equatable`; each case has a user-facing `errorDescription`):
+  `sourceMissing(String)`, `sourceUnreadable(String)`, `invalidRange(start:end:sourceDuration:)`,
+  `rangeTooShort(minimum:)`, `unsupportedFrameRate(Int)`, `gifLimitExceeded(GIFLimitIssue)`,
+  `frameUnavailable(time:reason:)`, `encodingFailed(String)`, `writeFailed(String)`, `exportSessionFailed(String)`,
+  `pasteboardWriteFailed`.
+- `RecordingExportFiles`: `defaultFileName(format:date:timeZone:)` gives `Glint Recording 2026-11-05 at 14.29.16.gif`;
+  `makeStagingDirectory(forDestination:)` makes a fresh empty folder, on the destination's volume when possible, that
+  the caller removes; `commit(_:to:)` creates missing folders and replaces an existing file in one step, so a failure
+  never leaves a half-written destination (no `-2` renaming: confirm overwrites yourself). To save: stage,
+  `export(…, outputDirectory: staging)`, `commit`, remove the staging folder.
+- `RecordingPasteboard.copy(_:format:to:directory:now:)` moves the exported file into a new subfolder of `directory`
+  (default `defaultDirectory`, `Caches/Glint/Clipboard/Recordings`), puts it on the pasteboard (default `.general`) and
+  returns the new URL; on failure the file stays where it was. A GIF goes on as `public.gif` data plus a file URL, an
+  MP4 as a file URL only. Copies are kept for `retention` (24 h); each copy first runs
+  `pruneExpired(in:now:retention:)`.
+
 ## Preferences
 `AppPreferences(defaults:)` (`.shared`), typed properties for folders, `saveHistory`, `saveRaw`, `saveOutput`,
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
@@ -265,4 +326,4 @@ The `AppPreferences.redactStyle` property has been removed. The legacy `glint.re
 by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`
 (`captureArea` ⌃⌥⌘4, `captureAreaToClipboard` ⌃⌥⌘5, `captureWindow` ⌃⌥⌘6, `captureFullscreen` ⌃⌥⌘3,
-`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R); `HotkeyAction.defaultCombo`.
+`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9); `HotkeyAction.defaultCombo`.

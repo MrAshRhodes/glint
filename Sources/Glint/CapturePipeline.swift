@@ -53,7 +53,10 @@ final class CapturePipeline {
     private(set) var canReopenLastImage = false
     private var availabilityRequest = UUID()
 
-    var isBusy: Bool { busy }
+    var isBusy: Bool { busy || isRecordingActive() }
+
+    /// Set by the app shell so screenshots never start while a screen recording is in progress.
+    var isRecordingActive: () -> Bool = { false }
 
     init(prefs: AppPreferences, presetStore: PresetStore, services: Services = Services()) {
         self.prefs = prefs
@@ -67,7 +70,7 @@ final class CapturePipeline {
     // MARK: capture entry
 
     func start(_ mode: Mode) {
-        guard !busy else { return }
+        guard !isBusy else { return }
         busy = true
         let capturer = ScreenCapturer.shared
         let defaults = UserDefaults.standard
