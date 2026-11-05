@@ -434,6 +434,25 @@ final class EditorModel: ObservableObject {
         else { setAnnotations(updated, actionName: "Change Annotation Timing") }
     }
 
+    func moveAnnotationRange(to seconds: TimeInterval, id: UUID,
+                             sourceDuration: TimeInterval, live: Bool = false) {
+        guard isRecording else { return }
+        guard seconds.isFinite, sourceDuration.isFinite, sourceDuration > 0 else {
+            statusMessage = "Enter a finite annotation time within the recording."
+            return
+        }
+        let updated = annotations.map { annotation -> Annotation in
+            guard annotation.id == id, let range = annotation.visibleRange else { return annotation }
+            let span = min(range.end - range.start, sourceDuration)
+            let start = min(max(seconds, 0), sourceDuration - span)
+            var annotation = annotation
+            annotation.visibleRange = span == sourceDuration ? nil : AnnotationTiming(start: start, end: start + span)
+            return annotation
+        }
+        if live { updateLive(updated) }
+        else { setAnnotations(updated, actionName: "Move Annotation Timing") }
+    }
+
     func showAnnotationsThroughout(_ ids: Set<UUID>) {
         guard isRecording else { return }
         setAnnotations(annotations.map { annotation in

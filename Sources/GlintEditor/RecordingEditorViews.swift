@@ -2,13 +2,20 @@ import AppKit
 import GlintCore
 import SwiftUI
 
+enum RecordingTimelineMetrics {
+    static let controlWidth: CGFloat = 40
+    static let timeWidth: CGFloat = 100
+    static let spacing: CGFloat = 12
+    static let handleWidth: CGFloat = 24
+}
+
 /// The whole recording, with a trim handle at each end of the selected range and a movable playhead.
 struct RecordingTimelineView: View {
     @ObservedObject var model: RecordingEditorModel
     @ObservedObject var playback: RecordingPlayback
     @StateObject private var drag = TimelineDragState()
 
-    private let handleWidth: CGFloat = 24
+    private let handleWidth = RecordingTimelineMetrics.handleWidth
     private let height: CGFloat = 46
     private let step: TimeInterval = 0.1
     private let space = "recording-timeline"
@@ -125,6 +132,7 @@ extension View {
 final class TimelineDragState: ObservableObject {
     private var startGrab: CGFloat?
     private var endGrab: CGFloat?
+    var rangeStart: TimeInterval?
 
     func grab(isStart: Bool) -> CGFloat? { isStart ? startGrab : endGrab }
 
@@ -149,5 +157,9 @@ struct TimelineLayout: Equatable {
     func time(at x: CGFloat) -> TimeInterval {
         guard duration > 0 else { return 0 }
         return min(max(Double((x - handleWidth / 2) / usableWidth), 0), 1) * duration
+    }
+
+    func timeOffset(for translation: CGFloat) -> TimeInterval {
+        Double(translation / usableWidth) * duration
     }
 }

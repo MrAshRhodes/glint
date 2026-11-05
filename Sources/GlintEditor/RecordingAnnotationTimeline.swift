@@ -108,11 +108,10 @@ private struct RecordingAnnotationLane: View {
     private var space: String { "annotation-timing-\(annotation.id)" }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RecordingTimelineMetrics.spacing) {
             Button(action: select) {
-                Text(annotation.timingLabel)
-                    .lineLimit(1)
-                    .frame(width: 110, height: 40, alignment: .leading)
+                Image(systemName: annotation.timingSymbol)
+                    .frame(width: RecordingTimelineMetrics.controlWidth, height: 40)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
@@ -122,7 +121,7 @@ private struct RecordingAnnotationLane: View {
             .help(outsideTrim ? "\(annotation.timingLabel): outside the trimmed clip" : annotation.timingLabel)
             GeometryReader { geometry in
                 // Hit targets sit outside the range, so even a one-frame range has two distinct handles.
-                let layout = TimelineLayout(width: geometry.size.width, handleWidth: 80,
+                let layout = TimelineLayout(width: geometry.size.width, handleWidth: RecordingTimelineMetrics.handleWidth,
                                             duration: recording.trim.sourceDuration)
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
@@ -137,11 +136,7 @@ private struct RecordingAnnotationLane: View {
                         .frame(width: max(geometry.size.width - layout.x(at: recording.trim.end), 0), height: 26)
                         .placed(atX: layout.x(at: recording.trim.end))
                         .allowsHitTesting(false)
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill((outsideTrim ? Color.secondary : Color.accentColor).opacity(selected ? 0.45 : 0.22))
-                        .frame(width: max(layout.x(at: end) - layout.x(at: start), 1), height: 26)
-                        .placed(atX: layout.x(at: start))
-                        .allowsHitTesting(false)
+                    rangeBar(layout)
                     Rectangle().fill(Color.primary)
                         .frame(width: 1, height: 30)
                         .placed(atX: layout.x(at: playback.currentTime))
@@ -153,10 +148,69 @@ private struct RecordingAnnotationLane: View {
                 .coordinateSpace(name: space)
             }
             .frame(height: 40)
+            Text(String(format: "%.2f - %.2f s", start, end))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: RecordingTimelineMetrics.timeWidth, alignment: .trailing)
+                .help("\(annotation.timingLabel): \(String(format: "%.2f to %.2f seconds", start, end)) in the original recording")
+                .accessibilityHidden(true)
         }
         .font(.caption)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(annotation.timingLabel)
+    }
+
+    private func rangeBar(_ layout: TimelineLayout) -> some View {
+        Text(annotation.timingLabel)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(width: max(layout.x(at: end) - layout.x(at: start), 1), height: 26, alignment: .leading)
+            .background((outsideTrim ? Color.secondary : Color.accentColor).opacity(selected ? 0.45 : 0.22),
+                        in: RoundedRectangle(cornerRadius: 3))
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
+                .onChanged { value in
+                    if drag.rangeStart == nil {
+                        select()
+                        editor.beginInteraction()
+                        drag.rangeStart = start
+                    }
+                    move(to: (drag.rangeStart ?? start) + layout.timeOffset(for: value.translation.width), live: true)
+                }
+                .onEnded { _ in
+                    drag.rangeStart = nil
+                    editor.endInteraction(actionName: "Move Annotation Timing")
+                })
+            .focusable(!recording.isExporting)
+            .onMoveCommand { direction in
+                switch direction {
+                case .left: move(to: start - 0.1)
+                case .right: move(to: start + 0.1)
+                default: break
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(annotation.timingLabel) range")
+            .accessibilityValue(String(format: "%.2f to %.2f seconds", start, end))
+            .accessibilityHint("Move this annotation's time range without changing its duration")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: move(to: start + 0.1)
+                case .decrement: move(to: start - 0.1)
+                @unknown default: break
+                }
+            }
+            .help("Drag to move the range; drag its edges to change the duration")
+            .placed(atX: layout.x(at: start))
+    }
+
+    private func move(to time: TimeInterval, live: Bool = false) {
+        if !live { select() }
+        editor.moveAnnotationRange(to: time, id: annotation.id,
+                                   sourceDuration: recording.trim.sourceDuration, live: live)
     }
 
     private func select() {
@@ -173,11 +227,11 @@ private struct RecordingAnnotationLane: View {
     private func handle(isStart: Bool, layout: TimelineLayout) -> some View {
         let time = isStart ? start : end
         let label = "\(annotation.timingLabel) \(isStart ? "start" : "end")"
-        let offset: CGFloat = isStart ? -40 : 0
+        let offset = layout.x(at: time) - (isStart ? RecordingTimelineMetrics.handleWidth : 0)
         return RoundedRectangle(cornerRadius: 3)
             .fill(selected ? Color.accentColor : Color.secondary)
             .frame(width: 7, height: 26)
-            .frame(width: 40, height: 40, alignment: isStart ? .trailing : .leading)
+            .frame(width: RecordingTimelineMetrics.handleWidth, height: 40, alignment: isStart ? .trailing : .leading)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
                 .onChanged { value in
@@ -215,7 +269,8 @@ private struct RecordingAnnotationLane: View {
                 }
             }
             .help("\(label): drag, or use Left and Right when focused")
-            .placed(atX: layout.x(at: time) + offset)
+            .placed(atX: offset)
+            .offset(x: min(offset, 0))
     }
 
     private func set(_ time: TimeInterval, isStart: Bool, live: Bool = false) {
@@ -230,6 +285,21 @@ private struct RecordingAnnotationLane: View {
 }
 
 extension Annotation {
+    var timingSymbol: String {
+        switch kind {
+        case .arrow, .line: return EditorTool.arrow.symbol
+        case .rectangle, .ellipse: return EditorTool.shape.symbol
+        case .pen: return EditorTool.pen.symbol
+        case .highlighter: return EditorTool.highlighter.symbol
+        case .text: return EditorTool.text.symbol
+        case .counter: return EditorTool.counter.symbol
+        case .blur, .pixelate, .redact: return EditorTool.redact.symbol
+        case .spotlight: return "flashlight.on.fill"
+        case .emoji: return "face.smiling"
+        case .magnify: return EditorTool.zoom.symbol
+        }
+    }
+
     var timingLabel: String {
         switch kind {
         case .arrow: return "Arrow"

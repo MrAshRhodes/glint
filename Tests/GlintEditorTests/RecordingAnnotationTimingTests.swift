@@ -94,6 +94,43 @@ struct RecordingAnnotationTimingTests {
         }
     }
 
+    @Test func movingRangesPreservesDurationClampsToSourceAndRejectsInvalidTimes() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let editor = model(f)
+        var annotation = editor.makeAnnotation(.rectangle(.zero))
+        annotation.visibleRange = AnnotationTiming(start: 2, end: 6)
+        let other = editor.makeAnnotation(.arrow(from: .zero, to: CGPoint(x: 20, y: 20)))
+        editor.updateLive([annotation, other])
+        editor.undoManager.removeAllActions()
+        editor.undoManager.groupsByEvent = false
+        editor.undoManager.beginUndoGrouping()
+        editor.beginInteraction()
+        for (requested, expected) in [(3.0, 3.0), (-5, 0), (12, 6), (1.5, 1.5)] {
+            editor.moveAnnotationRange(to: requested, id: annotation.id, sourceDuration: 10, live: true)
+            #expect(editor.annotations[0].visibleRange == AnnotationTiming(start: expected, end: expected + 4))
+            #expect(editor.annotations[1] == other)
+        }
+        editor.endInteraction(actionName: "Move Annotation Timing")
+        editor.undoManager.endUndoGrouping()
+        editor.undoManager.undo()
+        #expect(editor.annotations[0] == annotation && !editor.canUndo)
+        editor.undoManager.redo()
+        #expect(editor.annotations[0].visibleRange == AnnotationTiming(start: 1.5, end: 5.5))
+        let beforeInvalid = editor.annotations
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            editor.moveAnnotationRange(to: invalid, id: annotation.id, sourceDuration: 10)
+            #expect(editor.annotations == beforeInvalid)
+            #expect(editor.statusMessage?.contains("finite") == true)
+        }
+        editor.moveAnnotationRange(to: 2, id: annotation.id, sourceDuration: 0)
+        editor.moveAnnotationRange(to: 2, id: other.id, sourceDuration: 10)
+        #expect(editor.annotations == beforeInvalid)
+        let screenshot = f.model()
+        screenshot.updateLive([annotation])
+        screenshot.moveAnnotationRange(to: 3, id: annotation.id, sourceDuration: 10)
+        #expect(screenshot.annotations == [annotation])
+    }
+
     @Test func screenshotsIgnoreTimingAndDuplicatedAnnotationsKeepIt() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let a = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 100, height: 80)),

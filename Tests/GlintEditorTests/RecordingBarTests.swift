@@ -65,6 +65,33 @@ struct RecordingBarTests {
         try perform("accessibilityPerformPress", on: label, in: host)
     }
 
+    private func frame(_ label: String, in host: NSView) throws -> CGRect {
+        let control = try node(label, in: host)
+        let screen = try #require((control.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue)
+        return try #require(host.window).convertFromScreen(screen)
+    }
+
+    private func drag(from start: CGPoint, to end: CGPoint, in host: NSView) throws {
+        let window = try #require(host.window)
+        window.orderBack(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        let points: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
+            + (1...5).map { step in
+                (.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * CGFloat(step) / 5,
+                                           y: start.y + (end.y - start.y) * CGFloat(step) / 5))
+            } + [(.leftMouseUp, end)]
+        for (index, point) in points.enumerated() {
+            let event = try #require(NSEvent.mouseEvent(with: point.0, location: point.1, modifierFlags: [],
+                                                       timestamp: timestamp + Double(index) * 0.02,
+                                                       windowNumber: window.windowNumber, context: nil,
+                                                       eventNumber: index, clickCount: 1, pressure: 1))
+            NSApplication.shared.sendEvent(event)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            host.layoutSubtreeIfNeeded()
+        }
+    }
+
     private func perform(_ action: String, on label: String, in host: NSView) throws {
         let control = try node(label, in: host)
         let selector = NSSelectorFromString(action)
@@ -157,7 +184,7 @@ struct RecordingBarTests {
             model.selection = [annotation.id]
         }) { host, recording, playback, _ in
             let model = try #require(editor)
-            for label in ["Select Redaction", "Redaction start", "Redaction end",
+            for label in ["Select Redaction", "Redaction start", "Redaction end", "Redaction range",
                           "Annotation start in seconds", "Annotation end in seconds",
                           "Start at playhead", "End at playhead"] {
                 let control = try node(label, in: host)
@@ -175,6 +202,10 @@ struct RecordingBarTests {
             playback.seek(to: 8)
             try press("End at playhead", in: host)
             #expect(model.annotations[0].visibleRange == AnnotationTiming(start: 2, end: 8))
+            try perform("accessibilityPerformIncrement", on: "Redaction range", in: host)
+            #expect(model.annotations[0].visibleRange == AnnotationTiming(start: 2.1, end: 8.1))
+            try perform("accessibilityPerformDecrement", on: "Redaction range", in: host)
+            #expect(model.annotations[0].visibleRange == AnnotationTiming(start: 2, end: 8))
             #expect(recording.trim.isFullRange)
             #expect(descendants(of: host).contains {
                 $0.value(forKey: "accessibilityValue") as? String
@@ -182,6 +213,108 @@ struct RecordingBarTests {
             })
             try press("Show selected annotation throughout the clip", in: host)
             #expect(model.annotations[0].visibleRange == nil && !model.hasTimeLimitedRedactions)
+        }
+    }
+
+    @Test func annotationHandlesRespondToMouseDrags() throws {
+        var editor: EditorModel?
+        try withBar(configure: { model in
+            editor = model
+            model.updateLive([model.makeAnnotation(.redact(.zero))])
+        }) { host, recording, _, _ in
+            let model = try #require(editor)
+            let start = try frame("Redaction start", in: host)
+            let end = try frame("Redaction end", in: host)
+            let distance = (end.minX - start.maxX) / 5
+            try drag(from: CGPoint(x: start.maxX - 3, y: start.midY),
+                     to: CGPoint(x: start.maxX - 3 + distance, y: start.midY), in: host)
+            let range = try #require(model.annotations[0].visibleRange)
+            #expect(abs(range.start - 2) < 0.01)
+            #expect(range.end == 10)
+            let endHandle = try frame("Redaction end", in: host)
+            try drag(from: CGPoint(x: endHandle.minX + 3, y: endHandle.midY),
+                     to: CGPoint(x: endHandle.minX + 3 - distance, y: endHandle.midY), in: host)
+            let resized = try #require(model.annotations[0].visibleRange)
+            #expect(abs(resized.start - 2) < 0.01)
+            #expect(abs(resized.end - 8) < 0.01)
+            #expect(recording.trim.isFullRange)
+        }
+    }
+
+    @Test func annotationLanesAlignWithTheTrimTimelineAtEveryWindowSize() throws {
+        for width: CGFloat in [660, 940] {
+            for duration: TimeInterval in [10, 600] {
+                for partial in [false, true] {
+                    let start = partial ? duration * 0.2 : 0
+                    let end = partial ? duration * 0.8 : duration
+                    try withBar(width: width, duration: duration, configure: { model in
+                        var annotation = model.makeAnnotation(.redact(.zero))
+                        annotation.visibleRange = partial ? AnnotationTiming(start: start, end: end) : nil
+                        model.updateLive([annotation])
+                    }) { host, recording, _, _ in
+                        recording.setTrimStart(start)
+                        recording.setTrimEnd(end)
+                        host.layoutSubtreeIfNeeded()
+                        let trimStart = try frame("Trim start", in: host)
+                        let trimEnd = try frame("Trim end", in: host)
+                        let laneStart = try frame("Redaction start", in: host)
+                        let laneEnd = try frame("Redaction end", in: host)
+                        let range = try frame("Redaction range", in: host)
+                        #expect(abs(laneStart.maxX - trimStart.midX) < 0.5)
+                        #expect(abs(laneEnd.minX - trimEnd.midX) < 0.5)
+                        #expect(abs(range.minX - trimStart.midX) < 0.5)
+                        #expect(abs(range.maxX - trimEnd.midX) < 0.5)
+                        let selector = try frame("Select Redaction", in: host)
+                        #expect(selector.maxX <= laneStart.minX + 0.5, "The selector and handle must not overlap")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func draggingAnnotationBodyMovesItsRangeAndUndoesInOneStep() throws {
+        var editor: EditorModel?
+        try withBar(configure: { model in
+            editor = model
+            var annotation = model.makeAnnotation(.redact(.zero))
+            annotation.visibleRange = AnnotationTiming(start: 2, end: 6)
+            model.updateLive([annotation])
+            model.undoManager.removeAllActions()
+            model.undoManager.groupsByEvent = false
+        }) { host, recording, _, _ in
+            let model = try #require(editor)
+            let start = try frame("Redaction start", in: host)
+            let end = try frame("Redaction end", in: host)
+            let center = CGPoint(x: (start.maxX + end.minX) / 2, y: start.midY)
+            model.undoManager.beginUndoGrouping()
+            try drag(from: center, to: CGPoint(x: center.x + (end.minX - start.maxX) / 4,
+                                               y: center.y), in: host)
+            model.undoManager.endUndoGrouping()
+            let moved = try #require(model.annotations[0].visibleRange)
+            #expect(abs(moved.start - 3) < 0.01)
+            #expect(abs(moved.end - 7) < 0.01)
+            #expect(recording.trim.isFullRange)
+            #expect(model.canUndo)
+            if model.canUndo { model.undoManager.undo() }
+            #expect(model.annotations[0].visibleRange == AnnotationTiming(start: 2, end: 6))
+            #expect(!model.canUndo)
+        }
+    }
+
+    @Test func draggingWholeClipKeepsItWholeUntilAHandleIsResized() throws {
+        var editor: EditorModel?
+        try withBar(configure: { model in
+            editor = model
+            model.updateLive([model.makeAnnotation(.redact(.zero))])
+            model.undoManager.removeAllActions()
+        }) { host, _, _, _ in
+            let model = try #require(editor)
+            let range = try frame("Redaction range", in: host)
+            try drag(from: CGPoint(x: range.midX, y: range.midY),
+                     to: CGPoint(x: range.midX + 80, y: range.midY), in: host)
+            #expect(model.annotations[0].visibleRange == nil)
+            #expect(model.selection == [model.annotations[0].id])
+            #expect(!model.canUndo)
         }
     }
 }

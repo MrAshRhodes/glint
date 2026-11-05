@@ -34,10 +34,10 @@ struct RecordingBarView: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RecordingTimelineMetrics.spacing) {
             Button { playback.togglePlayback() } label: {
                 Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                    .frame(width: 40, height: 40)
+                    .frame(width: RecordingTimelineMetrics.controlWidth, height: 40)
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
@@ -50,7 +50,9 @@ struct RecordingBarView: View {
             Text("\(GIFLimits.format(seconds: max(playback.currentTime - recording.trim.start, 0))) / \(GIFLimits.format(seconds: recording.trim.duration))")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 100, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: RecordingTimelineMetrics.timeWidth, alignment: .trailing)
                 .accessibilityLabel("Playback position")
                 .accessibilityValue("\(GIFLimits.format(seconds: max(playback.currentTime - recording.trim.start, 0))) of \(GIFLimits.format(seconds: recording.trim.duration))")
                 .help("Elapsed time within the trimmed recording")
