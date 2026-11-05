@@ -7,9 +7,10 @@ import Testing
 private enum ExportTestFailure: Error { case refused }
 
 /// Runs the real compositor but with an annotation baker that always fails (e.g. bitmap allocation failure).
-private let failingBakeRenderer: EditorModel.Renderer = { image, settings, annotations, scale, background, wallpaper in
+private let failingBakeRenderer: EditorModel.Renderer = { image, settings, annotations, scale, background, wallpaper, time in
     try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
-                                  backgroundImage: background, wallpaper: wallpaper, bake: { _, _, _, _ in nil })
+                                  backgroundImage: background, wallpaper: wallpaper, bake: { _, _, _, _ in nil },
+                                  annotationTime: time)
 }
 
 private let redaction = Annotation(kind: .redact(CGRect(x: 0, y: 0, width: 50, height: 40)),

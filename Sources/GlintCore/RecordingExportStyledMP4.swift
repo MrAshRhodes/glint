@@ -99,7 +99,8 @@ extension RecordingExporter {
                                                                 format: .RGBA8, colorSpace: ColorSpaces.sRGB) else {
                             throw RecordingExportError.encodingFailed("couldn't orient a video frame")
                         }
-                        let rendered = try frameRenderer(image)
+                        // The first sample may begin before the trim, but its visible portion starts at the trim.
+                        let rendered = try frameRenderer(image, max(time.seconds, range.lowerBound))
                         try Task.checkCancellation()
                         try encoder.append(rendered, at: presentationTime)
                         previousTime = presentationTime

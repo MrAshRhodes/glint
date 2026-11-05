@@ -45,9 +45,9 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
         window?.delegate = self
         canvasModel.onBeginEditing = { [weak playback] in playback?.pause() }
         model.makeFrameRenderer = { [canvasModel] in canvasModel.recordingFrameRenderer() }
-        playback.onFrame = { [weak self, weak canvasModel] frame in
+        playback.onFrame = { [weak self, weak canvasModel] frame, time in
             let changedSize = canvasModel?.image.pixelSize != frame.pixelSize
-            canvasModel?.updateRecordingFrame(frame)
+            canvasModel?.updateRecordingFrame(frame, at: time)
             if changedSize { self?.refreshOutputSize() }
         }
         var previousFrameProblem: String?
@@ -93,7 +93,8 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
                 self.sizeDirty = false
                 let render = self.editor.model.recordingFrameRenderer()
                 let frame = self.editor.model.image
-                let result = await Task.detached(priority: .utility) { Result { try render(frame).pixelSize } }.value
+                let time = self.editor.model.recordingTime
+                let result = await Task.detached(priority: .utility) { Result { try render(frame, time).pixelSize } }.value
                 guard !Task.isCancelled, !self.isClosing else { break }
                 if !self.sizeDirty {
                     switch result {

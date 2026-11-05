@@ -143,15 +143,53 @@ public enum AnnotationKind: Codable, Equatable, Hashable, Sendable {
     case magnify(Magnifier)
 }
 
+/// A half-open visible range in source-recording seconds, independent of the current trim.
+public struct AnnotationTiming: Codable, Equatable, Hashable, Sendable {
+    public var start: TimeInterval
+    public var end: TimeInterval
+
+    public init(start: TimeInterval, end: TimeInterval) {
+        self.start = start
+        self.end = end
+    }
+
+    public var isValid: Bool {
+        start.isFinite && end.isFinite && start >= 0 && end > start
+    }
+
+    private enum CodingKeys: String, CodingKey { case start, end }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(start: try c.decode(TimeInterval.self, forKey: .start),
+                  end: try c.decode(TimeInterval.self, forKey: .end))
+        guard isValid else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Annotation timing requires finite bounds with 0 <= start < end."))
+        }
+    }
+}
+
 public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var id: UUID
     /// Draw order, ascending.
     public var z: Int
     public var kind: AnnotationKind
     public var style: AnnotationStyle
+    /// `nil` keeps the annotation visible for the whole clip. Screenshots ignore timing.
+    public var visibleRange: AnnotationTiming?
 
-    public init(id: UUID = UUID(), z: Int = 0, kind: AnnotationKind, style: AnnotationStyle = AnnotationStyle()) {
+    public init(id: UUID = UUID(), z: Int = 0, kind: AnnotationKind, style: AnnotationStyle = AnnotationStyle(),
+                visibleRange: AnnotationTiming? = nil) {
         self.id = id; self.z = z; self.kind = kind; self.style = style
+        self.visibleRange = visibleRange
+    }
+
+    public func isVisible(at time: TimeInterval) -> Bool {
+        guard let visibleRange else { return true }
+        // Invalid in-memory edits or timestamps must never silently remove a privacy annotation.
+        guard visibleRange.isValid, time.isFinite else { return true }
+        return time >= visibleRange.start && time < visibleRange.end
     }
 
     public var isRedaction: Bool {

@@ -49,7 +49,7 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
 ```swift
 Compositor.render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                   backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                  wallpaper: CGImage? = nil) throws -> CGImage
+                  wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil) throws -> CGImage
 Compositor.renderDetailed(...) throws -> RenderResult   // image + layout + border + region
 Compositor.layout(contentSize:insetApplied:settings:backingScale:overflow:) -> RenderLayout // canvas/card/screen/content/overflow rects (px, top-left); overflow defaults to none
 ```
@@ -71,6 +71,12 @@ lower-z annotations remain part of the screenshot. Redactions also replace their
 frame is drawn. `RenderResult.region` is the base region in image pixels,
 for mapping editor coordinates onto `contentRect`. Rotation, flips and tilt carry the overflow with the card.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
+Both `render` and `renderDetailed` take the final optional `annotationTime` argument. Pass the frame's
+source-recording time in seconds to draw only annotations for which `isVisible(at:)` is true. Leave it `nil`
+for still-image rendering, which draws all annotations regardless of their ranges. Layout always uses the
+complete annotation list, including inactive magnifier insets, so the canvas size and content placement do
+not jump as annotations appear or disappear. Active redactions alone replace pixels and protect magnifier
+samples for that frame; an inactive redaction does not hide content.
 Rendering fails closed: if annotations cannot be baked in (e.g. the bitmap allocation fails), `render` throws
 `RenderError.annotationsNotApplied` instead of returning the unredacted source, and every export path
 (editor copy/save/share/drag, direct capture export, `--render`) aborts with an error.
@@ -83,7 +89,7 @@ in-memory recovery, not protection against quitting or a crash. The CLI still ex
 its input file is unchanged.
 
 ## Annotations
-`Annotation(id,z,kind,style)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
+`Annotation(id,z,kind,style,visibleRange: AnnotationTiming? = nil)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)
 .blur(CGRect) .pixelate(CGRect) .redact(CGRect) .spotlight(CGRect) .emoji(center,String) .magnify(Magnifier)`.
 Client code that switches exhaustively over `AnnotationKind` must handle `.magnify`.
@@ -91,14 +97,27 @@ Client code that switches exhaustively over `AnnotationKind` must handle `.magni
 redactionPattern, redactionSecondaryColor, pixelateHighlight)`.
 `annotation.boundingBox`, `.translated(by:)`, `Annotation.isRedaction` (solid/pixelate), `.isObfuscation` (blur only),
 `.isMagnifier`.
+
+`AnnotationTiming(start: TimeInterval, end: TimeInterval)` is a visible interval in **source-recording seconds**,
+with an inclusive start and exclusive end (`start <= time && time < end`). Set `annotation.visibleRange` to
+that interval for any annotation kind, or leave it `nil` for visibility throughout the clip. Annotations
+decoded without a range keep the whole-clip behavior. `annotation.isVisible(at: TimeInterval)` tests this
+visibility. `AnnotationTiming.isValid` requires finite values with `0 <= start < end`; decoding rejects an
+invalid persisted range. If a mutable range is invalid or the timestamp is non-finite, visibility falls
+back to showing the annotation rather than hiding a possible redaction.
+Trimming does not rebase or rewrite annotation times: a range `[8, 10)` overlaps a trim starting
+at 6 s at output times `[2, 4)`. A range outside the trim contributes no visible frames.
+Time-limited redaction, pixelation and blur leave content exposed outside their ranges; default to `nil`
+for redactions unless every other frame has been checked. Blur is not secure redaction at any time.
+
 `Magnifier(source:inset:shape:showsSourceOutline:showsConnector:)` (the editor's **Zoom** tool): an enlarged copy
 of `source` drawn in `inset`, both `CGRect`s in image space; `inset` may lie partly or fully outside the image
 (see canvas expansion above). `shape: MagnifierShape` (`.circle` default, `.rectangle`), `showsSourceOutline`
 and `showsConnector` (both default `true`, decoded as defaults when absent); `magnification` =
 `inset.width / source.width`. `style.color` colours the border, outline and connector; `style.strokeWidth` sets the border width.
 `boundingBox` spans source and inset; `translated(by:)` moves both. The inset samples what lies beneath it:
-the source with every `isRedaction` annotation applied (whatever its z order) plus annotations drawn before it.
-It never shows pixels a redaction covers; if sampling fails it draws a solid `style.color` fill instead.
+the source with every active `isRedaction` annotation applied (whatever its z order) plus annotations drawn before it.
+It never shows pixels an active redaction covers; if sampling fails it draws a solid `style.color` fill instead.
 `AnnotationRenderer.draw(in ctx: CGContext, annotations:, imageSize:, source: CGImage?)` — `ctx` must map
 image space (top-left, y down) onto the target (e.g. flipped context). `AnnotationRenderer.bake(source:annotations:) -> CGImage?` (nil on failure).
 `.redact` and `.pixelate` replace covered pixels completely, regardless of color alpha or annotation opacity.
@@ -116,8 +135,9 @@ not erase original images, separately saved raw captures, or the editor's in-mem
 `.isObfuscation`. The editor's **Redact / Obfuscate** tool starts in Solid redaction mode for each image.
 The current-style label is a native menu for Solid, Blur, or Pixelate; the Redact icon and `3` shortcut
 activate the tool without cycling modes. Inspector appearance controls edit patterns, colors, mosaic
-highlight, and tile size. Only Blur shows an unsafe-for-secrets warning. Appearance defaults are local
-to the editor session; automatic redaction remains plain opaque Solid.
+highlight, and tile size. Blur shows an unsafe-for-secrets warning. Recording timing controls also warn when
+Solid, Pixelate or Blur is limited to a range, because content outside it is exposed. Appearance defaults
+are local to the editor session; automatic redaction remains plain opaque Solid.
 
 ## AutoBalance
 `AutoBalance.detectBorder(in:maxPixels:) -> BorderInfo?` (`color`, `perimeterFraction`, `margins`),
@@ -250,13 +270,13 @@ public final class OutputActiveFiles: @unchecked Sendable {
   file still exists after calling it.
 
 ## Recording
-Recording model, GIF/MP4 exporter, and file and clipboard helpers (`Recording.swift`, `RecordingExport*.swift`,
-`RecordingPasteboard.swift`). GlintCapture hands over a `RecordedVideo`; the recording editor trims and exports it. None
-of these types is `Codable`. Shortcut: `HotkeyAction.recordScreen` (see Preferences).
+Recording model, GIF/MP4 exporter, and file and clipboard helpers. GlintCapture hands over a `RecordedVideo`;
+the recording editor trims and exports it. None of these types is `Codable`.
+Shortcut: `HotkeyAction.recordScreen` (see Preferences).
 ```swift
 public enum RecordingExporter {
     public typealias ProgressHandler = @Sendable (Double) -> Void
-    public typealias FrameRenderer = @Sendable (CGImage) throws -> CGImage
+    public typealias FrameRenderer = @Sendable (CGImage, TimeInterval) throws -> CGImage
     public static func export(source: URL, range: ClosedRange<TimeInterval>, options: RecordingExportOptions,
                               outputDirectory: URL? = nil, progress: ProgressHandler? = nil,
                               frameRenderer: FrameRenderer? = nil) async throws -> URL
@@ -271,10 +291,15 @@ public enum RecordingExporter {
   0.2 s (the whole file if shorter), and clamps an end up to 0.1 s past the duration. `readableDuration(of:)` gives an
   `AVAsset`'s duration (`sourceUnreadable` if it isn't a playable video). `progress` gets 0…1 off the main thread,
   ending with 1. Cancelling the surrounding `Task` deletes the partial file and throws `CancellationError`.
-- `frameRenderer` is called for every exported frame with the oriented source frame at full size, before any resizing.
-  The editor passes `Compositor.render` with the settings, annotations (redactions included) and background captured at
-  export start. It must return a constant size (else `encodingFailed`). If it throws, the export deletes the partial
-  file and rethrows it unchanged; no unrendered frame is ever substituted. Transparency is flattened on white.
+- `frameRenderer` is called for every exported frame with the oriented source frame at full size, before any resizing,
+  and its source-recording timestamp in seconds: the requested sample time for GIF, or the presentation time clamped
+  to the trim start for MP4. Do not subtract the trim start from that time. The editor passes it as `annotationTime`
+  to `Compositor.render`, with the complete annotations list (redactions included), settings and
+  background captured at export start. Annotation ranges are therefore evaluated on the same clock in preview,
+  GIF/MP4 export and copy. The renderer must return a constant size (else `encodingFailed`). If it throws, the export
+  deletes the partial file and rethrows it unchanged; no unrendered frame is ever substituted. Transparency is flattened
+  on white. **API migration:** existing frame-renderer closures must accept the second argument; ignore it only when
+  the rendering does not depend on annotation timing.
 - GIF: `GIFLimits.frameCount(duration:framesPerSecond:)` frames (rounded, at least 1), one every `1/framesPerSecond` s
   from the start of `range`, rendered, scaled down to `maxWidth` (never up) and written one at a time (memory stays near
   one frame), looping forever. A range over the limits throws `gifLimitExceeded` and is never truncated; a rate outside

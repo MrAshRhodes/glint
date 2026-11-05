@@ -9,7 +9,8 @@ import Foundation
 /// propagated unchanged, also after deleting the partial file. The source file is only ever read.
 public enum RecordingExporter {
     public typealias ProgressHandler = @Sendable (Double) -> Void
-    public typealias FrameRenderer = @Sendable (CGImage) throws -> CGImage
+    /// Receives an oriented source frame and its source-recording time in seconds (not trim-relative time).
+    public typealias FrameRenderer = @Sendable (CGImage, TimeInterval) throws -> CGImage
 
     /// How far past the file's real duration a requested range may end before it counts as invalid. The capture layer
     /// reports a duration measured on its own clock, which can differ slightly from the file's.
@@ -17,8 +18,9 @@ public enum RecordingExporter {
 
     /// Exports `range` of `source` and returns the new file, a uniquely named temporary in `outputDirectory` that the
     /// caller owns. `progress` is called off the main thread with a fraction from 0 to 1.
-    /// `frameRenderer` receives oriented source frames before resizing. It must return a constant size and throw on
-    /// failure; no unrendered frame is ever substituted. Transparent pixels are flattened against white in both formats.
+    /// `frameRenderer` receives oriented source frames before resizing, with source-recording seconds clamped to
+    /// the selected trim start. It must return a constant size and throw on failure; no unrendered frame is ever
+    /// substituted. Transparent pixels are flattened against white in both formats.
     public static func export(source: URL, range: ClosedRange<TimeInterval>, options: RecordingExportOptions,
                               outputDirectory: URL? = nil, progress: ProgressHandler? = nil,
                               frameRenderer: FrameRenderer? = nil) async throws -> URL {
@@ -126,7 +128,7 @@ public enum RecordingExporter {
                     let seconds = min(range.lowerBound + Double(index) / fps, range.upperBound - 0.001)
                     let sourceFrame = try await image(from: generator, at: seconds)
                     try autoreleasepool {
-                        let frame = try frameRenderer?(sourceFrame) ?? sourceFrame
+                        let frame = try frameRenderer?(sourceFrame, seconds) ?? sourceFrame
                         let size = CGSize(width: frame.width, height: frame.height)
                         if let renderedSize, size != renderedSize {
                             throw RecordingExportError.encodingFailed("the rendered frame dimensions changed")

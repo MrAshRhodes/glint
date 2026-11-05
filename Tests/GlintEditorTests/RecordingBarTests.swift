@@ -12,6 +12,7 @@ struct RecordingBarTests {
 
     private func withBar(width: CGFloat = 660, duration: TimeInterval = 10,
                          appearance: NSAppearance.Name = .aqua,
+                         configure: (EditorModel) -> Void = { _ in },
                          _ inspect: (NSHostingView<RecordingBarView>, RecordingEditorModel, RecordingPlayback, EditorActions) throws -> Void) throws {
         let fixture = try EditorFixture()
         defer { fixture.cleanUp() }
@@ -32,7 +33,11 @@ struct RecordingBarTests {
             }
         }
         let size = CGSize(width: width, height: RecordingBarView.contentHeight + 2 * EditorChromeMetrics.shadowPadding)
-        let host = NSHostingView(rootView: RecordingBarView(editor: fixture.model(), recording: recording,
+        let context = EditorContext(image: fixture.context.image, backingScale: 2, rawURL: nil,
+                                    source: nil, isRecording: true)
+        let editor = EditorModel(context: context, preferences: fixture.preferences, presetStore: fixture.presets)
+        configure(editor)
+        let host = NSHostingView(rootView: RecordingBarView(editor: editor, recording: recording,
                                                           playback: playback, actions: actions))
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless],
                               backing: .buffered, defer: false)
@@ -140,6 +145,43 @@ struct RecordingBarTests {
             try press("Reset trim", in: host)
             #expect(recording.trim.isFullRange)
             #expect(playback.range == 0...10)
+        }
+    }
+
+    @Test func annotationLanesExposeAdjustableRangesAndPlayheadActions() throws {
+        var editor: EditorModel?
+        try withBar(configure: { model in
+            editor = model
+            let annotation = model.makeAnnotation(.redact(CGRect(x: 0, y: 0, width: 20, height: 20)))
+            model.updateLive([annotation])
+            model.selection = [annotation.id]
+        }) { host, recording, playback, _ in
+            let model = try #require(editor)
+            for label in ["Select Redaction", "Redaction start", "Redaction end",
+                          "Annotation start in seconds", "Annotation end in seconds",
+                          "Start at playhead", "End at playhead"] {
+                let control = try node(label, in: host)
+                let frame = try #require((control.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue)
+                #expect(frame.width > 0 && frame.height > 0)
+                let local = try #require(host.window).convertFromScreen(frame)
+                #expect(host.convert(host.bounds, to: nil).insetBy(dx: -0.5, dy: -0.5).contains(local))
+            }
+            try perform("accessibilityPerformIncrement", on: "Redaction start", in: host)
+            #expect(model.annotations[0].visibleRange?.start == 0.1)
+            try perform("accessibilityPerformDecrement", on: "Redaction end", in: host)
+            #expect(model.annotations[0].visibleRange?.end == 9.9)
+            playback.seek(to: 2)
+            try press("Start at playhead", in: host)
+            playback.seek(to: 8)
+            try press("End at playhead", in: host)
+            #expect(model.annotations[0].visibleRange == AnnotationTiming(start: 2, end: 8))
+            #expect(recording.trim.isFullRange)
+            #expect(descendants(of: host).contains {
+                $0.value(forKey: "accessibilityValue") as? String
+                    == "Time-limited redactions expose content outside their range. Check the whole clip before sharing."
+            })
+            try press("Show selected annotation throughout the clip", in: host)
+            #expect(model.annotations[0].visibleRange == nil && !model.hasTimeLimitedRedactions)
         }
     }
 }

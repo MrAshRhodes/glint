@@ -46,7 +46,7 @@ struct RecordingEditorUnificationTests {
         #expect(!model.settings.autoBalance)
         model.settings.autoBalance = true
         #expect(!model.settings.autoBalance)
-        for _ in 0..<20 { model.updateRecordingFrame(f.context.image) }
+        for time in 0..<20 { model.updateRecordingFrame(f.context.image, at: Double(time)) }
         await model.runAutoRedact()
         #expect(!recognized && model.annotations.isEmpty)
         #expect(!model.undoManager.canUndo)
@@ -70,14 +70,14 @@ struct RecordingEditorUnificationTests {
         model.settings.padding = 0
         model.settings.background = .transparent
         model.updateLive([])
-        let rendered = try snapshot(f.context.image)
+        let rendered = try snapshot(f.context.image, 0)
         #expect(rendered.pixelSize == expected.pixelSize)
         #expect(try #require(PixelBuffer(rendered)).data == #require(PixelBuffer(expected)).data)
         #expect(rendered.pixelSize != f.context.image.pixelSize)
         let replacement = try #require(GlintBitmap.makeContext(width: 100, height: 80))
         replacement.setFillColor(RGBAColor.black.cgColor)
         replacement.fill(CGRect(x: 0, y: 0, width: 100, height: 80))
-        let next = try snapshot(#require(replacement.makeImage()))
+        let next = try snapshot(#require(replacement.makeImage()), 1)
         #expect(next.pixelSize == rendered.pixelSize)
         #expect(try #require(PixelBuffer(next)).data != #require(PixelBuffer(rendered)).data)
     }
@@ -91,7 +91,7 @@ struct RecordingEditorUnificationTests {
         services.export = { _, _, _, directory, _, renderer in
             calls += 1
             let render = try #require(renderer)
-            let output = try render(f.context.image)
+            let output = try render(f.context.image, 0)
             #expect(output.width > f.context.image.width)
             let url = directory.appendingPathComponent("clip.gif")
             try Data("styled-test-payload".utf8).write(to: url)
@@ -120,13 +120,13 @@ struct RecordingEditorUnificationTests {
         let playback = RecordingPlayback(url: recording.url, duration: recording.duration)
         defer { playback.shutdown() }
         var frame: CGImage?
-        playback.onFrame = { frame = $0 }
-        await waitUntil { frame != nil || playback.frameProblem != nil }
+        playback.onFrame = { image, _ in frame = image }
+        await waitUntil(seconds: 60) { frame != nil || playback.frameProblem != nil }
         let first = try #require(frame)
         #expect(first.pixelSize == recording.pixelSize)
         frame = nil
         playback.seek(to: 1)
-        await waitUntil { frame != nil || playback.frameProblem != nil }
+        await waitUntil(seconds: 60) { frame != nil || playback.frameProblem != nil }
         let second = try #require(frame)
         #expect(try #require(PixelBuffer(first)).data != #require(PixelBuffer(second)).data)
         #expect(playback.frameProblem == nil)
@@ -175,7 +175,7 @@ struct RecordingEditorUnificationTests {
         model.settings.padding = 20
         model.settings.windowFrame = WindowFrameSettings(style: .macOS)
         let expected = try model.renderFinal().pixelSize
-        await waitUntil { controller.model.styledPixelSize == expected }
+        await waitUntil(seconds: 60) { controller.model.styledPixelSize == expected }
         #expect(controller.model.styledPixelSize == expected)
         #expect(controller.model.outputSize == controller.model.options.gif.maxWidth.outputSize(for: expected))
         controller.model.options.format = .mp4

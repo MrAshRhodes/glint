@@ -114,7 +114,7 @@ struct RecordingTimelineView: View {
     }
 }
 
-private extension View {
+extension View {
     /// Layout-based positioning keeps the focus ring and accessibility frame with the visible handle.
     func placed(atX x: CGFloat) -> some View {
         padding(.leading, max(x, 0)).frame(maxWidth: .infinity, alignment: .leading)

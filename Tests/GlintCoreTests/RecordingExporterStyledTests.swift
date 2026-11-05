@@ -38,7 +38,7 @@ struct RecordingExporterStyledTests {
                 let output = try await RecordingExporter.export(
                     source: source, range: 0...0.2, options: RecordingExportOptions(format: format),
                     outputDirectory: fixture.outputDirectory,
-                    frameRenderer: { frame in
+                    frameRenderer: { frame, _ in
                         count.record(1)
                         return try Compositor.render(image: frame, settings: settings, annotations: annotations)
                     })
@@ -80,19 +80,28 @@ struct RecordingExporterStyledTests {
             let output = try await RecordingExporter.export(
                 source: source, range: 1.01...1.52, options: RecordingExportOptions(format: format),
                 outputDirectory: fixture.outputDirectory, progress: { progress.record($0) },
-                frameRenderer: { count.record(1); return $0 })
+                frameRenderer: { frame, time in count.record(time); return frame })
             let image = try await firstImage(output, format: format)
             let red = Double(TestImages.pixel(image, 100, 60).r)
             #expect(abs(red - expectedRed) < 15, "\(format) wrong trim start: \(red), expected \(expectedRed)")
             #expect(progress.all.last == 1)
             #expect(zip(progress.all, progress.all.dropFirst()).allSatisfy { $0 <= $1 })
+            #expect(count.all.first == 1.01, "the first renderer timestamp must be the source trim start")
+            #expect(count.all.allSatisfy { $0 >= 1.01 && $0 < 1.52 })
+            #expect(zip(count.all, count.all.dropFirst()).allSatisfy { $0 < $1 })
             if format == .mp4 {
                 let asset = AVURLAsset(url: output)
                 #expect(abs(try await asset.load(.duration).seconds - 0.51) < 0.005)
                 #expect(count.all.count == 16)
+                for (index, time) in count.all.enumerated().dropFirst() {
+                    #expect(abs(time - Double(30 + index) / 30) < 1e-6)
+                }
                 #expect(try await asset.loadTracks(withMediaType: .audio).isEmpty)
             } else {
                 #expect(count.all.count == GIFLimits.frameCount(duration: 0.51, framesPerSecond: 15))
+                for (index, time) in count.all.enumerated() {
+                    #expect(abs(time - (1.01 + Double(index) / 15)) < 1e-6)
+                }
             }
         }
     }
@@ -106,7 +115,7 @@ struct RecordingExporterStyledTests {
             let sizes = ProgressLog()
             let output = try await RecordingExporter.export(
                 source: source, range: 0...0.2, options: RecordingExportOptions(format: format),
-                outputDirectory: fixture.outputDirectory, frameRenderer: { image in
+                outputDirectory: fixture.outputDirectory, frameRenderer: { image, _ in
                     sizes.record(Double(image.width))
                     return image
                 })
@@ -129,7 +138,7 @@ struct RecordingExporterStyledTests {
         for format in formats {
             let output = try await RecordingExporter.export(
                 source: source, range: 0...0.2, options: RecordingExportOptions(format: format),
-                outputDirectory: fixture.outputDirectory, frameRenderer: { _ in
+                outputDirectory: fixture.outputDirectory, frameRenderer: { _, _ in
                     let context = try #require(GlintBitmap.makeContext(width: 161, height: 91))
                     context.setFillColor(CGColor(gray: 0, alpha: 1))
                     context.fill(CGRect(x: 130, y: 0, width: 31, height: 91))
@@ -151,7 +160,7 @@ struct RecordingExporterStyledTests {
         let output = try await RecordingExporter.export(
             source: source, range: 0...0.2,
             options: RecordingExportOptions(format: .gif, gif: GIFExportOptions(framesPerSecond: 10, maxWidth: .w480)),
-            outputDirectory: fixture.outputDirectory, frameRenderer: { image in
+            outputDirectory: fixture.outputDirectory, frameRenderer: { image, _ in
                 sizes.record(Double(image.width))
                 return try Compositor.render(image: image,
                                              settings: RenderSettings(padding: 20, shadow: .none, autoBalance: false))
@@ -170,7 +179,7 @@ struct RecordingExporterStyledTests {
             await #expect(throws: RenderError.annotationsNotApplied) {
                 try await RecordingExporter.export(
                     source: source, range: 0...0.5, options: RecordingExportOptions(format: format),
-                    outputDirectory: fixture.outputDirectory, frameRenderer: { image in
+                    outputDirectory: fixture.outputDirectory, frameRenderer: { image, _ in
                         count.record(1)
                         if count.all.count > 1 { throw RenderError.annotationsNotApplied }
                         return image
@@ -189,7 +198,7 @@ struct RecordingExporterStyledTests {
             await #expect(throws: RecordingExportError.encodingFailed("the rendered frame dimensions changed")) {
                 try await RecordingExporter.export(
                     source: source, range: 0...0.5, options: RecordingExportOptions(format: format),
-                    outputDirectory: fixture.outputDirectory, frameRenderer: { image in
+                    outputDirectory: fixture.outputDirectory, frameRenderer: { image, _ in
                         count.record(1)
                         return count.all.count == 1 ? image : try #require(image.cropping(to: CGRect(x: 0, y: 0, width: 80, height: 80)))
                     })
@@ -206,7 +215,7 @@ struct RecordingExporterStyledTests {
             let task = Task {
                 try await RecordingExporter.export(
                     source: source, range: 0...3, options: RecordingExportOptions(format: format),
-                    outputDirectory: fixture.outputDirectory, frameRenderer: { image in
+                    outputDirectory: fixture.outputDirectory, frameRenderer: { image, _ in
                         count.record(1)
                         Thread.sleep(forTimeInterval: 0.02)
                         return image
@@ -231,8 +240,8 @@ struct RecordingExporterStyledTests {
             let start = ContinuousClock.now
             let output = try await RecordingExporter.export(
                 source: source, range: 0...2, options: RecordingExportOptions(format: format),
-                outputDirectory: fixture.outputDirectory, frameRenderer: {
-                    try Compositor.render(image: $0, settings: settings, annotations: annotations)
+                outputDirectory: fixture.outputDirectory, frameRenderer: { frame, _ in
+                    try Compositor.render(image: frame, settings: settings, annotations: annotations)
                 })
             print("Styled \(format) benchmark: 2s 1280×720 @30fps source, \(start.duration(to: .now)), \(output.lastPathComponent)")
             #expect(FileManager.default.fileExists(atPath: output.path))
@@ -248,7 +257,7 @@ struct RecordingExporterStyledTests {
         let output = try await RecordingExporter.export(
             source: source, range: 0...0.2, options: RecordingExportOptions(format: .mp4),
             outputDirectory: fixture.outputDirectory,
-            frameRenderer: { try Compositor.render(image: $0, settings: settings) })
+            frameRenderer: { frame, _ in try Compositor.render(image: frame, settings: settings) })
         let track = try #require(try await AVURLAsset(url: output).loadTracks(withMediaType: .video).first)
         #expect(try await track.load(.naturalSize) == CGSize(width: 4120, height: 2368))
         print("Styled MP4 maximum-size smoke: 0.2s 4096×2304 source, \(start.duration(to: .now))")

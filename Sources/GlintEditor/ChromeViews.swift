@@ -11,6 +11,7 @@ final class EditorActions: ObservableObject {
     var share: () -> Void = {}
     var openRaw: () -> Void = {}
     var close: () -> Void = {}
+    var commitEditing: () -> Void = {}
     var savePreset: () -> Void = {}
     var dragFileURL: () -> URL? = { nil }
     /// Toolbar tool clicks; the controller handles them exactly like the tool's keyboard shortcut.
