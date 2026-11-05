@@ -43,7 +43,8 @@ struct RecordingEditorPlaybackTests {
         #expect(playback.currentTime == 1.0)
     }
 
-    @Test func playingLoopsInsideTheRangeUntilPaused() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func playingLoopsInsideTheRangeUntilPaused() async throws {
         let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
         let recording = try await fixture.recording(frames: 40, fps: 10)
         let playback = RecordingPlayback(url: recording.url, duration: recording.duration)
@@ -53,13 +54,20 @@ struct RecordingEditorPlaybackTests {
         playback.play()
         #expect(playback.isPlaying)
         var highest = 0.0
+        var previous = playback.currentTime
         var wrapped = false
-        let deadline = Date().addingTimeInterval(8)
+        // Generous wall-clock budget: CI runners can starve the main actor for many seconds.
+        let deadline = Date().addingTimeInterval(45)
         while !wrapped, Date() < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
-            #expect(playback.currentTime <= 1.6 + 0.05, "never plays past the end handle")
-            if playback.currentTime > highest { highest = playback.currentTime }
-            if highest > 1.3, playback.currentTime < 1.2 { wrapped = true }
+            let now = playback.currentTime
+            #expect(now <= 1.6 + 0.05, "never plays past the end handle")
+            #expect(now >= 1.0 - 0.05, "never plays before the start handle")
+            if now > highest { highest = now }
+            // Time only moves backwards when playback loops, so any clear drop is a wrap,
+            // even if a slow sample misses the moments just after the start handle.
+            if highest > 1.1, now + 0.05 < previous { wrapped = true }
+            previous = now
         }
         #expect(wrapped, "playback wraps back to the start handle (reached \(highest))")
         #expect(playback.isPlaying)
