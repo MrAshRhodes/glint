@@ -124,6 +124,21 @@ public struct RecordingProjectState: Codable, Equatable, Sendable {
         self.pixelSize = pixelSize
     }
 
+    /// Longest clip a project may describe, in seconds.
+    public static let maxDuration: TimeInterval = 24 * 60 * 60
+    /// Widest or tallest frame a project may describe, in pixels.
+    public static let maxPixelSide = 16_384
+
+    /// True when `duration` and `pixelSize` are finite, whole-pixel and within the limits above, so they can be
+    /// turned into integers and allocated without trapping.
+    public static func isValid(duration: TimeInterval, pixelSize: CGSize) -> Bool {
+        guard duration.isFinite, duration >= 0, duration <= maxDuration else { return false }
+        let side = CGFloat(maxPixelSide)
+        return [pixelSize.width, pixelSize.height].allSatisfy {
+            $0.isFinite && $0 >= 1 && $0 <= side && $0 == $0.rounded()
+        }
+    }
+
     private enum CodingKeys: String, CodingKey { case settings, annotations, trim, options, duration, pixelSize }
 
     public init(from decoder: Decoder) throws {
@@ -134,8 +149,7 @@ public struct RecordingProjectState: Codable, Equatable, Sendable {
                   options: try c.decodeIfPresent(RecordingExportOptions.self, forKey: .options) ?? RecordingExportOptions(),
                   duration: try c.decode(TimeInterval.self, forKey: .duration),
                   pixelSize: try c.decode(CGSize.self, forKey: .pixelSize))
-        guard duration.isFinite, duration >= 0, pixelSize.width >= 1, pixelSize.height >= 1,
-              pixelSize.width.isFinite, pixelSize.height.isFinite else {
+        guard Self.isValid(duration: duration, pixelSize: pixelSize) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "Recording duration or size is invalid."))
         }
@@ -213,10 +227,19 @@ public struct GlintProject: @unchecked Sendable {
     // @unchecked: CGImage is immutable and safe to hand between threads.
     public var state: ProjectState
     public var source: ProjectSource
+    /// Set by `ProjectStore.read`: a private folder holding copies of the package's video and asset images, which
+    /// `state` and `source` point at. The project owns it; call `discardSnapshot()` once nothing uses those files.
+    public var snapshotDirectory: URL?
 
-    public init(state: ProjectState, source: ProjectSource) {
+    public init(state: ProjectState, source: ProjectSource, snapshotDirectory: URL? = nil) {
         self.state = state
         self.source = source
+        self.snapshotDirectory = snapshotDirectory
+    }
+
+    /// Removes the private copies made when the project was opened. Safe to call more than once.
+    public func discardSnapshot(fileManager: FileManager = .default) {
+        if let snapshotDirectory { try? fileManager.removeItem(at: snapshotDirectory) }
     }
 }
 

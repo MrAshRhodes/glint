@@ -62,7 +62,8 @@ public struct RecordingTrim: Codable, Equatable, Sendable {
         let end = try c.decode(TimeInterval.self, forKey: .end)
         self.init(sourceDuration: duration)
         let tolerance = 1e-9
-        guard duration.isFinite, duration >= 0, start.isFinite, end.isFinite, start >= 0, end <= duration,
+        // The ordering checks are exact; only the minimum length allows for rounding in the stored seconds.
+        guard duration.isFinite, duration >= 0, start.isFinite, end.isFinite, 0 <= start, start <= end, end <= duration,
               end - start >= shortestDuration - tolerance else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "Trim requires 0 <= start < end <= sourceDuration."))

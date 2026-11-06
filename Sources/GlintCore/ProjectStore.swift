@@ -155,8 +155,23 @@ public enum ProjectStore {
 
     // MARK: Reading
 
+    /// Where `read` puts the private copies of package files: a per-user temporary folder.
+    public static var defaultSnapshotRoot: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("GlintProjects", isDirectory: true)
+    }
+
+    /// Removes every snapshot under `root`. Call only when no project is open, such as at launch.
+    public static func removeAllSnapshots(in root: URL = defaultSnapshotRoot, fileManager: FileManager = .default) {
+        try? fileManager.removeItem(at: root)
+    }
+
     /// Opens the project at `url`. The manifest is checked before anything else is decoded.
-    public static func read(from url: URL) throws -> GlintProject {
+    ///
+    /// The package can be changed by other processes while it is open, so nothing is read from it twice: each member
+    /// is opened once (without following symlinks), checked, and its validated bytes are used directly or copied
+    /// into a new private folder under `snapshotRoot`. The returned project points only at those copies and owns
+    /// them through `snapshotDirectory`.
+    public static func read(from url: URL, snapshotRoot: URL = defaultSnapshotRoot) throws -> GlintProject {
         let root = open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard root >= 0 else {
             throw errno == ENOTDIR ? ProjectFormatError.notAProject : ProjectFormatError.damaged(String(cString: strerror(errno)))
@@ -186,37 +201,119 @@ public enum ProjectStore {
         } catch {
             throw ProjectFormatError.damaged("project.json can't be read")
         }
-        let package = url.standardizedFileURL
-        state.settings = try resolveAssets(state.settings, package: package, root: root)
 
-        switch state {
-        case .screenshot:
-            let data = try readMember(Member.capture, in: root, limit: Limits.imageBytes)
-            return GlintProject(state: state, source: .image(try decodeImage(data, member: Member.capture)))
-        case .recording:
-            try checkMember(Member.recording, in: root, limit: Limits.videoBytes)
-            return GlintProject(state: state, source: .video(package.appendingPathComponent(Member.recording)))
+        let snapshot = Snapshot(root: snapshotRoot)
+        do {
+            state.settings = try resolveAssets(state.settings, root: root, snapshot: snapshot)
+            switch state {
+            case .screenshot:
+                let data = try readMember(Member.capture, in: root, limit: Limits.imageBytes)
+                return GlintProject(state: state, source: .image(try decodeImage(data, member: Member.capture)),
+                                    snapshotDirectory: snapshot.directory)
+            case .recording:
+                let video = try snapshot.copyMember(Member.recording, from: root, limit: Limits.videoBytes)
+                return GlintProject(state: state, source: .video(video), snapshotDirectory: snapshot.directory)
+            }
+        } catch {
+            snapshot.discard()
+            throw error
         }
     }
 
-    /// Points image backgrounds and watermarks at the package's own copies after checking them. The path stored in
-    /// the JSON is never used.
-    private static func resolveAssets(_ settings: RenderSettings, package: URL, root: Int32) throws -> RenderSettings {
+    /// Points image backgrounds and watermarks at private copies of the package's validated bytes. The path stored
+    /// in the JSON is never used.
+    private static func resolveAssets(_ settings: RenderSettings, root: Int32, snapshot: Snapshot) throws -> RenderSettings {
         var settings = settings
         if case .image(_, let fit) = settings.background {
-            _ = try decodeImage(readMember(Member.background, in: root, limit: Limits.assetBytes), member: Member.background)
-            settings.background = .image(path: package.appendingPathComponent(Member.background).path, fit: fit)
+            let data = try readMember(Member.background, in: root, limit: Limits.assetBytes)
+            _ = try decodeImage(data, member: Member.background)
+            settings.background = .image(path: try snapshot.write(data, as: "background.png").path, fit: fit)
         }
         if settings.watermark.imagePath != nil {
             do {
-                _ = try decodeImage(readMember(Member.watermark, in: root, limit: Limits.assetBytes),
-                                    member: Member.watermark)
-                settings.watermark.imagePath = package.appendingPathComponent(Member.watermark).path
+                let data = try readMember(Member.watermark, in: root, limit: Limits.assetBytes)
+                _ = try decodeImage(data, member: Member.watermark)
+                settings.watermark.imagePath = try snapshot.write(data, as: "watermark.png").path
             } catch ProjectFormatError.missingMember where !(settings.watermark.enabled && settings.watermark.kind == .image) {
                 settings.watermark.imagePath = nil
             }
         }
         return settings
+    }
+
+    /// A private folder, created on first use, that receives the copies `read` hands out.
+    private final class Snapshot {
+        let root: URL
+        private(set) var directory: URL?
+
+        init(root: URL) { self.root = root }
+
+        private func ensureDirectory() throws -> URL {
+            if let directory { return directory }
+            let made = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try FileManager.default.createDirectory(at: made, withIntermediateDirectories: false,
+                                                        attributes: [.posixPermissions: 0o700])
+            } catch {
+                throw ProjectFormatError.damaged("a private copy can't be made: \(error.localizedDescription)")
+            }
+            directory = made
+            return made
+        }
+
+        func write(_ data: Data, as name: String) throws -> URL {
+            let url = try ensureDirectory().appendingPathComponent(name)
+            do {
+                try data.write(to: url, options: .withoutOverwriting)
+            } catch {
+                throw ProjectFormatError.damaged("a private copy can't be made: \(error.localizedDescription)")
+            }
+            return url
+        }
+
+        /// Copies the open, validated member into the snapshot: an APFS clone when possible, else a bounded stream.
+        func copyMember(_ member: String, from packageRoot: Int32, limit: Int64) throws -> URL {
+            let (source, size) = try ProjectStore.statMember(member, in: packageRoot, limit: limit)
+            defer { close(source) }
+            let folder = try ensureDirectory()
+            let name = (member as NSString).lastPathComponent
+            let destination = folder.appendingPathComponent(name)
+            let folderFD = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard folderFD >= 0 else { throw ProjectFormatError.damaged("a private copy can't be made") }
+            defer { close(folderFD) }
+            if fclonefileat(source, folderFD, name, 0) == 0 {
+                var info = stat()
+                guard stat(destination.path, &info) == 0, Int64(info.st_size) == size else {
+                    throw ProjectFormatError.damaged("\(member) changed while it was opened")
+                }
+                return destination
+            }
+            let target = openat(folderFD, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard target >= 0 else { throw ProjectFormatError.damaged("a private copy can't be made") }
+            defer { close(target) }
+            var buffer = [UInt8](repeating: 0, count: 1 << 20)
+            var copied: Int64 = 0
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(source, $0.baseAddress, $0.count) }
+                if count == 0 { break }
+                guard count > 0 else { throw ProjectFormatError.damaged("\(member) can't be read") }
+                copied += Int64(count)
+                guard copied <= limit else { throw ProjectFormatError.memberTooLarge(member) }
+                var offset = 0
+                while offset < count {
+                    let written = buffer.withUnsafeBytes { Darwin.write(target, $0.baseAddress! + offset, count - offset) }
+                    guard written > 0 else { throw ProjectFormatError.damaged("a private copy can't be made") }
+                    offset += written
+                }
+            }
+            return destination
+        }
+
+        func discard() {
+            if let directory { try? FileManager.default.removeItem(at: directory) }
+        }
     }
 
     private static func decodeImage(_ data: Data, member: String) throws -> CGImage {
@@ -261,7 +358,7 @@ public enum ProjectStore {
     }
 
     /// Checks `member` is a regular file no bigger than `limit`, returning its open descriptor and size.
-    private static func statMember(_ member: String, in root: Int32, limit: Int64) throws -> (Int32, Int64) {
+    fileprivate static func statMember(_ member: String, in root: Int32, limit: Int64) throws -> (Int32, Int64) {
         let fd = try openMember(member, in: root)
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {

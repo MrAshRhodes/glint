@@ -19,6 +19,15 @@ private struct ProjectScratch {
 
     func cleanUp() { try? FileManager.default.removeItem(at: directory) }
 
+    var snapshots: URL { directory.appendingPathComponent("snapshots") }
+
+    /// Reads with private copies kept in this scratch folder.
+    func read(_ project: URL) throws -> GlintProject { try ProjectStore.read(from: project, snapshotRoot: snapshots) }
+
+    func snapshotFolders() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: snapshots.path)) ?? []).filter { !$0.hasPrefix(".") }
+    }
+
     /// An opaque capture with a translucent corner, so alpha survives the round trip too.
     func capture(width: Int = 120, height: Int = 80) throws -> CGImage {
         let context = try #require(GlintBitmap.makeContext(width: width, height: height))
@@ -88,7 +97,7 @@ struct ProjectStoreTests {
         // The originals can go away: the project carries its own copies.
         try FileManager.default.removeItem(at: background)
         try FileManager.default.removeItem(at: watermark)
-        let opened = try ProjectStore.read(from: url)
+        let opened = try s.read(url)
 
         guard case .screenshot(let restored) = opened.state, case .image(let image) = opened.source else {
             Issue.record("Expected a screenshot project")
@@ -96,9 +105,11 @@ struct ProjectStoreTests {
         }
         #expect(restored.annotations == annotations)
         #expect(restored.backingScale == 2 && restored.source == "area")
-        #expect(restored.settings.background == .image(path: url.appendingPathComponent("assets/background.png").path,
+        let snapshot = try #require(opened.snapshotDirectory)
+        #expect(snapshot.deletingLastPathComponent().standardizedFileURL == s.snapshots.standardizedFileURL)
+        #expect(restored.settings.background == .image(path: snapshot.appendingPathComponent("background.png").path,
                                                        fit: .fill))
-        #expect(restored.settings.watermark.imagePath == url.appendingPathComponent("assets/watermark.png").path)
+        #expect(restored.settings.watermark.imagePath == snapshot.appendingPathComponent("watermark.png").path)
         var comparable = restored.settings
         comparable.background = settings.background
         comparable.watermark.imagePath = settings.watermark.imagePath
@@ -128,14 +139,14 @@ struct ProjectStoreTests {
         let url = s.url("Clip.glint")
 
         try ProjectStore.write(GlintProject(state: .recording(state), source: .video(clip)), to: url)
-        let opened = try ProjectStore.read(from: url)
+        let opened = try s.read(url)
 
         #expect(opened.state == .recording(state))
         guard case .video(let video) = opened.source else {
             Issue.record("Expected a recording project")
             return
         }
-        #expect(video == url.standardizedFileURL.appendingPathComponent("source/recording.mp4"))
+        #expect(video == opened.snapshotDirectory?.appendingPathComponent("recording.mp4"))
         #expect(try Data(contentsOf: video) == Data("clip bytes".utf8))
         #expect(FileManager.default.fileExists(atPath: clip.path), "Saving copies the clip; it never moves it")
     }
@@ -148,7 +159,7 @@ struct ProjectStoreTests {
         let second = ScreenshotProjectState(settings: .default, annotations: annotationsForEveryLayer(), backingScale: 1)
         try ProjectStore.write(GlintProject(state: .screenshot(second), source: .image(try s.capture())), to: url)
 
-        #expect(try ProjectStore.read(from: url).state == .screenshot(second))
+        #expect(try s.read(url).state == .screenshot(second))
         #expect(try FileManager.default.contentsOfDirectory(atPath: s.directory.path) == ["Steps.glint"])
     }
 
@@ -166,7 +177,7 @@ struct ProjectStoreTests {
         #expect(throws: ProjectFormatError.mismatchedSource) {
             try ProjectStore.write(GlintProject(state: .screenshot(state), source: .video(s.url("x.mp4"))), to: url)
         }
-        #expect(try ProjectStore.read(from: url).state == .screenshot(state))
+        #expect(try s.read(url).state == .screenshot(state))
     }
 
     @Test func manifestDeclaresTheFormatAndNoUnknownFeatures() throws {
@@ -208,7 +219,7 @@ struct ProjectStoreTests {
                         to: url.appendingPathComponent("manifest.json"))
         try s.writeJSON(#"{"kind":"hologram"}"#, to: url.appendingPathComponent("project.json"))
 
-        #expect(throws: ProjectFormatError.newerVersion(2)) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.newerVersion(2)) { try s.read(url) }
         #expect(ProjectFormatError.newerVersion(2).localizedDescription
             == "This project was saved by a newer version of Glint. Update Glint to open it.")
     }
@@ -221,7 +232,7 @@ struct ProjectStoreTests {
                         to: url.appendingPathComponent("manifest.json"))
 
         #expect(throws: ProjectFormatError.unsupportedFeatures(["holograms", "timeTravel"])) {
-            try ProjectStore.read(from: url)
+            try s.read(url)
         }
         let known = ProjectManifest(requiredFeatures: ["timeTravel"])
         #expect(throws: Never.self) { try known.validate(supportedFeatures: ["timeTravel"]) }
@@ -232,7 +243,7 @@ struct ProjectStoreTests {
         let url = try savedScreenshot(in: s)
         try s.writeJSON(#"{"format":"io.github.mrashrhodes.glint.project","formatVersion":1}"#,
                         to: url.appendingPathComponent("manifest.json"))
-        #expect(throws: Never.self) { try ProjectStore.read(from: url) }
+        #expect(throws: Never.self) { try s.read(url) }
     }
 
     @Test(arguments: [
@@ -244,7 +255,7 @@ struct ProjectStoreTests {
         let s = try ProjectScratch(); defer { s.cleanUp() }
         let url = try savedScreenshot(in: s)
         try s.writeJSON(manifest, to: url.appendingPathComponent("manifest.json"))
-        #expect(throws: ProjectFormatError.notAProject) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.notAProject) { try s.read(url) }
     }
 
     @Test func aFolderOrFileWithoutAManifestIsNotAProject() throws {
@@ -253,15 +264,15 @@ struct ProjectStoreTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = s.url("File.glint")
         try Data("x".utf8).write(to: file)
-        #expect(throws: ProjectFormatError.notAProject) { try ProjectStore.read(from: folder) }
-        #expect(throws: ProjectFormatError.notAProject) { try ProjectStore.read(from: file) }
+        #expect(throws: ProjectFormatError.notAProject) { try s.read(folder) }
+        #expect(throws: ProjectFormatError.notAProject) { try s.read(file) }
     }
 
     @Test func aDamagedPayloadIsReportedNotGuessed() throws {
         let s = try ProjectScratch(); defer { s.cleanUp() }
         let url = try savedScreenshot(in: s)
         try s.writeJSON(#"{"kind":"screenshot"}"#, to: url.appendingPathComponent("project.json"))
-        #expect(throws: ProjectFormatError.damaged("project.json can't be read")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.damaged("project.json can't be read")) { try s.read(url) }
     }
 
     // MARK: - Opening safely
@@ -275,9 +286,9 @@ struct ProjectStoreTests {
         try FileManager.default.moveItem(at: url.appendingPathComponent(member), to: target)
         try FileManager.default.createSymbolicLink(at: url.appendingPathComponent(member), withDestinationURL: target)
 
-        #expect(throws: ProjectFormatError.self) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.self) { try s.read(url) }
         do {
-            _ = try ProjectStore.read(from: url)
+            _ = try s.read(url)
         } catch let error as ProjectFormatError {
             let expectedName = member == "source" ? "source/capture.png" : member
             #expect(error == .unsafeMember(expectedName) || (member == "manifest.json" && error == .notAProject),
@@ -291,7 +302,7 @@ struct ProjectStoreTests {
         let capture = url.appendingPathComponent("source/capture.png")
         try FileManager.default.removeItem(at: capture)
         try FileManager.default.createDirectory(at: capture, withIntermediateDirectories: false)
-        #expect(throws: ProjectFormatError.unsafeMember("source/capture.png")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.unsafeMember("source/capture.png")) { try s.read(url) }
     }
 
     @Test func pathsInTheJSONAreNeverFollowed() throws {
@@ -304,16 +315,16 @@ struct ProjectStoreTests {
         let json = try JSONEncoder().encode(ProjectState.screenshot(state))
         try json.write(to: url.appendingPathComponent("project.json"))
 
-        #expect(throws: ProjectFormatError.missingMember("assets/background.png")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.missingMember("assets/background.png")) { try s.read(url) }
 
         state.settings.background = .solid(.black)
         try JSONEncoder().encode(ProjectState.screenshot(state)).write(to: url.appendingPathComponent("project.json"))
-        #expect(throws: ProjectFormatError.missingMember("assets/watermark.png")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.missingMember("assets/watermark.png")) { try s.read(url) }
 
         // An unused watermark path is simply dropped rather than followed.
         state.settings.watermark.enabled = false
         try JSONEncoder().encode(ProjectState.screenshot(state)).write(to: url.appendingPathComponent("project.json"))
-        guard case .screenshot(let opened) = try ProjectStore.read(from: url).state else {
+        guard case .screenshot(let opened) = try s.read(url).state else {
             Issue.record("Expected a screenshot project")
             return
         }
@@ -325,7 +336,7 @@ struct ProjectStoreTests {
         let url = try savedScreenshot(in: s)
         try Data(repeating: 0x20, count: ProjectStore.Limits.manifestBytes + 1)
             .write(to: url.appendingPathComponent("manifest.json"))
-        #expect(throws: ProjectFormatError.memberTooLarge("manifest.json")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.memberTooLarge("manifest.json")) { try s.read(url) }
     }
 
     @Test func aCaptureThatIsNotAnImageIsReported() throws {
@@ -333,7 +344,7 @@ struct ProjectStoreTests {
         let url = try savedScreenshot(in: s)
         try Data("nope".utf8).write(to: url.appendingPathComponent("source/capture.png"))
         #expect(throws: ProjectFormatError.damaged("source/capture.png isn't an image")) {
-            try ProjectStore.read(from: url)
+            try s.read(url)
         }
     }
 
@@ -347,7 +358,86 @@ struct ProjectStoreTests {
         let url = s.url("Clip.glint")
         try ProjectStore.write(GlintProject(state: .recording(state), source: .video(clip)), to: url)
         try FileManager.default.removeItem(at: url.appendingPathComponent("source/recording.mp4"))
-        #expect(throws: ProjectFormatError.missingMember("source/recording.mp4")) { try ProjectStore.read(from: url) }
+        #expect(throws: ProjectFormatError.missingMember("source/recording.mp4")) { try s.read(url) }
+    }
+
+    // MARK: - Private snapshots
+
+    @Test func openedFilesAreCopiesThatLaterPackageChangesCannotReach() throws {
+        let s = try ProjectScratch(); defer { s.cleanUp() }
+        let background = try s.asset("bg.png", color: RGBAColor(r: 0.1, g: 0.8, b: 0.3))
+        let url = try savedScreenshot(in: s, background: background)
+        let opened = try s.read(url)
+        guard case .screenshot(let state) = opened.state else {
+            Issue.record("Expected a screenshot project")
+            return
+        }
+        let path = s.backgroundPath(state)
+        #expect(!path.hasPrefix(url.standardizedFileURL.path))
+        let before = try Data(contentsOf: URL(fileURLWithPath: path))
+
+        // Another process swaps the package's asset for a symlink after the project was opened.
+        let member = url.appendingPathComponent("assets/background.png")
+        try FileManager.default.removeItem(at: member)
+        try FileManager.default.createSymbolicLink(at: member, withDestinationURL: s.url("elsewhere.png"))
+
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == before)
+        #expect(throws: ProjectFormatError.unsafeMember("assets/background.png")) { try s.read(url) }
+
+        opened.discardSnapshot()
+        #expect(s.snapshotFolders().isEmpty)
+    }
+
+    @Test func aFailedReadLeavesNoSnapshotBehind() throws {
+        let s = try ProjectScratch(); defer { s.cleanUp() }
+        let background = try s.asset("bg.png", color: .black)
+        let url = try savedScreenshot(in: s, background: background)
+        // The background is copied before the broken capture is found.
+        try Data("nope".utf8).write(to: url.appendingPathComponent("source/capture.png"))
+        #expect(throws: ProjectFormatError.self) { try s.read(url) }
+        #expect(s.snapshotFolders().isEmpty)
+    }
+
+    @Test func recordingClipsAreCopiedIntoTheSnapshot() throws {
+        let s = try ProjectScratch(); defer { s.cleanUp() }
+        let clip = s.url("c.mp4")
+        try Data("clip".utf8).write(to: clip)
+        let state = RecordingProjectState(settings: .default, annotations: [], trim: RecordingTrim(sourceDuration: 2),
+                                          options: RecordingExportOptions(), duration: 2,
+                                          pixelSize: CGSize(width: 10, height: 10))
+        let url = s.url("Clip.glint")
+        try ProjectStore.write(GlintProject(state: .recording(state), source: .video(clip)), to: url)
+        let opened = try s.read(url)
+        guard case .video(let video) = opened.source else {
+            Issue.record("Expected a recording project")
+            return
+        }
+        try FileManager.default.removeItem(at: url)
+        #expect(try Data(contentsOf: video) == Data("clip".utf8), "The open clip doesn't depend on the package")
+        opened.discardSnapshot()
+        #expect(!FileManager.default.fileExists(atPath: video.path))
+    }
+
+    @Test func removingAllSnapshotsClearsTheRoot() throws {
+        let s = try ProjectScratch(); defer { s.cleanUp() }
+        let url = try savedScreenshot(in: s, background: try s.asset("bg.png", color: .black))
+        _ = try s.read(url)
+        _ = try s.read(url)
+        #expect(s.snapshotFolders().count == 2)
+        ProjectStore.removeAllSnapshots(in: s.snapshots)
+        #expect(s.snapshotFolders().isEmpty)
+    }
+
+    @Test(arguments: [("pixelSize", [1e20, 90] as [Double]), ("pixelSize", [160.5, 90]), ("pixelSize", [0, 90]),
+                      ("duration", [86_401] as [Double])])
+    func recordingStatesWithImpossibleSizesAreRefused(_ key: String, _ value: [Double]) throws {
+        let state = RecordingProjectState(settings: .default, annotations: [], trim: RecordingTrim(sourceDuration: 8),
+                                          options: RecordingExportOptions(), duration: 8,
+                                          pixelSize: CGSize(width: 160, height: 90))
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        json[key] = key == "duration" ? value[0] : value as Any
+        let data = try JSONSerialization.data(withJSONObject: json)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(RecordingProjectState.self, from: data) }
     }
 
     // MARK: - Codable recording types
@@ -360,7 +450,8 @@ struct ProjectStoreTests {
         #expect(try JSONDecoder().decode(RecordingTrim.self, from: data) == trim)
         for bad in [#"{"sourceDuration":10,"start":5,"end":4}"#, #"{"sourceDuration":10,"start":-1,"end":4}"#,
                     #"{"sourceDuration":10,"start":0,"end":11}"#, #"{"sourceDuration":10,"start":1,"end":1.1}"#,
-                    #"{"sourceDuration":-1,"start":0,"end":0}"#] {
+                    #"{"sourceDuration":-1,"start":0,"end":0}"#,
+                    #"{"sourceDuration":0,"start":5e-10,"end":0}"#] {
             #expect(throws: DecodingError.self, "\(bad)") { try JSONDecoder().decode(RecordingTrim.self, from: Data(bad.utf8)) }
         }
     }

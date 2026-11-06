@@ -289,8 +289,8 @@ public enum RecordingExporter {
 }
 ```
 - `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:)`: by default `url` is a unique temporary `.mp4` that the
-  recording editor owns and deletes when it closes; pass `deletesFileOnClose: false` for a file someone else owns,
-  such as the clip inside a project package; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
+  recording editor owns and deletes when it closes (a reopened project's clip is its private snapshot copy, so it is
+  deleted too); pass `deletesFileOnClose: false` for a file someone else owns; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
   status text): `.idle`, `.selecting`, `.ready`, `.countdown(Int)` (seconds left), `.recording`, `.finishing`.
 - `export` returns a new `RecordingExport-<UUID>.gif|mp4` in `outputDirectory` (default
   `RecordingExportFiles.defaultWorkingDirectory`, created if missing); the caller owns it, and `source` is only read.
@@ -365,13 +365,17 @@ public enum RecordingExporter {
 Editable `.glint` projects keep the original capture plus the editor state, so every element stays changeable after
 reopening. **Privacy:** the original capture includes everything that was redacted; share flattened exports only.
 ```swift
-public struct GlintProject { var state: ProjectState; var source: ProjectSource }   // @unchecked Sendable
+public struct GlintProject {   // @unchecked Sendable
+    var state: ProjectState; var source: ProjectSource; var snapshotDirectory: URL?
+    func discardSnapshot(fileManager: FileManager = .default)
+}
 public enum ProjectState { case screenshot(ScreenshotProjectState), recording(RecordingProjectState) }
 public enum ProjectSource { case image(CGImage), video(URL) }
 public enum ProjectStore {
     public static func write(_ project: GlintProject, to url: URL, generator: String? = nil,
                              fileManager: FileManager = .default) throws
-    public static func read(from url: URL) throws -> GlintProject
+    public static func read(from url: URL, snapshotRoot: URL = defaultSnapshotRoot) throws -> GlintProject
+    public static func removeAllSnapshots(in root: URL = defaultSnapshotRoot, fileManager: FileManager = .default)
 }
 ```
 - Package layout (a folder with the `glint` extension, UTI `io.github.mrashrhodes.glint.project`, conforming to
@@ -379,7 +383,9 @@ public enum ProjectStore {
   `assets/background.png` / `assets/watermark.png`.
 - `ScreenshotProjectState(settings:annotations:backingScale:source:)` and
   `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:)` are `Codable`; `ProjectState` encodes
-  with a `"kind"` key (`"screenshot"`/`"recording"`) and exposes `settings` and `annotations`. Annotation ranges stay in
+  with a `"kind"` key (`"screenshot"`/`"recording"`) and exposes `settings` and `annotations`. A recording state only
+  decodes when `RecordingProjectState.isValid(duration:pixelSize:)`: a finite duration up to `maxDuration` (24 h) and
+  whole-pixel sides in `1...maxPixelSide` (16384); a `RecordingTrim` only when `0 ≤ start ≤ end ≤ sourceDuration`. Annotation ranges stay in
   source-recording seconds. A `.screenshot` state needs an `.image` source and `.recording` a `.video` source, else
   `ProjectFormatError.mismatchedSource`.
 - `ProjectManifest(format:formatVersion:requiredFeatures:generator:)`: `format` must be `ProjectManifest.formatName`;
@@ -394,8 +400,13 @@ public enum ProjectStore {
   existing project untouched. Image backgrounds and watermarks are re-encoded into `assets/` (the user's file paths are
   never stored); a desktop-wallpaper background stores only the setting. Recordings are copied in, never moved.
 - `read` opens every member relative to the package with `O_NOFOLLOW` (symlinks and folders where a file belongs are
-  refused with `unsafeMember`), caps sizes (`ProjectStore.Limits`), never follows paths found in the JSON, and returns
-  asset and video URLs inside the package. Errors are `ProjectFormatError` (`LocalizedError`): `notAProject`,
+  refused with `unsafeMember`), caps sizes (`ProjectStore.Limits`), never follows paths found in the JSON, and reads
+  each member once. Assets are written from their validated bytes, and the video is cloned (or stream-copied) from the
+  validated descriptor, into a new private `0700` folder under `snapshotRoot` (default: `GlintProjects` in the
+  temporary folder); the returned URLs point there, so later changes to the package can't reach the open editor. The
+  project owns that folder (`snapshotDirectory`): call `discardSnapshot()` once nothing reads it any more (the app
+  does so when the editor closes and any project save has finished). A failed read leaves no snapshot behind;
+  `removeAllSnapshots()` clears leftovers and is meant for launch only. Errors are `ProjectFormatError` (`LocalizedError`): `notAProject`,
   `newerVersion(Int)`, `unsupportedFeatures([String])`, `missingMember(String)`, `unsafeMember(String)`,
   `memberTooLarge(String)`, `damaged(String)`, `mismatchedSource`, `unreadableAsset(String)`, `writeFailed(String)`.
 - `ProjectStore.isProject(_:)` checks the extension; `defaultFileName(date:timeZone:)` gives

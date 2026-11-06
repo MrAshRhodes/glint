@@ -39,6 +39,9 @@ final class RecordingCoordinator {
                                                              presetStore: presetStore)
             controller.onClose = { MainActor.assumeIsolated { onClose() } }
             controller.onProjectSaved = { RecentFiles.add($0) }
+            controller.onProjectSaveFailed = { url, error in
+                Notifier.post(title: "Project not saved", body: "\(url.lastPathComponent): \(error.localizedDescription)")
+            }
             NSApp.activate(ignoringOtherApps: true)
             controller.showEditor()
             return controller

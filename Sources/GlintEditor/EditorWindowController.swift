@@ -36,6 +36,8 @@ struct EditorExportServices {
             panel.begin(completionHandler: finish)
         }
     }
+    /// Where saves in flight are counted.
+    var saveActivity: ProjectSaveActivity = .shared
     /// Writes a project package; runs off the main actor.
     var writeProject: @Sendable (GlintProject, URL) throws -> Void = { project, url in
         try ProjectStore.write(project, to: url, generator: ProjectPrivacyNotice.generator)
@@ -74,6 +76,46 @@ private final class TitlebarDragView: NSView {
         case "None": break
         default: window.performZoom(nil)
         }
+    }
+}
+
+/// Counts project saves in flight across every editor, so quitting can wait for them.
+@MainActor
+public final class ProjectSaveActivity {
+    /// The app-wide counter every editor reports to unless a test gives it its own.
+    public static let shared = ProjectSaveActivity()
+
+    public private(set) var count = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public var isActive: Bool { count > 0 }
+
+    func begin() { count += 1 }
+
+    func end() {
+        count = max(count - 1, 0)
+        guard count == 0 else { return }
+        resumeWaiters()
+    }
+
+    private func resumeWaiters() {
+        let ready = waiters
+        waiters.removeAll()
+        ready.forEach { $0.resume() }
+    }
+
+    /// Waits until no project is being saved, or `timeout` passes. Returns true when nothing is being saved.
+    public func waitUntilIdle(timeout: Duration) async -> Bool {
+        guard isActive else { return true }
+        let timer = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            self?.resumeWaiters()
+        }
+        await withCheckedContinuation { waiters.append($0) }
+        timer.cancel()
+        return !isActive
     }
 }
 
@@ -117,6 +159,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     public var onPresetSaved: ((Preset) -> Void)?
     /// Called after a project package was written, with its location.
     public var onProjectSaved: ((URL) -> Void)?
+    /// Called when a project save that was still running when the window closed fails, so the failure can be
+    /// reported somewhere visible. While the window is open, failures are shown in the editor with Retry.
+    public var onProjectSaveFailed: ((URL, Error) -> Void)?
     /// Builds the project to save. Screenshots save the model's own state; the recording editor supplies its clip.
     var makeProject: (() -> GlintProject?)?
 
@@ -130,6 +175,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private var dragFiles: Set<URL> = []
     private var retryID: UUID?
     private var presetSaved = false
+    private var projectSave: Task<Void, Never>?
+    private var isClosed = false
 
     public convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
         self.init(context: context, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
@@ -432,18 +479,42 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
+    /// True while a project is being written. The files it reads (a temporary recording, opened project
+    /// assets) must stay in place until `waitForProjectSave()` returns.
+    public var isSavingProject: Bool { projectSave != nil }
+
+    /// Returns once no project save is running.
+    public func waitForProjectSave() async {
+        while let task = projectSave { await task.value; if projectSave == task { projectSave = nil } }
+    }
+
     func writeProject(_ project: GlintProject, to url: URL) {
+        // A panel answered after the window closed must not start reading files its owner is removing.
+        guard !isClosed else { return }
+        guard projectSave == nil else {
+            model.statusMessage = "A project is still being saved."
+            exportServices.beep()
+            return
+        }
         let write = exportServices.writeProject
         model.statusMessage = "Saving project…"
-        Task { [weak self] in
+        let activity = exportServices.saveActivity
+        activity.begin()
+        // Holds the controller strongly so the outcome is always reported, even after the window closes.
+        projectSave = Task {
             let result = await Task.detached(priority: .userInitiated) { Result { try write(project, url) } }.value
-            guard let self else { return }
+            self.projectSave = nil
+            activity.end()
             switch result {
             case .success:
-                self.clearRetry()
+                if !self.isClosed { self.clearRetry() }
                 self.model.statusMessage = "Saved project \(url.deletingPathExtension().lastPathComponent)"
                 self.onProjectSaved?(url)
             case .failure(let error):
+                if self.isClosed {
+                    self.onProjectSaveFailed?(url, error)
+                    return
+                }
                 let failure = error is ProjectFormatError
                     ? error.localizedDescription : "Couldn't save the project: \(error.localizedDescription)"
                 self.offerRetry(failure: failure) {
@@ -622,6 +693,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     // MARK: NSWindowDelegate
 
     public func windowWillClose(_ notification: Notification) {
+        isClosed = true
         clearRetry()
         canvas.endEditing()
         for url in dragFiles { try? FileManager.default.removeItem(at: url) }

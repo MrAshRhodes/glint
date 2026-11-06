@@ -17,6 +17,8 @@ struct RecordingEditorServices {
     var commit: (URL, URL) throws -> Void = { try RecordingExportFiles.commit($0, to: $1) }
     var copyToPasteboard: (URL, RecordingFileFormat) throws -> Void = { _ = try RecordingPasteboard.copy($0, format: $1) }
     var removeItem: (URL) -> Void = { try? FileManager.default.removeItem(at: $0) }
+    /// What the canvas editor uses to save a project of this recording.
+    var editorExport = EditorExportServices()
     /// Asks where to save, as a sheet on `window` when there is one. Calls back with nil when the user cancels.
     var chooseDestination: @MainActor (NSWindow?, RecordingFileFormat, @escaping (URL?) -> Void) -> Void = { window, format, completion in
         let panel = NSSavePanel()

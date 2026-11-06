@@ -73,6 +73,7 @@ struct ProjectEditorTests {
         try FileManager.default.createDirectory(at: f.directory, withIntermediateDirectories: true)
         let destination = f.directory.appendingPathComponent("Saved.glint")
         var services = EditorExportServices()
+        services.saveActivity = ProjectSaveActivity()
         var askedIn: URL?
         services.chooseProjectDestination = { _, directory, completion in
             askedIn = directory
@@ -98,6 +99,7 @@ struct ProjectEditorTests {
     @Test func aCancelledPanelWritesNothing() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
+        services.saveActivity = ProjectSaveActivity()
         var writes = 0
         services.chooseProjectDestination = { _, _, completion in completion(nil) }
         services.writeProject = { _, _ in writes += 1 }
@@ -112,6 +114,7 @@ struct ProjectEditorTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         struct Boom: LocalizedError { var errorDescription: String? { "disk full" } }
         var services = EditorExportServices()
+        services.saveActivity = ProjectSaveActivity()
         services.chooseProjectDestination = { _, _, completion in completion(URL(fileURLWithPath: "/dev/null/x.glint")) }
         services.writeProject = { _, _ in throw Boom() }
         services.beep = {}
@@ -143,8 +146,8 @@ struct ProjectEditorTests {
         let options = RecordingExportOptions(format: .mp4)
         let state = RecordingProjectState(settings: savedLook(), annotations: savedAnnotations(), trim: trim,
                                           options: options, duration: clip.duration, pixelSize: clip.pixelSize)
-        let controller = RecordingEditorWindowController(recording: clip, services: fixture.services(), project: state,
-                                                         projectName: "Demo")
+        let controller = try RecordingEditorWindowController(recording: clip, services: fixture.services(), project: state,
+                                                             projectName: "Demo")
         var closes = 0
         controller.onClose = { closes += 1 }
 
@@ -160,5 +163,105 @@ struct ProjectEditorTests {
         controller.window?.close()
         #expect(closes == 1)
         #expect(FileManager.default.fileExists(atPath: clip.url.path), "a project's clip belongs to the project")
+    }
+    // MARK: - Opening safely
+
+    @Test(arguments: [CGSize(width: 1e20, height: 90), CGSize(width: 160.5, height: 90), CGSize(width: 0, height: 90),
+                      CGSize(width: CGFloat.infinity, height: 90)])
+    func aRecordingProjectWithAnImpossibleSizeIsRefused(_ size: CGSize) throws {
+        let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
+        let clip = RecordedVideo(url: fixture.directory.appendingPathComponent("none.mp4"), duration: 2, pixelSize: size,
+                                 deletesFileOnClose: false)
+        let state = RecordingProjectState(settings: .default, annotations: [], trim: RecordingTrim(sourceDuration: 2),
+                                          options: RecordingExportOptions(), duration: 2, pixelSize: size)
+        #expect(throws: RecordingEditorOpenError.invalidClip) {
+            try RecordingEditorWindowController(recording: clip, services: fixture.services(), project: state,
+                                                projectName: "Bad")
+        }
+    }
+
+    @Test func placeholderFramesAreClampedInsteadOfTrapping() throws {
+        let huge = try #require(RecordingEditorWindowController.placeholderFrame(for: CGSize(width: 1e20, height: .nan)))
+        #expect(huge.width == RecordingProjectState.maxPixelSide && huge.height == 1)
+        let normal = try #require(RecordingEditorWindowController.placeholderFrame(for: CGSize(width: 160, height: 90)))
+        #expect(normal.width == 160 && normal.height == 90)
+    }
+
+    // MARK: - Saving while closing
+
+    /// Lets a test hold a project write open until it says so.
+    private final class Gate: @unchecked Sendable {
+        private let semaphore = DispatchSemaphore(value: 0)
+        func wait() { semaphore.wait() }
+        func open() { semaphore.signal() }
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<400 where !condition() { try await Task.sleep(nanoseconds: 5_000_000) }
+    }
+
+    @Test func closingDuringASaveKeepsTheClipUntilTheSaveIsDone() async throws {
+        let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
+        let clip = try await fixture.recording()
+        let gate = Gate()
+        var services = fixture.services()
+        let activity = ProjectSaveActivity()
+        services.editorExport.saveActivity = activity
+        var removed: [URL] = []
+        services.removeItem = { removed.append($0); try? FileManager.default.removeItem(at: $0) }
+        services.editorExport.chooseProjectDestination = { _, _, completion in
+            completion(fixture.directory.appendingPathComponent("Slow.glint"))
+        }
+        services.editorExport.writeProject = { project, _ in
+            gate.wait()
+            guard case .video(let url) = project.source else { return }
+            _ = try Data(contentsOf: url)
+        }
+        let controller = RecordingEditorWindowController(recording: clip, services: services)
+        var closes = 0
+        var saved: URL?
+        controller.onClose = { closes += 1 }
+        controller.onProjectSaved = { saved = $0 }
+
+        controller.saveAsProject(nil)
+        try await waitUntil { controller.editor.isSavingProject }
+        #expect(activity.isActive)
+        #expect(await activity.waitUntilIdle(timeout: .milliseconds(10)) == false)
+        controller.window?.close()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(closes == 0 && removed.isEmpty, "the clip stays while the save reads it")
+        #expect(FileManager.default.fileExists(atPath: clip.url.path))
+
+        gate.open()
+        try await waitUntil { closes == 1 }
+        #expect(closes == 1 && saved != nil)
+        #expect(removed.contains(clip.url))
+        #expect(await activity.waitUntilIdle(timeout: .seconds(1)))
+    }
+
+    @Test func aSaveThatFailsAfterTheWindowClosedIsReported() async throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        struct Boom: LocalizedError { var errorDescription: String? { "disk full" } }
+        let gate = Gate()
+        var services = EditorExportServices()
+        services.saveActivity = ProjectSaveActivity()
+        services.chooseProjectDestination = { _, _, completion in completion(URL(fileURLWithPath: "/dev/null/x.glint")) }
+        services.writeProject = { _, _ in gate.wait(); throw Boom() }
+        services.beep = {}
+        let controller = f.controller(services: services)
+        var failure: (URL, String)?
+        controller.onProjectSaveFailed = { failure = ($0, $1.localizedDescription) }
+
+        controller.saveAsProject(nil)
+        try await waitUntil { controller.isSavingProject }
+        controller.window?.close()
+        // A panel answered after closing starts nothing.
+        controller.writeProject(GlintProject(state: .screenshot(controller.model.screenshotProjectState()),
+                                             source: .image(controller.model.image)), to: URL(fileURLWithPath: "/dev/null/y.glint"))
+        gate.open()
+        await controller.waitForProjectSave()
+
+        #expect(failure?.0.lastPathComponent == "x.glint" && failure?.1 == "disk full")
+        #expect(controller.actions.retryExport == nil)
     }
 }

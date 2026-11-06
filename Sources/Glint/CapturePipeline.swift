@@ -384,8 +384,9 @@ final class CapturePipeline {
 
     // MARK: editor
 
+    @discardableResult
     func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                    restored: EditorRestoreState? = nil) {
+                    restored: EditorRestoreState? = nil) -> EditorWindowController {
         let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed,
                                     restored: restored)
         let controller = EditorWindowController(context: context, preferences: prefs, presetStore: presetStore)
@@ -405,7 +406,13 @@ final class CapturePipeline {
             }
         }
         controller.onProjectSaved = { [weak self] url in self?.services.addRecent(url) }
+        controller.onProjectSaveFailed = { [weak self] url, error in self?.reportProjectSaveFailure(url, error) }
         services.presentEditor(controller)
+        return controller
+    }
+
+    private func reportProjectSaveFailure(_ url: URL, _ error: Error) {
+        services.notify("Project not saved", "\(url.lastPathComponent): \(error.localizedDescription)", nil)
     }
 
     /// Opens a saved `.glint` project with its look, annotations (and, for recordings, trim and export settings)
@@ -424,24 +431,44 @@ final class CapturePipeline {
         switch (project.state, project.source) {
         case (.screenshot(let state), .image(let image)):
             services.addRecent(url)
-            openEditor(image: image, scale: CGFloat(state.backingScale), rawURL: nil, source: state.source,
-                       restored: EditorRestoreState(settings: state.settings, annotations: state.annotations,
-                                                    projectName: name))
+            let controller = openEditor(image: image, scale: CGFloat(state.backingScale), rawURL: nil,
+                                        source: state.source,
+                                        restored: EditorRestoreState(settings: state.settings,
+                                                                     annotations: state.annotations, projectName: name))
+            let removeEditor = controller.onClose
+            // The opened assets live in a private snapshot; it goes once no save can still be reading it.
+            controller.onClose = { [weak controller] in
+                removeEditor?()
+                Task { @MainActor in
+                    await controller?.waitForProjectSave()
+                    project.discardSnapshot()
+                }
+            }
         case (.recording(let state), .video(let videoURL)):
-            services.addRecent(url)
-            // The clip belongs to the project package, so closing the editor must leave it in place.
+            // The clip is Glint's private snapshot of the project's video, so it goes when the editor closes.
             let video = RecordedVideo(url: videoURL, duration: state.duration, pixelSize: state.pixelSize,
-                                      deletesFileOnClose: false)
-            let controller = RecordingEditorWindowController(recording: video, project: state, projectName: name,
-                                                             preferences: prefs, presetStore: presetStore)
+                                      deletesFileOnClose: true)
+            let controller: RecordingEditorWindowController
+            do {
+                controller = try RecordingEditorWindowController(recording: video, project: state, projectName: name,
+                                                                 preferences: prefs, presetStore: presetStore)
+            } catch {
+                project.discardSnapshot()
+                services.notify("Cannot open project", "\(url.lastPathComponent): \(error.localizedDescription)", nil)
+                return
+            }
+            services.addRecent(url)
             recordingEditors.append(controller)
             controller.onClose = { [weak self, weak controller] in
+                project.discardSnapshot()
                 guard let self, let controller else { return }
                 self.recordingEditors.removeAll { $0 === controller }
             }
             controller.onProjectSaved = { [weak self] saved in self?.services.addRecent(saved) }
+            controller.onProjectSaveFailed = { [weak self] saved, error in self?.reportProjectSaveFailure(saved, error) }
             services.presentRecordingEditor(controller)
         default:
+            project.discardSnapshot()
             services.notify("Cannot open project", "\(url.lastPathComponent): \(ProjectFormatError.mismatchedSource.localizedDescription)", nil)
         }
     }
