@@ -94,6 +94,8 @@ struct Preview {
     var mapper: CanvasMapper
 }
 
+enum ZoomAreaEditPhase { case began, changed, ended }
+
 @MainActor
 final class EditorModel: ObservableObject {
     private(set) var image: CGImage
@@ -130,6 +132,18 @@ final class EditorModel: ObservableObject {
     }
     @Published var selection: Set<UUID> = []
     @Published private(set) var recordingTime: TimeInterval = 0
+    /// Click highlights, cursor emphasis and zoom of a recording; nil (or inert) leaves every frame unchanged.
+    var presentation: Presentation? {
+        didSet { if presentation != oldValue { requestRender() } }
+    }
+    /// The zoom area being chosen on the canvas, in source pixels; nil when no zoom area is being edited.
+    @Published var editedZoomArea: CGRect?
+    /// Called as the canvas moves or resizes `editedZoomArea`; the owner applies the change.
+    var onZoomAreaEdit: ((CGRect, ZoomAreaEditPhase) -> Void)?
+    /// Shows the whole frame while a zoom area is being chosen; exports always zoom.
+    var showsWholeFrame = false {
+        didSet { if showsWholeFrame != oldValue { requestRender() } }
+    }
     @Published var tool: EditorTool = .select {
         didSet { if tool != oldValue { onBeginEditing?() } }
     }
@@ -188,6 +202,32 @@ final class EditorModel: ObservableObject {
     }
     /// Composes previews and final output; replaceable so tests can force render failures.
     var renderer: Renderer = EditorModel.compositorRenderer
+
+    typealias PresentationRenderer = @Sendable (_ image: CGImage, _ settings: RenderSettings,
+                                                _ annotations: [Annotation], _ backingScale: CGFloat,
+                                                _ backgroundImage: CGImage?, _ wallpaper: CGImage?,
+                                                _ annotationTime: TimeInterval?,
+                                                _ presentation: Presentation) throws -> RenderResult
+    static let compositorPresentationRenderer: PresentationRenderer = {
+        image, settings, annotations, scale, background, wallpaper, time, presentation in
+        try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
+                                      backgroundImage: background, wallpaper: wallpaper, annotationTime: time,
+                                      presentation: presentation)
+    }
+    /// Used instead of `renderer` while a recording has presentation effects.
+    var presentationRenderer: PresentationRenderer = EditorModel.compositorPresentationRenderer
+
+    /// What the preview draws: no zoom while the area is being chosen.
+    private var previewPresentation: Presentation? {
+        guard isRecording, var presentation else { return nil }
+        if showsWholeFrame { presentation.settings.zooms = [] }
+        return presentation.isInert ? nil : presentation
+    }
+
+    private var exportPresentation: Presentation? {
+        guard isRecording, let presentation, !presentation.isInert else { return nil }
+        return presentation
+    }
 
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
@@ -352,10 +392,15 @@ final class EditorModel: ObservableObject {
         let anns = annotations.filter { $0.id != editingID }
         let time = isRecording ? recordingTime : nil
         let renderer = self.renderer
+        let activePresentation = previewPresentation, renderPresentation = self.presentationRenderer
         Task.detached(priority: .userInitiated) { [weak self] in
             let r: RenderResult
             do {
-                r = try renderer(img, s, anns, scale, bg, wallpaper, time)
+                if let activePresentation {
+                    r = try renderPresentation(img, s, anns, scale, bg, wallpaper, time, activePresentation)
+                } else {
+                    r = try renderer(img, s, anns, scale, bg, wallpaper, time)
+                }
             } catch {
                 // Fail closed: never fall back to unannotated pixels; keep the last good preview.
                 let message = error.localizedDescription
@@ -392,8 +437,13 @@ final class EditorModel: ObservableObject {
     /// Full-resolution output with annotations visible at the current recording time burned in.
     /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     func renderFinal() throws -> CGImage {
-        try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage,
-                     isRecording ? recordingTime : nil).image
+        let time = isRecording ? recordingTime : nil
+        if let presentation = exportPresentation {
+            return try presentationRenderer(image, settings, annotations, backingScale, backgroundImage(for: settings),
+                                            wallpaperImage, time, presentation).image
+        }
+        return try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage,
+                            time).image
     }
 
     /// A frame update is not an edit: it uses the existing latest-dirty preview queue without undo or preference writes.
@@ -408,6 +458,7 @@ final class EditorModel: ObservableObject {
     func recordingFrameRenderer() -> RecordingExporter.FrameRenderer {
         let settings = settings, annotations = annotations, scale = backingScale
         let background = backgroundImage(for: settings), wallpaper = wallpaperImage
+        let presentation = exportPresentation
         return { frame, time in
             // A missing background must not be lazily read halfway through the clip if the file reappears.
             if case .image = settings.background, background == nil { throw CocoaError(.fileReadNoSuchFile) }
@@ -415,7 +466,7 @@ final class EditorModel: ObservableObject {
             try RedactionGate.validate(annotations, at: time)
             return try Compositor.render(image: frame, settings: settings, annotations: annotations,
                                          backingScale: scale, backgroundImage: background, wallpaper: wallpaper,
-                                         annotationTime: time)
+                                         annotationTime: time, presentation: presentation)
         }
     }
 

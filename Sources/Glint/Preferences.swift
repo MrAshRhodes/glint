@@ -321,10 +321,13 @@ private struct CaptureTab: View {
     @AppStorage(ShellKey.hideCursor) private var hideCursor = true
     @AppStorage(ShellKey.rememberArea) private var rememberArea = true
     @AppStorage private var snapToEdges: Bool
+    @AppStorage private var editablePointer: Bool
 
     init(model: PrefsModel) {
         self.model = model
         _snapToEdges = AppStorage(wrappedValue: false, AppPreferences.Key.snapToEdges, store: model.prefs.defaults)
+        _editablePointer = AppStorage(wrappedValue: false, AppPreferences.Key.recordingEditablePointer,
+                                      store: model.prefs.defaults)
     }
 
     var body: some View {
@@ -341,6 +344,12 @@ private struct CaptureTab: View {
                 Toggle(isOn: $snapToEdges.onChange { model.changed() }) {
                     Text("Snap selection to edges")
                     Text("Snap to window and display edges only. Hold Command to temporarily invert snapping. Shift still constrains the selection to a square.")
+                }
+            }
+            CollapsibleSection("Recording", id: "recording") {
+                Toggle(isOn: $editablePointer.onChange { model.changed() }) {
+                    Text("Editable pointer")
+                    Text("Record the pointer separately so the editor can enlarge or hide it. Takes effect from the next recording; the pointer is then drawn by Glint rather than macOS.")
                 }
             }
             CollapsibleSection("Global shortcuts", id: "shortcuts") {

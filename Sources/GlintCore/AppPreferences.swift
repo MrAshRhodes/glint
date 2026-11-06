@@ -126,6 +126,7 @@ public final class AppPreferences {
         public static let closeAfterCopy = "glint.closeAfterCopy"
         public static let hideWindowsDuringCapture = "glint.hideWindowsDuringCapture"
         public static let snapToEdges = "glint.snapToEdges"
+        public static let recordingEditablePointer = "glint.recordingEditablePointer"
         public static let fileNameTemplate = "glint.fileNameTemplate"
         public static let enableFileNameTemplate = "glint.enableFileNameTemplate"
         public static let exportFormat = "glint.exportFormat"
@@ -143,7 +144,7 @@ public final class AppPreferences {
              copyToClipboardAfterCapture, openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions,
              defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
-             hideWindowsDuringCapture, snapToEdges, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
+             hideWindowsDuringCapture, snapToEdges, recordingEditablePointer, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
              compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
         }
     }
@@ -240,6 +241,11 @@ public final class AppPreferences {
     }
     public var snapToEdges: Bool {
         get { bool(Key.snapToEdges, false) } set { defaults.set(newValue, forKey: Key.snapToEdges) }
+    }
+    /// Records the pointer separately instead of in the frames, so the editor can enlarge or hide it.
+    public var recordingEditablePointer: Bool {
+        get { bool(Key.recordingEditablePointer, false) }
+        set { defaults.set(newValue, forKey: Key.recordingEditablePointer) }
     }
     public var autoBalance: Bool { get { bool(Key.autoBalance, true) } set { defaults.set(newValue, forKey: Key.autoBalance) } }
     public var autoRedact: Bool { get { bool(Key.autoRedact, false) } set { defaults.set(newValue, forKey: Key.autoRedact) } }

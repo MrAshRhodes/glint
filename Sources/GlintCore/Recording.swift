@@ -14,12 +14,16 @@ public struct RecordedVideo: Sendable, Equatable {
     public let pixelSize: CGSize
     /// True for a temporary capture the editor must clean up; false for a file someone else owns.
     public let deletesFileOnClose: Bool
+    /// Pointer path and clicks recorded alongside the video, in its pixels and seconds; nil when nothing was tracked.
+    public var presentation: PresentationCapture?
 
-    public init(url: URL, duration: TimeInterval, pixelSize: CGSize, deletesFileOnClose: Bool = true) {
+    public init(url: URL, duration: TimeInterval, pixelSize: CGSize, deletesFileOnClose: Bool = true,
+                presentation: PresentationCapture? = nil) {
         self.url = url
         self.duration = duration
         self.pixelSize = pixelSize
         self.deletesFileOnClose = deletesFileOnClose
+        self.presentation = presentation
     }
 }
 

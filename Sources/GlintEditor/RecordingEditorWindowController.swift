@@ -134,6 +134,30 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
             self?.model.unresolvedRedactionIntervals = RedactionGate.unresolvedIntervals(
                 in: annotations, sourceDuration: trim.sourceDuration)
         }.store(in: &subscriptions)
+        model.presentation.undoManager = canvasModel.undoManager
+        model.presentation.$settings.sink { [weak self, weak canvasModel, weak presentation = model.presentation] settings in
+            guard let presentation else { return }
+            canvasModel?.presentation = Presentation(capture: presentation.capture, settings: settings)
+            self?.model.invalidatePreparedFile()
+        }.store(in: &subscriptions)
+        model.presentation.$editingArea.sink { [weak canvasModel] editing in
+            canvasModel?.showsWholeFrame = editing
+        }.store(in: &subscriptions)
+        model.presentation.objectWillChange.sink { [weak canvasModel, weak presentation = model.presentation] in
+            Task { @MainActor in
+                guard let presentation else { return }
+                let area = presentation.editingArea ? presentation.selectedZoom?.rect : nil
+                if canvasModel?.editedZoomArea != area { canvasModel?.editedZoomArea = area }
+            }
+        }.store(in: &subscriptions)
+        canvasModel.onZoomAreaEdit = { [weak presentation = model.presentation] area, phase in
+            guard let presentation, let id = presentation.selectedZoomID else { return }
+            switch phase {
+            case .began: presentation.beginInteraction()
+            case .changed: presentation.setZoomRect(area, id: id)
+            case .ended: presentation.endInteraction(actionName: "Change Zoom Area")
+            }
+        }
         refreshOutputSize()
         refreshTask = Task { [weak self] in await self?.model.refreshDuration() }
     }

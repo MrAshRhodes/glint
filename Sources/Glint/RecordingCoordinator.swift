@@ -167,6 +167,9 @@ extension RecordingCoordinator.Services {
     /// Opens recordings in an editor that shares the app's preferences and presets, like the screenshot editor.
     init(preferences: AppPreferences, presetStore: PresetStore) {
         self.init()
+        makeSession = { snapToEdges in
+            ScreenRecordingSession(snapToEdges: snapToEdges, showsCursor: !preferences.recordingEditablePointer)
+        }
         presentEditor = { video, onClose in
             Self.openEditor(video, preferences: preferences, presetStore: presetStore, onClose: onClose)
         }

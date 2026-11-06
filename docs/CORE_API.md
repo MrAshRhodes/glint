@@ -74,6 +74,8 @@ lower-z annotations remain part of the screenshot. Redactions also replace their
 frame is drawn. `RenderResult.region` is the base region in image pixels,
 for mapping editor coordinates onto `contentRect`. Rotation, flips and tilt carry the overflow with the card.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
+`render` and `renderDetailed` also take a final optional `presentation: Presentation?` (see Recording). It applies
+only together with an `annotationTime`, and `nil` or an inert value leaves every pixel unchanged.
 Both `render` and `renderDetailed` take the final optional `annotationTime` argument. Pass the frame's
 source-recording time in seconds to draw only annotations for which `isVisible(at:)` is true. Leave it `nil`
 for still-image rendering, which draws all annotations regardless of their ranges. Layout always uses the
@@ -301,7 +303,8 @@ public final class OutputActiveFiles: @unchecked Sendable {
 ## Recording
 Recording model, GIF/MP4 exporter, and file and clipboard helpers. GlintCapture hands over a `RecordedVideo`;
 the recording editor trims and exports it. `RecordingTrim`, `RecordingExportOptions`, `GIFExportOptions`,
-`RecordingFileFormat` and `GIFMaxWidth` are `Codable` so projects can store them (see Projects); the rest are not.
+`RecordingFileFormat` and `GIFMaxWidth` are `Codable` so projects can store them (see Projects), as are the presentation
+types below. The exporter, file and clipboard types are not.
 Shortcut: `HotkeyAction.recordScreen` (see Preferences).
 ```swift
 public enum RecordingExporter {
@@ -312,10 +315,28 @@ public enum RecordingExporter {
                               frameRenderer: FrameRenderer? = nil) async throws -> URL
 }
 ```
-- `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:)`: by default `url` is a unique temporary `.mp4` that the
+- `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:presentation:)`: by default `url` is a unique temporary `.mp4` that the
   recording editor owns and deletes when it closes (a reopened project's clip is its private snapshot copy, so it is
-  deleted too); pass `deletesFileOnClose: false` for a file someone else owns; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
+  deleted too); pass `deletesFileOnClose: false` for a file someone else owns; `duration` is in seconds, as the capture layer measured it.
+  `presentation` is the pointer data recorded alongside (or `nil`). `RecordingPhase` (for menu and
   status text): `.idle`, `.selecting`, `.ready`, `.countdown(Int)` (seconds left), `.recording`, `.finishing`.
+- Presentation (all `Codable, Equatable, Sendable`; every field decodes with a default when missing, so older or
+  partial payloads load as inert). Positions are source video pixels (top-left origin); times are source-recording
+  seconds, measured from the first frame.
+  - `Presentation(capture: PresentationCapture?, settings: PresentationSettings)`; `isInert` is true when nothing
+    would be drawn. `drawsPointer` tells whether the compositor draws the pointer itself.
+  - `PresentationCapture(pointer: PointerTrack, clicks: [ClickEvent], pointerIsBaked: Bool = true, pointerScale: Double = 1)`.
+    `pointerIsBaked` means macOS drew the pointer into the frames (it can be emphasised but not resized or hidden);
+    `pointerScale` is video pixels per screen point. `PointerTrack` encodes as `[[time, x, y], …]`, collapses still
+    runs on `append(_:)` and interpolates with `position(at:)`. `ClickEvent(id:time:position:button:)`, with
+    `PointerButton` `.left`/`.right`.
+  - `PresentationSettings(clicks: ClickHighlightStyle, cursor: CursorEmphasis, zooms: [ZoomSegment])`.
+    `ClickHighlightStyle(enabled: false, leftColor:, rightColor:, size: 40, duration: 0.6, removed: Set<UUID>)`;
+    `CursorEmphasis(scale: 1, hidden: false, halo: false, haloColor:, spotlight: false, radius: 48)`.
+  - `ZoomSegment(id:start:end:rect:ease: 0.4)`: eases in, holds and eases out (`amount(at:)`); `fitted(_:in:)` grows
+    `rect` to the frame's aspect ratio (at most 8×) and keeps it inside; `viewport(at:sourceSize:)` is the visible
+    area. Where segments overlap the later start wins. Zoom never changes the output size, and redactions are applied
+    before zooming, so they cover their content at every zoom level.
 - `export` returns a new `RecordingExport-<UUID>.gif|mp4` in `outputDirectory` (default
   `RecordingExportFiles.defaultWorkingDirectory`, created if missing); the caller owns it, and `source` is only read.
   `validatedRange(_:sourceDuration:)` runs before any frame is read: it throws `invalidRange`, or `rangeTooShort` under

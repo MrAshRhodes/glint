@@ -56,6 +56,7 @@ enum RecordingExportState: Equatable {
 @MainActor
 final class RecordingEditorModel: ObservableObject {
     let recording: RecordedVideo
+    let presentation: RecordingPresentationModel
     @Published var trim: RecordingTrim { didSet { invalidatePreparedFile() } }
     @Published var options = RecordingExportOptions() { didSet { invalidatePreparedFile() } }
     @Published var styledPixelSize: CGSize?
@@ -80,6 +81,7 @@ final class RecordingEditorModel: ObservableObject {
     init(recording: RecordedVideo, services: RecordingEditorServices = RecordingEditorServices()) {
         self.recording = recording
         self.services = services
+        presentation = RecordingPresentationModel(capture: recording.presentation, frameSize: recording.pixelSize)
         trim = RecordingTrim(sourceDuration: recording.duration)
     }
 

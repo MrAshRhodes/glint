@@ -160,6 +160,15 @@
           </ol>
           <p>Moving or resizing a tracked redaction on the canvas adds a keyframe at the current frame rather than moving the whole track. <strong>Re-track</strong> starts again from the current frame, and <strong>Remove tracking</strong> leaves the redaction fixed where it is shown. Blur cannot be tracked, and the style menu doesn't offer it for a tracked redaction.</p>
           <div class="callout"><p><strong>Unreviewed frames block export.</strong> While any flagged interval reaches the trimmed clip, Copy, Save, Share and drag are unavailable and the recording bar says how many intervals need review. Trimming those frames out also lifts the block. Tracking is an aid, not a guarantee: you remain responsible for checking every frame before you share.</p></div>
+          <h3 id="recording-presentation">Highlight clicks, the pointer and zoom in</h3>
+          <p>While you record, Glint also notes where the pointer is and where you click. No extra permission is needed. In the editor, open <strong>Clicks &amp; Cursor</strong> in the inspector:</p>
+          <ul>
+            <li><strong>Highlight clicks</strong> draws a ripple where each click happened; right clicks get a second ring. Choose a colour for each button, the ripple size and how long it lasts. Move the playhead to a click and choose <strong>Remove Click at Playhead</strong> to hide one; <strong>Restore All</strong> brings them back.</li>
+            <li><strong>Halo</strong> puts a soft glow around the pointer; <strong>Spotlight</strong> dims everything except the area around it. <strong>Radius</strong> sets the size of both.</li>
+            <li><strong>Pointer size</strong> and <strong>Hide pointer</strong> need <strong>Editable pointer</strong>, in Preferences → Capture → Recording, turned on <em>before</em> recording. macOS then leaves the pointer out of the footage and Glint draws it instead.</li>
+          </ul>
+          <p>To zoom in on part of the screen, use the <strong>Zoom</strong> lane below the annotation timeline. Click the magnifier button to add a two-second zoom at the playhead, select it, then drag its edges or type <strong>From</strong> and <strong>To</strong> times. Choose <strong>Area</strong> to see the whole frame and drag or resize the zoom area on the canvas; the bright outline shows exactly what the zoom will show. Each zoom eases in, holds and eases out, and the clip keeps its size. Delete a zoom with the trash button. Every change can be undone.</p>
+          <p>Like annotation ranges, these effects use original-recording times, follow trimming and look the same in the preview, exports and copied clips. Redactions keep covering their content at every zoom level. A recording made before this feature, or one where the pointer could not be tracked, can still be zoomed.</p>
           <h3 id="recording-export">Export a GIF or MP4</h3>
           <p>Choose <strong>GIF</strong> or <strong>MP4</strong> beside the trim controls:</p>
           <ul>

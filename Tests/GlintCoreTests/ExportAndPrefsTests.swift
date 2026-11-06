@@ -163,6 +163,20 @@ struct ExportAndPrefsTests {
         #expect(prefs.snapToEdges)
     }
 
+    @Test func editablePointerDefaultsOffAndIsReset() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        #expect(!prefs.recordingEditablePointer)
+        #expect(AppPreferences.Key.all.contains(AppPreferences.Key.recordingEditablePointer))
+        prefs.recordingEditablePointer = true
+        #expect(AppPreferences(defaults: defaults).recordingEditablePointer)
+        prefs.resetToDefaults()
+        #expect(!prefs.recordingEditablePointer)
+        #expect(defaults.object(forKey: AppPreferences.Key.recordingEditablePointer) == nil)
+    }
+
     @Test func resetClearsSnappingAndRestoresDisabledDefault() throws {
         let suite = "glint.test.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

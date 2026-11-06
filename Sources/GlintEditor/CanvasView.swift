@@ -37,6 +37,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
         case moving(start: CGPoint, perImage: CGFloat, base: [UUID: Annotation], part: MagnifierPart?)
         case handle(start: CGPoint, perImage: CGFloat, base: Annotation, origin: CGPoint, handle: HandleID)
         case zoom(start: CGPoint, end: CGPoint, square: Bool)
+        /// Moving (nil handle) or resizing a recording's zoom area.
+        case zoomArea(start: CGPoint, perImage: CGFloat, base: CGRect, handle: HandleID?)
     }
     private var drag = Drag.none
     private var didMove = false
@@ -210,6 +212,10 @@ final class CanvasView: NSView, NSTextViewDelegate {
         ctx.draw(p.image, in: CGRect(x: 0, y: 0, width: r.width, height: r.height))
         ctx.restoreGState()
 
+        if let area = model.editedZoomArea {
+            drawZoomArea(area)
+            return
+        }
         guard model.isEditable else {
             if !model.isDesigningPreset { drawHint("Reset rotation, flip and 3D tilt to edit annotations") }
             return
@@ -221,6 +227,42 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     private var imageBounds: CGRect { CGRect(origin: .zero, size: model.image.pixelSize) }
+
+    /// The requested zoom area (dashed, with handles) and what the zoom will really show (solid).
+    private func drawZoomArea(_ area: CGRect) {
+        let shown = viewRect(ZoomSegment.fitted(area, in: imageBounds.size))
+        let outside = NSBezierPath(rect: displayRect)
+        outside.append(NSBezierPath(rect: shown))
+        outside.windingRule = .evenOdd
+        NSColor.black.withAlphaComponent(0.35).setFill()
+        outside.fill()
+        accent.setStroke()
+        let solid = NSBezierPath(rect: shown)
+        solid.lineWidth = 2
+        solid.stroke()
+        let dashed = NSBezierPath(rect: viewRect(area))
+        dashed.lineWidth = 1
+        dashed.setLineDash([4, 3], count: 2, phase: 0)
+        dashed.stroke()
+        for (_, pt) in AnnotationGeometry.handles(of: zoomAreaAnnotation(area)) {
+            let v = toView(pt)
+            let h = NSBezierPath(roundedRect: CGRect(x: v.x - 4.5, y: v.y - 4.5, width: 9, height: 9), xRadius: 2, yRadius: 2)
+            NSColor.white.setFill(); h.fill()
+            accent.setStroke(); h.lineWidth = 1.5; h.stroke()
+        }
+    }
+
+    private func zoomAreaAnnotation(_ area: CGRect) -> Annotation { Annotation(kind: .rectangle(area)) }
+
+    /// Starts moving or resizing the zoom area; any other click while it is edited does nothing.
+    private func beginZoomAreaDrag(_ area: CGRect, at v: CGPoint) {
+        let perImage = max(viewPerImage, 0.0001)
+        let handle = AnnotationGeometry.handles(of: zoomAreaAnnotation(area))
+            .first { hypot(toView($0.1).x - v.x, toView($0.1).y - v.y) <= 8 }?.0
+        guard handle != nil || viewRect(area).contains(v) else { drag = .none; return }
+        model.onZoomAreaEdit?(area, .began)
+        drag = .zoomArea(start: v, perImage: perImage, base: area, handle: handle)
+    }
 
     private func drawZoomMarquee(from start: CGPoint, to end: CGPoint, square: Bool) {
         let r = viewRect(AnnotationGeometry.zoomSelection(from: start, to: end, square: square, in: imageBounds))
@@ -316,6 +358,10 @@ final class CanvasView: NSView, NSTextViewDelegate {
         let p = toImage(v)
         didMove = false
 
+        if let area = model.editedZoomArea {
+            beginZoomAreaDrag(area, at: v)
+            return
+        }
         if model.tool != .select {
             beginTool(at: p)
             return
@@ -410,6 +456,20 @@ final class CanvasView: NSView, NSTextViewDelegate {
         case .handle(let start, let perImage, let base, let origin, let h):
             let target = CGPoint(x: origin.x + (v.x - start.x) / perImage, y: origin.y + (v.y - start.y) / perImage)
             model.replace(AnnotationGeometry.resized(base, handle: h, to: target, constrain: shift))
+        case .zoomArea(let start, let perImage, let base, let handle):
+            let d = CGSize(width: (v.x - start.x) / perImage, height: (v.y - start.y) / perImage)
+            var area = base.offsetBy(dx: d.width, dy: d.height)
+            if let handle, let origin = AnnotationGeometry.handles(of: zoomAreaAnnotation(base)).first(where: { $0.0 == handle })?.1 {
+                let resized = AnnotationGeometry.resized(zoomAreaAnnotation(base), handle: handle,
+                                                         to: CGPoint(x: origin.x + d.width, y: origin.y + d.height),
+                                                         constrain: shift)
+                area = AnnotationGeometry.rect(of: resized.kind)?.standardized ?? base
+            } else {
+                // Moving keeps the size; the area stays inside the frame.
+                area.origin.x = min(max(area.minX, 0), max(imageBounds.width - area.width, 0))
+                area.origin.y = min(max(area.minY, 0), max(imageBounds.height - area.height, 0))
+            }
+            model.onZoomAreaEdit?(area, .changed)
         case .creating(let id, let start, _):
             guard var a = model.annotations.first(where: { $0.id == id }) else { return }
             switch a.kind {
@@ -451,6 +511,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
             model.endInteraction(actionName: "Move")
         case .handle:
             model.endInteraction(actionName: "Resize")
+        case .zoomArea:
+            model.onZoomAreaEdit?(model.editedZoomArea ?? .zero, .ended)
         case .zoom(let start, let end, let square):
             needsDisplay = true
             let r = AnnotationGeometry.zoomSelection(from: start, to: end, square: square, in: imageBounds)

@@ -56,7 +56,7 @@ final class FrameWriter: @unchecked Sendable {
     private let input: AVAssetWriterInput
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
     private let frameDuration: CMTime
-    private var startTime: CMTime?
+    private(set) var startTime: CMTime?
     private var lastPresentationTime: CMTime?
     private var lastArrival: CMTime?
     private var isClosed = false

@@ -9,7 +9,7 @@ struct RecordingBarView: View {
     @ObservedObject var playback: RecordingPlayback
     @ObservedObject var actions: EditorActions
     @ObservedObject var tracking: RedactionTrackingModel
-    static let contentHeight: CGFloat = 354
+    static let contentHeight: CGFloat = 448
 
     @StateObject private var presentation = RecordingBarPresentation()
 
@@ -22,6 +22,9 @@ struct RecordingBarView: View {
                     RecordingAnnotationTimeline(editor: editor, recording: recording, playback: playback,
                                                 actions: actions, tracking: tracking)
                         .frame(height: 178)
+                    RecordingZoomTimeline(presentation: recording.presentation, recording: recording,
+                                          playback: playback, actions: actions)
+                        .frame(height: 90)
                     status.frame(height: 22)
                 }
                 .padding(6)

@@ -283,7 +283,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         }
 
         let inspectorContent = Self.host(InspectorView(model: model, recording: recording, playback: playback,
-                                                       tracking: tracking), sizing: [])
+                                                       tracking: tracking, presentation: recording?.presentation), sizing: [])
         inspectorContent.wantsLayer = true
         inspectorContent.layer?.cornerRadius = GlintDesign.panelCornerRadius
         inspectorContent.layer?.cornerCurve = .continuous

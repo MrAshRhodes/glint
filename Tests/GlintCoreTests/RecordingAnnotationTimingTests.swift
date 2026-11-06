@@ -98,4 +98,43 @@ struct RecordingAnnotationTimingTests {
             #expect(isBlack(215, 45) == (time >= 1.2 && time < 1.4), "\(format) timed magnifier at \(time)")
         }
     }
+    @Test(arguments: [RecordingFileFormat.gif, .mp4])
+    func trimmedExportFollowsZoomOnTheSourceClock(format: RecordingFileFormat) async throws {
+        let fixture = try RecordingExportFixture(); defer { fixture.cleanUp() }
+        let source = try await fixture.video(frames: 90, fps: 30)
+        let annotations = [Annotation(kind: .redact(CGRect(x: 50, y: 25, width: 60, height: 40)),
+                                      style: AnnotationStyle(color: .black))]
+        let presentation = Presentation(settings: PresentationSettings(zooms: [
+            ZoomSegment(start: 1, end: 3, rect: CGRect(x: 60, y: 30, width: 40, height: 22.5)),
+        ]))
+        let settings = RenderSettings(padding: 0, inset: 0, cornerRadius: 0, shadow: .none,
+                                      background: .solid(.white), autoBalance: false)
+        let times = ProgressLog()
+        let output = try await RecordingExporter.export(
+            source: source, range: 1.01...1.61,
+            options: RecordingExportOptions(format: format, gif: GIFExportOptions(framesPerSecond: 10)),
+            outputDirectory: fixture.outputDirectory,
+            frameRenderer: { frame, time in
+                times.record(time)
+                return try Compositor.render(image: frame, settings: settings, annotations: annotations,
+                                             annotationTime: time, presentation: presentation)
+            })
+        let frames = try await decodedFrames(output, format: format)
+        #expect(frames.count == times.all.count)
+        #expect(times.all.contains { $0 >= 1.4 })
+        for (frame, time) in zip(frames, times.all) {
+            #expect(frame.width >= 160 && frame.height >= 90, "Zoom never changes the output size")
+            let pixels = try #require(PixelBuffer(frame))
+            func isBlack(_ x: Int, _ y: Int) -> Bool {
+                let p = pixels.pixel(x, y)
+                return p.0 < 35 && p.1 < 35 && p.2 < 35
+            }
+            #expect(isBlack(80, 45), "\(format) redaction at the centre at \(time)")
+            if time < 1.05 {
+                #expect(!isBlack(3, 3), "\(format) zoom has barely started at \(time)")
+            } else if time >= 1.4 {
+                #expect(isBlack(3, 3) && isBlack(156, 86), "\(format) full zoom fills the frame with the redaction at \(time)")
+            }
+        }
+    }
 }
