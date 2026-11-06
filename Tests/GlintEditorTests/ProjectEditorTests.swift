@@ -57,7 +57,7 @@ struct ProjectEditorTests {
         try FileManager.default.createDirectory(at: f.directory, withIntermediateDirectories: true)
         try ProjectStore.write(GlintProject(state: .screenshot(model.screenshotProjectState()), source: .image(model.image)),
                                to: url)
-        let project = try ProjectStore.read(from: url)
+        let project = try ProjectStore.read(from: url, snapshotRoot: f.directory.appendingPathComponent("Snapshots"))
         guard case .screenshot(let state) = project.state, case .image(let image) = project.source else {
             Issue.record("expected a screenshot project"); return
         }
@@ -89,7 +89,7 @@ struct ProjectEditorTests {
 
         #expect(saved == destination && askedIn == f.preferences.saveDirectory)
         #expect(controller.model.statusMessage == "Saved project Saved")
-        let project = try ProjectStore.read(from: destination)
+        let project = try ProjectStore.read(from: destination, snapshotRoot: f.directory.appendingPathComponent("Snapshots"))
         guard case .image(let image) = project.source else { Issue.record("expected an image source"); return }
         try expectSamePixels(image, f.context.image)
         #expect(project.state.annotations == controller.model.annotations)
@@ -164,6 +164,29 @@ struct ProjectEditorTests {
         #expect(closes == 1)
         #expect(FileManager.default.fileExists(atPath: clip.url.path), "a project's clip belongs to the project")
     }
+    @Test func aReopenedScrollingCaptureStartsAtFitWidth() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let bitmap = try #require(GlintBitmap.makeContext(width: 100, height: 800))
+        bitmap.setFillColor(RGBAColor(r: 0.3, g: 0.6, b: 0.9).cgColor)
+        bitmap.fill(CGRect(x: 0, y: 0, width: 100, height: 800))
+        let tall = try #require(bitmap.makeImage())
+        let url = f.directory.appendingPathComponent("Tall.glint")
+        try FileManager.default.createDirectory(at: f.directory, withIntermediateDirectories: true)
+        let state = ScreenshotProjectState(settings: savedLook(), annotations: savedAnnotations(), backingScale: 2,
+                                           source: "scrolling")
+        try ProjectStore.write(GlintProject(state: .screenshot(state), source: .image(tall)), to: url)
+        let project = try ProjectStore.read(from: url, snapshotRoot: f.directory.appendingPathComponent("Snapshots"))
+        defer { project.discardSnapshot() }
+        guard case .image(let image) = project.source else { Issue.record("expected an image source"); return }
+        let model = EditorModel(context: EditorContext(image: image, backingScale: 2, rawURL: nil, source: state.source,
+                                                       restored: EditorRestoreState(settings: state.settings,
+                                                                                    annotations: state.annotations)),
+                                preferences: f.preferences, presetStore: f.presets)
+        #expect(model.image.pixelSize == CGSize(width: 100, height: 800))
+        #expect(model.canvasZoom == .fitWidth)
+        #expect(model.annotations == savedAnnotations())
+    }
+
     // MARK: - Opening safely
 
     @Test(arguments: [CGSize(width: 1e20, height: 90), CGSize(width: 160.5, height: 90), CGSize(width: 0, height: 90),
