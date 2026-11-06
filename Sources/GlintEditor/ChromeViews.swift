@@ -227,6 +227,7 @@ struct BottomBarView: View {
                 exportStatus
                 Spacer(minLength: 0)
                     .layoutPriority(-2)
+                if !model.isRecording { ZoomMenu(model: model) }
                 exportActions
             }
         }
@@ -315,6 +316,32 @@ struct BottomBarView: View {
         }
         .controlSize(.large)
         .fixedSize()
+    }
+}
+
+/// Chooses how the image fits the canvas: Fit, Fit Width or 100%. Zoomed images scroll.
+private struct ZoomMenu: View {
+    @ObservedObject var model: EditorModel
+
+    var body: some View {
+        Menu {
+            Picker("Zoom", selection: $model.canvasZoom) {
+                ForEach(CanvasZoom.allCases) { zoom in
+                    Text(zoom.title).tag(zoom)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Label(model.canvasZoom.title, systemImage: "magnifyingglass")
+        }
+        .menuIndicator(.visible)
+        .fixedSize()
+        .controlSize(.large)
+        .glintGlassButtonStyle()
+        .help("Zoom: Fit (⌘9), Fit Width (⌘8), 100% (⌘0). Scroll to move around a zoomed image.")
+        .accessibilityLabel("Zoom")
+        .accessibilityValue(model.canvasZoom.title)
     }
 }
 

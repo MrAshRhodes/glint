@@ -38,6 +38,17 @@ struct CompositorTests {
         #expect(r.image.width == 159 + 70 && r.image.height == 59 + 70)
     }
 
+    @Test func aspectRatioIsDroppedWhenItWouldExceedTheAreaBudget() {
+        var s = settings()
+        s.aspectRatio = .r16x9
+        let tall = Compositor.layout(contentSize: CGSize(width: 1200, height: 16_000), insetApplied: true,
+                                     settings: s, backingScale: 1)
+        #expect(tall.canvasSize == CGSize(width: 1270, height: 16_070))
+        let normal = Compositor.layout(contentSize: CGSize(width: 1200, height: 1600), insetApplied: true,
+                                       settings: s, backingScale: 1)
+        #expect(abs(normal.canvasSize.width / normal.canvasSize.height - 16.0 / 9) < 0.01)
+    }
+
     @Test func aspectRatioFitting() throws {
         var s = settings()
         s.aspectRatio = .r16x9

@@ -64,7 +64,68 @@ public enum TextRecognizer {
         }
     }
 
+    /// Tallest slice given to Vision in one request. Vision scales a whole image down to its working size, so text
+    /// in a very tall image (a scrolling capture) would shrink below what it can read; slices keep it legible.
+    public static let maximumBandHeight = 4096
+    /// Rows shared by neighbouring slices, taller than any line of text, so every line lies whole in one slice.
+    public static let bandOverlap = 256
+
     public static func recognizeSync(in image: CGImage, options: Options = Options()) throws -> [RecognizedLine] {
+        let ranges = bands(height: image.height)
+        guard ranges.count > 1 else { return try recognizeSingle(in: image, options: options) }
+        return try recognizeBanded(ranges) { range in
+            let rect = CGRect(x: 0, y: range.lowerBound, width: image.width, height: range.count)
+            guard let slice = image.cropping(to: rect) else { return [] }
+            return try recognizeSingle(in: slice, options: options)
+        }
+    }
+
+    /// Row ranges covering `height` in slices of at most `maxBand`, each overlapping the next by `overlap`.
+    public static func bands(height: Int, maxBand: Int = maximumBandHeight, overlap: Int = bandOverlap) -> [Range<Int>] {
+        guard height > maxBand, maxBand > overlap else { return [0..<max(height, 0)] }
+        var ranges: [Range<Int>] = []
+        var start = 0
+        while true {
+            let end = min(start + maxBand, height)
+            ranges.append(start..<end)
+            if end == height { return ranges }
+            start = end - overlap
+        }
+    }
+
+    /// Runs `recognize` on each slice (results in slice coordinates) and merges them into image coordinates. A
+    /// line is kept by the slice that owns its centre (the overlap is split down the middle), and an identical line
+    /// at the same place is dropped, so text in an overlap is reported once.
+    public static func recognizeBanded(_ ranges: [Range<Int>],
+                                       recognize: (Range<Int>) throws -> [RecognizedLine]) rethrows -> [RecognizedLine] {
+        var merged: [RecognizedLine] = []
+        for (i, range) in ranges.enumerated() {
+            let ownedTop = i == 0 ? range.lowerBound : (range.lowerBound + ranges[i - 1].upperBound) / 2
+            let ownedBottom = i == ranges.count - 1 ? range.upperBound : (range.upperBound + ranges[i + 1].lowerBound) / 2
+            let dy = CGFloat(range.lowerBound)
+            for var line in try recognize(range) {
+                line.box = line.box.offsetBy(dx: 0, dy: dy)
+                line.words = line.words.map { word in
+                    var word = word
+                    word.box = word.box.offsetBy(dx: 0, dy: dy)
+                    return word
+                }
+                let mid = line.box.midY
+                guard mid >= CGFloat(ownedTop), mid < CGFloat(ownedBottom) else { continue }
+                let duplicate = merged.contains { other in
+                    guard other.text == line.text else { return false }
+                    let overlap = other.box.intersection(line.box)
+                    guard !overlap.isNull else { return false }
+                    return overlap.width * overlap.height >= 0.5 * min(other.box.width * other.box.height,
+                                                                        line.box.width * line.box.height)
+                }
+                if !duplicate { merged.append(line) }
+            }
+        }
+        return merged.sorted { $0.box.minY != $1.box.minY ? $0.box.minY < $1.box.minY : $0.box.minX < $1.box.minX }
+    }
+
+    private static func recognizeSingle(in image: CGImage, options: Options) throws -> [RecognizedLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = options.usesLanguageCorrection

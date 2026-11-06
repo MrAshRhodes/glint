@@ -156,6 +156,8 @@ final class EditorModel: ObservableObject {
     @Published var redactOptions: SensitiveInfoOptions
     @Published var redactColor: RGBAColor
     @Published var isBusy = false
+    /// How the image fits the canvas; a tall image starts at Fit Width.
+    @Published var canvasZoom: CanvasZoom
     @Published var lastRedactSummary: String?
     @Published var designName: String
     @Published var designMakeDefault = false
@@ -191,6 +193,7 @@ final class EditorModel: ObservableObject {
         self.image = context.image
         self.isRecording = context.isRecording
         self.backingScale = max(context.backingScale, 1)
+        self.canvasZoom = context.isRecording || design != nil ? .fit : CanvasZoom.initial(for: context.image.pixelSize)
         self.rawURL = context.rawURL
         self.source = context.source
         self.isComposed = context.isComposed

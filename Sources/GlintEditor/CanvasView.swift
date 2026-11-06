@@ -45,6 +45,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
     private var editingBaseID: UUID?
 
     private let margin: CGFloat = 28
+    /// How far a zoomed canvas is scrolled, from its top-left; see `CanvasViewport`.
+    private var scrollOffset = CGPoint.zero
 
     /// Insets of the area covered by floating chrome; the image is centred in the rest of the view.
     var contentInsets = NSEdgeInsets() {
@@ -76,6 +78,18 @@ final class CanvasView: NSView, NSTextViewDelegate {
                 self.window?.invalidateCursorRects(for: self)
             } }
             .store(in: &bag)
+        model.$preview
+            .sink { [weak self] _ in DispatchQueue.main.async {
+                // A zoomed preview is rendered at the size it is shown, which is only known once one exists.
+                guard let self, self.model.canvasZoom != .fit else { return }
+                self.needsLayout = true
+            } }
+            .store(in: &bag)
+        model.$canvasZoom
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.zoomChanged() } }
+            .store(in: &bag)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel(model.isRecording ? "Recording preview" : "Screenshot preview")
@@ -97,9 +111,24 @@ final class CanvasView: NSView, NSTextViewDelegate {
         let avail = area.insetBy(dx: margin, dy: margin)
         let cs = p.layout.canvasSize
         guard cs.width > 0, cs.height > 0, avail.width > 0, avail.height > 0 else { return .zero }
+        if model.canvasZoom != .fit, let size = zoomedSize(p, available: avail.size) {
+            return CanvasViewport.frame(content: size, in: avail, offset: scrollOffset)
+        }
         let s = min(avail.width / cs.width, avail.height / cs.height, 2)
         let size = CGSize(width: cs.width * s, height: cs.height * s)
         return CGRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height)
+    }
+
+    /// The canvas size on screen for Fit Width and 100%, measured at full resolution so it doesn't depend on how
+    /// sharp the current preview is.
+    private func zoomedSize(_ p: Preview, available: CGSize) -> CGSize? {
+        let perImage = p.mapper.scaleX
+        guard perImage > 0 else { return nil }
+        let canvasPixels = CGSize(width: p.layout.canvasSize.width / perImage,
+                                  height: p.layout.canvasSize.height / perImage)
+        let size = CanvasViewport.displaySize(model.canvasZoom, canvasPixels: canvasPixels, available: available,
+                                              pointsPerPixel: 1 / model.backingScale)
+        return size.width > 0 && size.height > 0 ? size : nil
     }
 
     private var viewScale: CGFloat {
@@ -131,9 +160,35 @@ final class CanvasView: NSView, NSTextViewDelegate {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2
         let area = contentRect
-        model.updatePreviewTarget(CGSize(width: max(area.width - 2 * margin, 10) * scale,
-                                         height: max(area.height - 2 * margin, 10) * scale))
+        let avail = CGSize(width: max(area.width - 2 * margin, 10), height: max(area.height - 2 * margin, 10))
+        // A zoomed canvas is rendered as large as it is shown, so it stays sharp while scrolling.
+        let shown = model.preview.flatMap { model.canvasZoom == .fit ? nil : zoomedSize($0, available: avail) } ?? avail
+        model.updatePreviewTarget(CGSize(width: shown.width * scale, height: shown.height * scale))
         positionEditor()
+    }
+
+    private func zoomChanged() {
+        scrollOffset = .zero
+        needsLayout = true
+        needsDisplay = true
+        positionEditor()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    /// Scrolls a canvas that is larger than the window; Fit never scrolls.
+    override func scrollWheel(with event: NSEvent) {
+        guard model.canvasZoom != .fit, let p = model.preview else { return super.scrollWheel(with: event) }
+        let avail = contentRect.insetBy(dx: margin, dy: margin)
+        guard let size = zoomedSize(p, available: avail.size) else { return }
+        let step: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        let proposed = CGPoint(x: scrollOffset.x - event.scrollingDeltaX * step,
+                               y: scrollOffset.y - event.scrollingDeltaY * step)
+        let clamped = CanvasViewport.clamped(proposed, content: size, in: avail)
+        guard clamped != scrollOffset else { return }
+        scrollOffset = clamped
+        needsDisplay = true
+        positionEditor()
+        window?.invalidateCursorRects(for: self)
     }
 
     override func resetCursorRects() {

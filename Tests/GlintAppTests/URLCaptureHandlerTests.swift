@@ -5,13 +5,14 @@ import Testing
 @Suite("URL capture consent")
 @MainActor
 struct URLCaptureHandlerTests {
-    @Test(arguments: ["capture-area", "capture-window", "capture-fullscreen", "capture-text", "repeat-last"])
+    @Test(arguments: ["capture-area", "capture-window", "capture-fullscreen", "capture-text", "repeat-last",
+                      "capture-scrolling"])
     func urlRoutingRequiresFreshConsentForEveryMode(action: String) throws {
         let application = NSApplication.shared
         let delegate = AppDelegate()
         let modes: [String: CapturePipeline.Mode] = [
             "capture-area": .area, "capture-window": .window, "capture-fullscreen": .fullscreen,
-            "capture-text": .text, "repeat-last": .repeatLast,
+            "capture-text": .text, "repeat-last": .repeatLast, "capture-scrolling": .scrolling,
         ]
         let expected = try #require(modes[action])
         let url = try #require(URL(string: "glint://\(action)?approved=true&confirm=false"))
