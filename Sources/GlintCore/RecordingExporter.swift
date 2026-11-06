@@ -56,7 +56,7 @@ public enum RecordingExporter {
             case .mp4:
                 if let frameRenderer {
                     try await writeStyledMP4(asset: asset, range: range, to: output,
-                                             progress: progress, frameRenderer: frameRenderer)
+                                             resamples: options.resamplesStyledFrames, progress: progress, frameRenderer: frameRenderer)
                 } else {
                     try await writeMP4(asset: asset, range: range, sourceDuration: sourceDuration, to: output, progress: progress)
                 }

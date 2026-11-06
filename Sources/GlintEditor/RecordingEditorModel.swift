@@ -64,6 +64,8 @@ final class RecordingEditorModel: ObservableObject {
     @Published var unresolvedRedactionIntervals: [UnresolvedRedactionInterval] = []
     /// Called once on the main actor when an export starts, never once per frame.
     var makeFrameRenderer: (() -> RecordingExporter.FrameRenderer)?
+    /// Whether the frame renderer animates by time (zoom, clicks, pointer) and so must be sampled at a fixed cadence.
+    var rendersTimedEffects: (() -> Bool)?
     @Published private(set) var exportState = RecordingExportState.idle
     /// Set when the file turns out not to be a readable video; every export is refused then.
     @Published private(set) var sourceProblem: String?
@@ -229,8 +231,9 @@ final class RecordingEditorModel: ObservableObject {
         lastAction = action
         exportState = .running(0)
         let range = trim.range
-        let options = options
+        var options = options
         let renderer = makeFrameRenderer?()
+        options.resamplesStyledFrames = renderer != nil && rendersTimedEffects?() == true
         let revision = preparationRevision
         exportTask = Task { [weak self] in
             guard let self else { return }

@@ -107,6 +107,7 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
         }
         canvasModel.onBeginEditing = { [weak playback] in playback?.pause() }
         model.makeFrameRenderer = { [canvasModel] in canvasModel.recordingFrameRenderer() }
+        model.rendersTimedEffects = { [canvasModel] in canvasModel.recordingRendersTimedEffects }
         playback.onFrame = { [weak self, weak canvasModel] frame, time in
             let changedSize = canvasModel?.image.pixelSize != frame.pixelSize
             canvasModel?.updateRecordingFrame(frame, at: time)

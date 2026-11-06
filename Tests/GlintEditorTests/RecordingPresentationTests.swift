@@ -206,4 +206,61 @@ struct RecordingPresentationTests {
         await waitUntil { controller.editor.model.editedZoomArea == nil }
         #expect(controller.editor.model.editedZoomArea == nil && !controller.editor.model.showsWholeFrame)
     }
+
+    @Test func mp4ExportsAreResampledOnlyWhenEffectsAnimateByTime() async throws {
+        let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
+        var recording = try await fixture.recording()
+        var capture = try #require(presentation().capture)
+        capture.pointerIsBaked = true
+        recording.presentation = capture
+        final class Box { var options: [RecordingExportOptions] = [] }
+        let box = Box()
+        var services = fixture.services()
+        services.export = { _, _, options, _, _, _ in
+            box.options.append(options)
+            throw CancellationError()
+        }
+        let controller = RecordingEditorWindowController(recording: recording, services: services)
+        defer { controller.window?.close() }
+        controller.model.options.format = .mp4
+
+        controller.model.start(.prepare)
+        await controller.model.waitForExport()
+        #expect(box.options.last?.resamplesStyledFrames == false, "Without effects every source frame is used as is")
+
+        _ = try #require(controller.model.presentation.addZoom(at: 0, sourceDuration: recording.duration))
+        controller.model.start(.prepare)
+        await controller.model.waitForExport()
+        #expect(box.options.last?.resamplesStyledFrames == true, "A zoom must keep moving between source frames")
+        #expect(controller.model.options.resamplesStyledFrames == false, "The user's options are left alone")
+    }
+
+    @Test func choosingAZoomAreaSuspendsAnnotationSelectionSoDeleteKeepsRedactions() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let editor = model(f, image: try striped())
+        let redaction = Annotation(kind: .redact(CGRect(x: 75, y: 35, width: 10, height: 10)),
+                                   style: AnnotationStyle(color: .black))
+        editor.updateLive([redaction])
+        editor.selection = [redaction.id]
+
+        editor.editedZoomArea = CGRect(x: 60, y: 30, width: 40, height: 22.5)
+        #expect(editor.selection.isEmpty)
+        editor.selectAll()
+        #expect(editor.selection.isEmpty, "Nothing can be selected while the zoom area is edited")
+        let canvas = CanvasView(model: editor)
+        let delete = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                   windowNumber: 0, context: nil, characters: "\u{7F}",
+                                                   charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51))
+        editor.undoManager.beginUndoGrouping()
+        canvas.keyDown(with: delete)
+        editor.deleteSelected()
+        editor.nudge(dx: 5, dy: 0)
+        editor.duplicateSelected()
+        editor.undoManager.endUndoGrouping()
+        #expect(editor.annotations == [redaction], "Delete, nudge and duplicate leave annotations untouched")
+
+        editor.editedZoomArea = nil
+        editor.selectAll()
+        #expect(editor.selection == [redaction.id], "Selection works again afterwards")
+    }
 }

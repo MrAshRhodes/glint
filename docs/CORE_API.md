@@ -359,7 +359,11 @@ public enum RecordingExporter {
 - MP4 without `frameRenderer`: the whole file is passed through (re-encoded if that fails), a trimmed range gets a
   highest-quality re-encode (a passthrough cut can only start on a keyframe). With one, each frame is decoded, rendered
   and re-encoded as H.264 at its source timing, without audio; odd sizes get white padding at the right and bottom.
-- Options: `RecordingExportOptions(format:gif:)`; `RecordingFileFormat` `.gif`/`.mp4` (`fileExtension`, `displayName`,
+  With `resamplesStyledFrames`, frames are instead rendered at a fixed cadence (the source's nominal rate kept within
+  30–60 fps, `RecordingExporter.resampledFrameInterval(nominalFrameRate:)`): the newest source frame is held and
+  rendered at each output time, so time-based presentation effects (zoom, click ripples, a drawn pointer) keep moving
+  where a screen capture delivered no new frames. The editor sets it only when such effects are active.
+- Options: `RecordingExportOptions(format:gif:resamplesStyledFrames:)` (the last defaults to `false`); `RecordingFileFormat` `.gif`/`.mp4` (`fileExtension`, `displayName`,
   `utType`); `GIFExportOptions(framesPerSecond:maxWidth:)`; defaults are `.gif`, 15 fps and `.w640`. `GIFMaxWidth`
   `.w480`/`.w640`/`.w720`/`.original` (`pixelCap` 480/640/720/1280; `outputSize(for:)` keeps the aspect ratio).
 - `GIFLimits`: `frameRates` `[10, 15, 20]`, `defaultFrameRate`, `maxDuration` 30 s, `maxFrameCount` 450,

@@ -130,14 +130,20 @@ final class EditorModel: ObservableObject {
     @Published private(set) var annotations: [Annotation] = [] {
         didSet { requestRender() }
     }
-    @Published var selection: Set<UUID> = []
+    /// Always empty while a zoom area is being edited, so Delete, nudges and other selection commands can't
+    /// touch annotations the canvas isn't showing handles for.
+    @Published var selection: Set<UUID> = [] {
+        didSet { if editedZoomArea != nil, !selection.isEmpty { selection = [] } }
+    }
     @Published private(set) var recordingTime: TimeInterval = 0
     /// Click highlights, cursor emphasis and zoom of a recording; nil (or inert) leaves every frame unchanged.
     var presentation: Presentation? {
         didSet { if presentation != oldValue { requestRender() } }
     }
     /// The zoom area being chosen on the canvas, in source pixels; nil when no zoom area is being edited.
-    @Published var editedZoomArea: CGRect?
+    @Published var editedZoomArea: CGRect? {
+        didSet { if editedZoomArea != nil, !selection.isEmpty { selection = [] } }
+    }
     /// Called as the canvas moves or resizes `editedZoomArea`; the owner applies the change.
     var onZoomAreaEdit: ((CGRect, ZoomAreaEditPhase) -> Void)?
     /// Shows the whole frame while a zoom area is being chosen; exports always zoom.
@@ -228,6 +234,9 @@ final class EditorModel: ObservableObject {
         guard isRecording, let presentation, !presentation.isInert else { return nil }
         return presentation
     }
+
+    /// True when exported frames depend on the time they are shown at, not just on the source frame.
+    var recordingRendersTimedEffects: Bool { exportPresentation != nil }
 
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
@@ -404,12 +413,12 @@ final class EditorModel: ObservableObject {
             } catch {
                 // Fail closed: never fall back to unannotated pixels; keep the last good preview.
                 let message = error.localizedDescription
-                await MainActor.run { self?.failRender(message) }
+                await self?.failRender(message)
                 return
             }
             let p = Preview(image: r.image, layout: r.layout,
                             mapper: CanvasMapper(region: r.region, contentRect: r.layout.contentRect))
-            await MainActor.run { self?.finishRender(p) }
+            await self?.finishRender(p)
         }
     }
 
