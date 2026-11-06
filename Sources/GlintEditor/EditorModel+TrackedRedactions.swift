@@ -24,14 +24,18 @@ extension EditorModel {
         return new.map { Self.absorbTrackedEdit($0, current: current[$0.id], at: recordingTime) }
     }
 
+    /// The canvas may hand back an annotation built from an older copy, such as the drag's starting state, so
+    /// only its geometry is taken; the track always comes from `current`.
     nonisolated static func absorbTrackedEdit(_ incoming: Annotation, current: Annotation?,
                                               at time: TimeInterval) -> Annotation {
-        guard let current, var track = current.track, incoming.track == track, track.isValid,
-              let edited = incoming.redactionRect, let stored = current.redactionRect, edited != stored,
+        guard let current, var track = current.track, incoming.track != nil, track.isValid,
+              let edited = incoming.redactionRect, let stored = current.redactionRect,
               edited.width.isFinite, edited.height.isFinite, edited.minX.isFinite, edited.minY.isFinite,
               abs(edited.width) >= 1, abs(edited.height) >= 1 else { return incoming }
-        track.setManualKeyframe(at: time, rect: edited.standardized)
         var result = incoming
+        if edited != stored, edited != current.editingView(at: time).redactionRect {
+            track.setManualKeyframe(at: time, rect: edited.standardized)
+        }
         result.track = track
         return result
     }

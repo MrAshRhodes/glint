@@ -103,6 +103,42 @@ struct TrackedRedactionEditorTests {
         #expect(editor.annotations.first?.redactionRect == shown.offsetBy(dx: 6, dy: 3), "stays where it was shown")
     }
 
+    /// Each drag event is built from the annotation as it was when the drag began, so its track is out of date.
+    @Test func everyEventOfADragEditsTheSameKeyframe() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let editor = recordingEditor(f)
+        let annotation = Self.halfTracked()
+        editor.setAnnotations([annotation], actionName: nil)
+        editor.updateRecordingFrame(f.context.image, at: 0.5)
+        let base = editor.editingView(annotation)
+        let shown = try #require(base.redactionRect)
+
+        for step in 1...4 { editor.replace(base.withRedactionRect(shown.offsetBy(dx: CGFloat(step), dy: 0))) }
+        var manual = editor.annotations.first?.track?.keyframes.filter { $0.source == .manual } ?? []
+        #expect(manual.count == 1)
+        #expect(manual.first?.rect == shown.offsetBy(dx: 4, dy: 0))
+        #expect(editor.annotations.first?.track?.keyframes.count == 3, "the tracked keyframes are kept")
+
+        editor.selection = [annotation.id]
+        editor.beginInteraction()
+        let start = try #require(editor.annotations.first.map(editor.editingView))
+        for step in 1...4 {
+            editor.updateLive(AnnotationGeometry.moving(editor.annotations, from: [start.id: start], part: nil,
+                                                        by: CGSize(width: 0, height: CGFloat(step) * 2)))
+        }
+        editor.endInteraction(actionName: "Move")
+        manual = editor.annotations.first?.track?.keyframes.filter { $0.source == .manual } ?? []
+        #expect(manual.count == 1)
+        #expect(manual.first?.rect == shown.offsetBy(dx: 4, dy: 8))
+        #expect(editor.editingView(try #require(editor.annotations.first)).redactionRect == shown.offsetBy(dx: 4, dy: 8))
+
+        // A change that keeps the shown position, like a style edit, adds no keyframe.
+        var restyled = editor.editingView(try #require(editor.annotations.first))
+        restyled.style.color = .white
+        editor.replace(restyled)
+        #expect(editor.annotations.first?.track?.keyframes.filter { $0.source == .manual }.count == 1)
+    }
+
     @Test func blurIsNeverAppliedToATrackedRedaction() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let editor = recordingEditor(f)
@@ -167,6 +203,30 @@ struct TrackedRedactionEditorTests {
         #expect(tracking.message == "Tracking cancelled.")
     }
 
+    @Test func cancellingTrackingStopsTheTracker() async throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let editor = recordingEditor(f)
+        let annotation = Annotation(kind: .redact(CGRect(x: 10, y: 10, width: 20, height: 20)))
+        editor.setAnnotations([annotation], actionName: nil)
+        let state = WorkerState()
+        let late = Self.halfTracked().track!
+        let tracking = RedactionTrackingModel(url: URL(fileURLWithPath: "/nonexistent.mp4")) { _, _ in
+            state.set(running: true)
+            defer { state.set(running: false, stopped: true) }
+            while true {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: 10_000_000)
+                if state.iterations > 1_000 { return late }
+            }
+        }
+        tracking.track(annotation.id, editor: editor, sourceDuration: 2)
+        await waitUntil(seconds: 5) { state.running }
+        tracking.cancel()
+        await waitUntil(seconds: 5) { state.stopped }
+        #expect(state.stopped, "the tracker stops instead of decoding to the end")
+        #expect(editor.annotations.first?.track == nil)
+    }
+
     @Test func nextFlaggedWrapsAround() {
         let id = UUID()
         let intervals = [UnresolvedRedactionInterval(annotationID: id, start: 1, end: 2, reason: .uncertainTracking),
@@ -191,4 +251,20 @@ private final class RequestLog: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return requests
     }
+}
+
+private final class WorkerState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isRunning = false, isStopped = false, count = 0
+
+    func set(running: Bool, stopped: Bool = false) {
+        lock.lock(); defer { lock.unlock() }
+        isRunning = running
+        if stopped { isStopped = true }
+    }
+
+    var running: Bool { lock.lock(); defer { lock.unlock() }; return isRunning }
+    var stopped: Bool { lock.lock(); defer { lock.unlock() }; return isStopped }
+    /// Counts each poll, so a worker that is never cancelled still finishes eventually.
+    var iterations: Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
 }

@@ -301,3 +301,84 @@ struct TrackedRedactionExportTests {
         }
     }
 }
+
+/// Serves frames at fixed times, following the `TrackingFrameSource` contract. With `leadIn`, like the asset reader,
+/// the frame already on screen at a range's start is only delivered if it began at most that long before it.
+struct ListFrameSource: TrackingFrameSource {
+    let times: [TimeInterval]
+    var leadIn: TimeInterval?
+    static let size = CGSize(width: 320, height: 180)
+
+    func readFrames(in range: ClosedRange<TimeInterval>, _ body: (TrackingFrame) throws -> Bool) async throws {
+        let held = times.last { $0 <= range.lowerBound && range.lowerBound - $0 <= (leadIn ?? .infinity) }
+        let later = times.filter { $0 > range.lowerBound && $0 <= range.upperBound }
+        for time in (held.map { [$0] } ?? []) + later {
+            if try !body(TrackingFrame(time: time, luma: Self.luma, sourceSize: Self.size)) { return }
+        }
+    }
+
+    nonisolated(unsafe) static let luma: CGImage = {
+        let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 1,
+                                space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+        return context.makeImage()!
+    }()
+}
+
+/// Reports a still region on every frame, except where told to lose it.
+final class ConstantFrameTracker: FrameTracker {
+    let lostWhen: @Sendable (TimeInterval) -> Bool
+    private var rect = CGRect.zero
+
+    init(lostWhen: @escaping @Sendable (TimeInterval) -> Bool = { _ in false }) { self.lostWhen = lostWhen }
+
+    func start(on frame: TrackingFrame, rect: CGRect) throws { self.rect = rect }
+
+    func track(_ frame: TrackingFrame) throws -> FrameTrackerObservation? {
+        lostWhen(frame.time) ? nil : FrameTrackerObservation(rect: rect, confidence: 0.9)
+    }
+}
+
+@Suite("Backward tracking across frame gaps")
+struct BackwardTrackingGapTests {
+    private let rect = CGRect(x: 40, y: 40, width: 30, height: 30)
+
+    private func track(_ source: ListFrameSource, range: ClosedRange<TimeInterval>, anchorTime: TimeInterval = 6,
+                       lostWhen: @escaping @Sendable (TimeInterval) -> Bool = { _ in false }) async throws
+        -> RedactionTrack {
+        try await RedactionTracker(source: source) { ConstantFrameTracker(lostWhen: lostWhen) }
+            .track(RedactionTrackingRequest(anchorTime: anchorTime, anchorRect: rect, range: range))
+    }
+
+    @Test(arguments: [nil, 1.0] as [TimeInterval?])
+    func framesBeforeALongGapAreStillTracked(leadIn: TimeInterval?) async throws {
+        let result = try await track(ListFrameSource(times: [0, 0.2, 6], leadIn: leadIn), range: 0...7)
+        #expect(result.isValid)
+        #expect(result.keyframes.map(\.time).sorted() == [0, 0.2, 6])
+        #expect(result.uncertainIntervals.isEmpty)
+        #expect(RedactionGate.unresolvedIntervals(in: [Annotation(kind: .redact(rect), track: result)],
+                                                  sourceDuration: 7).isEmpty)
+    }
+
+    @Test(arguments: [nil, 1.0] as [TimeInterval?])
+    func aLostFrameBeforeAGapFlagsEverythingUpToTheNextTrackedFrame(leadIn: TimeInterval?) async throws {
+        let result = try await track(ListFrameSource(times: [0, 0.2, 6], leadIn: leadIn), range: 0...7,
+                                     lostWhen: { abs($0 - 0.2) < 1e-6 })
+        #expect(result.uncertainIntervals.count == 1)
+        let interval = try #require(result.uncertainIntervals.first)
+        #expect(interval.start == 0 && interval.end == 6 && interval.anchorTime == 6)
+        let gate = RedactionGate.unresolvedIntervals(in: [Annotation(kind: .redact(rect), track: result)],
+                                                     sourceDuration: 7)
+        #expect(RedactionGate.blocksExport(gate, range: 0...7))
+    }
+
+    @Test func anUnseenFrameAtTheStartOfTheRangeIsFlagged() async throws {
+        let result = try await track(ListFrameSource(times: [0, 6], leadIn: 1), range: 5...7)
+        #expect(result.keyframes.map(\.time) == [6])
+        #expect(result.uncertainIntervals.count == 1)
+        let interval = try #require(result.uncertainIntervals.first)
+        #expect(interval.start == 5 && interval.end == 6)
+        let gate = RedactionGate.unresolvedIntervals(in: [Annotation(kind: .redact(rect), track: result)],
+                                                     sourceDuration: 7)
+        #expect(RedactionGate.blocksExport(gate, range: 5...7))
+    }
+}

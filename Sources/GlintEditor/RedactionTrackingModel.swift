@@ -54,14 +54,18 @@ final class RedactionTrackingModel: ObservableObject {
         task = Task { [weak self, weak editor] in
             let result: Result<RedactionTrack, Error>
             do {
-                let track = try await Task.detached(priority: .userInitiated) {
+                // A detached task doesn't inherit cancellation, so pass it on or the tracker keeps decoding.
+                let worker = Task.detached(priority: .userInitiated) {
                     try await runTracker(request) { value in
                         Task { @MainActor [weak self] in
                             guard let self, self.revision == current else { return }
                             self.progress = max(self.progress, value)
                         }
                     }
-                }.value
+                }
+                let track = try await withTaskCancellationHandler { try await worker.value } onCancel: {
+                    worker.cancel()
+                }
                 result = .success(track)
             } catch {
                 result = .failure(error)

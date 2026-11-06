@@ -231,24 +231,28 @@ public struct RedactionTracker: Sendable {
         let backward = makeTracker()
         try backward.start(on: anchor, rect: request.anchorRect)
         previous = anchorKeyframe
+        // `earliest` is the earliest frame examined so far. A window may hold no new frame (a gap in a
+        // variable-frame-rate recording), so keep stepping back; the frame on screen at a window's start counts too.
+        var earliest = anchor.time
         var windowEnd = anchor.time
         var lost = false
-        while !lost, windowEnd > range.lowerBound {
+        while !lost, earliest > range.lowerBound, windowEnd > range.lowerBound {
             try Task.checkCancellation()
             let windowStart = max(range.lowerBound, windowEnd - Self.backwardWindow)
             var frames: [TrackingFrame] = []
+            let before = earliest
             try await source.readFrames(in: windowStart...windowEnd) { frame in
-                guard frame.time < windowEnd else { return false }
-                if frame.time >= windowStart || windowStart <= range.lowerBound { frames.append(frame) }
+                guard frame.time < before else { return false }
+                frames.append(frame)
                 return true
             }
-            if frames.isEmpty { break }
             for frame in frames.reversed() {
                 try Task.checkCancellation()
                 report.advance(to: anchor.time - max(frame.time, range.lowerBound), part: .backward)
                 if let rect = accepted(try backward.track(frame), after: previous, frameSize: frame.sourceSize) {
                     previous = RedactionKeyframe(time: frame.time, rect: rect, source: .tracked)
                     keyframes.append(previous)
+                    earliest = frame.time
                 } else {
                     // The flagged frame is shown until `previous` replaces it.
                     if previous.time > range.lowerBound {
@@ -259,8 +263,12 @@ public struct RedactionTracker: Sendable {
                     break
                 }
             }
-            if windowStart <= range.lowerBound { break }
-            windowEnd = windowStart
+            windowEnd = min(windowStart, earliest)
+        }
+        // Whatever was on screen before the earliest examined frame was never seen: flag it rather than assume it.
+        if !lost, earliest - range.lowerBound > RedactionTrack.frameTolerance {
+            intervals.append(RedactionUncertainInterval(start: range.lowerBound, end: earliest,
+                                                        anchorTime: previous.time, anchorRect: previous.rect))
         }
         report.finish(.backward, span: anchor.time - range.lowerBound)
 
