@@ -20,6 +20,26 @@ struct EditorExportServices {
         }
     }
     var beep: () -> Void = { NSSound.beep() }
+    /// Asks where to save a project, as a sheet on `window` when there is one. Calls back with nil on cancel.
+    var chooseProjectDestination: @MainActor (NSWindow?, URL?, @escaping (URL?) -> Void) -> Void = { window, directory, completion in
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [ProjectStore.contentType]
+        panel.canCreateDirectories = true
+        panel.directoryURL = directory
+        panel.nameFieldStringValue = ProjectStore.defaultFileName()
+        panel.message = "Save an editable copy you can reopen in Glint."
+        panel.accessoryView = ProjectPrivacyNotice.makeView()
+        let finish: (NSApplication.ModalResponse) -> Void = { completion($0 == .OK ? panel.url : nil) }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            panel.begin(completionHandler: finish)
+        }
+    }
+    /// Writes a project package; runs off the main actor.
+    var writeProject: @Sendable (GlintProject, URL) throws -> Void = { project, url in
+        try ProjectStore.write(project, to: url, generator: ProjectPrivacyNotice.generator)
+    }
     var dragDirectory: URL = (
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches")
@@ -57,6 +77,30 @@ private final class TitlebarDragView: NSView {
     }
 }
 
+/// The warning shown wherever a project is saved: a project keeps the unedited capture.
+enum ProjectPrivacyNotice {
+    static let text = "Projects contain the original capture, including anything you redacted. "
+        + "Share an exported image or clip instead."
+
+    /// The app and version recorded in a project's manifest, for diagnostics only.
+    static var generator: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return version.map { "\(GlintInfo.name) \($0)" } ?? GlintInfo.name
+    }
+
+    @MainActor
+    static func makeView() -> NSView {
+        let view = NSHostingView(rootView: Label(text, systemImage: "exclamationmark.triangle")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 420, alignment: .leading)
+            .padding(12))
+        view.setFrameSize(view.fittingSize)
+        return view
+    }
+}
+
 /// How the editor handed out its composed image without saving it.
 public enum EditorShareKind: Sendable {
     case copied, dragged
@@ -71,6 +115,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     public var onImageShared: ((CGImage, EditorShareKind, CGFloat) -> Void)?
     /// Preset designer only: called after the preset is saved and persisted, before the window closes.
     public var onPresetSaved: ((Preset) -> Void)?
+    /// Called after a project package was written, with its location.
+    public var onProjectSaved: ((URL) -> Void)?
+    /// Builds the project to save. Screenshots save the model's own state; the recording editor supplies its clip.
+    var makeProject: (() -> GlintProject?)?
 
     let model: EditorModel
     private let exportServices: EditorExportServices
@@ -139,6 +187,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.save = { [weak self] in self?.saveOutput() }
         actions.saveAs = { [weak self] in self?.saveAs() }
         actions.share = { [weak self] in self?.share() }
+        actions.saveProject = { [weak self] in self?.saveAsProject(nil) }
         actions.openRaw = { [weak self] in self?.openRaw() }
         actions.close = { [weak self] in self?.window?.close() }
         actions.commitEditing = { [weak self] in self?.canvas.endEditing() }
@@ -365,6 +414,45 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
+    /// Saves the capture with its look and annotations as an editable `.glint` project.
+    @objc public func saveAsProject(_ sender: Any?) {
+        guard !model.isDesigningPreset else { return }
+        canvas.endEditing()
+        playback?.pause()
+        let project: GlintProject
+        if let makeProject {
+            guard let made = makeProject() else { exportServices.beep(); return }
+            project = made
+        } else {
+            project = GlintProject(state: .screenshot(model.screenshotProjectState()), source: .image(model.image))
+        }
+        exportServices.chooseProjectDestination(window, model.preferences.saveDirectory) { [weak self] url in
+            guard let url else { return }
+            MainActor.assumeIsolated { self?.writeProject(project, to: url) }
+        }
+    }
+
+    func writeProject(_ project: GlintProject, to url: URL) {
+        let write = exportServices.writeProject
+        model.statusMessage = "Saving project…"
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { Result { try write(project, url) } }.value
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.clearRetry()
+                self.model.statusMessage = "Saved project \(url.deletingPathExtension().lastPathComponent)"
+                self.onProjectSaved?(url)
+            case .failure(let error):
+                let failure = error is ProjectFormatError
+                    ? error.localizedDescription : "Couldn't save the project: \(error.localizedDescription)"
+                self.offerRetry(failure: failure) {
+                    $0.writeProject(project, to: url)
+                }
+            }
+        }
+    }
+
     private func share() {
         guard let content = window?.contentView else { return }
         canvas.endEditing()
@@ -478,6 +566,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             }
             return true
         }
+        if flags == [.command, .option], key == "s" {
+            saveAsProject(nil)
+            return true
+        }
         if flags == [.command, .shift] {
             switch key {
             case "z": model.undoManager.redo()
@@ -538,4 +630,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     public func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { model.undoManager }
+}
+
+extension EditorWindowController: NSMenuItemValidation {
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(saveAsProject(_:)) {
+            return !model.isDesigningPreset && recording?.sourceProblem == nil
+        }
+        return true
+    }
 }

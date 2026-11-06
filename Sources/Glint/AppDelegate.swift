@@ -1,6 +1,7 @@
 import AppKit
 import GlintCapture
 import GlintCore
+import GlintEditor
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
@@ -312,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     @objc private func openImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = [.image, ProjectStore.contentType]
         panel.allowsMultipleSelection = true
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK { panel.urls.forEach(pipeline.openFile) }
@@ -343,6 +344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         file.delegate = self
         file.addItem(withTitle: "Open Image…", action: #selector(openImage), keyEquivalent: "o").target = self
         addReopenItem(to: file)
+        let saveProject = file.addItem(withTitle: "Save as Project…",
+                                       action: #selector(EditorWindowController.saveAsProject(_:)), keyEquivalent: "s")
+        saveProject.keyEquivalentModifierMask = [.command, .option]
         file.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     }
 

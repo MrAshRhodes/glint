@@ -79,6 +79,12 @@ final class RecordingEditorModel: ObservableObject {
         trim = RecordingTrim(sourceDuration: recording.duration)
     }
 
+    /// The editable state to save in a project, with the editor's current look and annotations.
+    func projectState(settings: RenderSettings, annotations: [Annotation]) -> RecordingProjectState {
+        RecordingProjectState(settings: settings, annotations: annotations, trim: trim, options: options,
+                              duration: recording.duration, pixelSize: recording.pixelSize)
+    }
+
     // MARK: Derived state
 
     var isExporting: Bool {

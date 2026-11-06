@@ -9,6 +9,7 @@ final class EditorActions: ObservableObject {
     var save: () -> Void = {}
     var saveAs: () -> Void = {}
     var share: () -> Void = {}
+    var saveProject: () -> Void = {}
     var openRaw: () -> Void = {}
     var close: () -> Void = {}
     var commitEditing: () -> Void = {}
@@ -283,6 +284,13 @@ struct BottomBarView: View {
                 .background(ShareAnchor(actions: actions))
                 .help("Share")
                 .accessibilityLabel("Share")
+            Button { actions.saveProject() } label: {
+                Label("Save as Project…", systemImage: "doc.badge.plus")
+                    .labelStyle(.iconOnly)
+            }
+                .glintGlassButtonStyle()
+                .help("Save as Project (⌥⌘S): keep the capture editable")
+                .accessibilityLabel("Save as project")
             Button("Save As…") { actions.saveAs() }
                 .glintGlassButtonStyle()
                 .help("Save As (⇧⌘S)")

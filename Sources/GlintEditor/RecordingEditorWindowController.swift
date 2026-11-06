@@ -25,10 +25,23 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
         self.init(recording: recording, services: RecordingEditorServices(), preferences: preferences, presetStore: presetStore)
     }
 
+    /// Reopens a saved recording project. `recording` points at the clip inside the package and must not be
+    /// deleted on close (`deletesFileOnClose` false).
+    public convenience init(recording: RecordedVideo, project: RecordingProjectState, projectName: String?,
+                            preferences: AppPreferences, presetStore: PresetStore) {
+        self.init(recording: recording, services: RecordingEditorServices(), preferences: preferences,
+                  presetStore: presetStore, project: project, projectName: projectName)
+    }
+
     init(recording: RecordedVideo, services: RecordingEditorServices,
-         preferences: AppPreferences = AppPreferences(), presetStore: PresetStore = PresetStore()) {
+         preferences: AppPreferences = AppPreferences(), presetStore: PresetStore = PresetStore(),
+         project: RecordingProjectState? = nil, projectName: String? = nil) {
         self.services = services
         model = RecordingEditorModel(recording: recording, services: services)
+        if let project {
+            model.trim = project.trim
+            model.options = project.options
+        }
         playback = RecordingPlayback(url: recording.url, duration: recording.duration)
 
         // The real first frame arrives asynchronously. This neutral placeholder keeps the exact source geometry.
@@ -36,13 +49,22 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
                                             height: max(1, Int(recording.pixelSize.height)))!
         bitmap.setFillColor(NSColor.black.cgColor)
         bitmap.fill(CGRect(origin: .zero, size: recording.pixelSize))
+        let restored = project.map {
+            EditorRestoreState(settings: $0.settings, annotations: $0.annotations, projectName: projectName)
+        }
         let context = EditorContext(image: bitmap.makeImage()!, backingScale: 1, rawURL: nil,
-                                    source: "Recording", isRecording: true)
+                                    source: "Recording", isRecording: true, restored: restored)
         let canvasModel = EditorModel(context: context, preferences: preferences, presetStore: presetStore)
-        editor = EditorWindowController(model: canvasModel, title: "Glint — Recording",
+        editor = EditorWindowController(model: canvasModel, title: projectName.map { "Glint — \($0)" } ?? "Glint — Recording",
                                         recording: model, playback: playback)
         super.init(window: editor.window)
         window?.delegate = self
+        editor.makeProject = { [weak model, weak canvasModel] in
+            guard let model, let canvasModel else { return nil }
+            return GlintProject(state: .recording(model.projectState(settings: canvasModel.settings,
+                                                                     annotations: canvasModel.annotations)),
+                                source: .video(model.recording.url))
+        }
         canvasModel.onBeginEditing = { [weak playback] in playback?.pause() }
         model.makeFrameRenderer = { [canvasModel] in canvasModel.recordingFrameRenderer() }
         playback.onFrame = { [weak self, weak canvasModel] frame, time in
@@ -76,6 +98,18 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     public func showEditor() { editor.showEditor() }
+
+    /// Called after the recording was saved as a project, with the package's location.
+    public var onProjectSaved: ((URL) -> Void)? {
+        get { editor.onProjectSaved }
+        set { editor.onProjectSaved = newValue }
+    }
+
+    /// Saves the recording, its trim, export settings, look and annotations as an editable `.glint` project.
+    @objc public func saveAsProject(_ sender: Any?) {
+        guard !isClosing else { return }
+        editor.saveAsProject(sender)
+    }
 
     func save() {
         guard !isClosing else { return }
@@ -129,9 +163,16 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
     public func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { editor.model.undoManager }
 
     private func finishClosing() {
-        services.removeItem(model.recording.url)
+        if model.recording.deletesFileOnClose { services.removeItem(model.recording.url) }
         let callback = onClose
         onClose = nil
         callback?()
+    }
+}
+
+extension RecordingEditorWindowController: NSMenuItemValidation {
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(saveAsProject(_:)) { return !isClosing && model.sourceProblem == nil }
+        return true
     }
 }

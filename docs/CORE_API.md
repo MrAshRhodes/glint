@@ -276,7 +276,8 @@ public final class OutputActiveFiles: @unchecked Sendable {
 
 ## Recording
 Recording model, GIF/MP4 exporter, and file and clipboard helpers. GlintCapture hands over a `RecordedVideo`;
-the recording editor trims and exports it. None of these types is `Codable`.
+the recording editor trims and exports it. `RecordingTrim`, `RecordingExportOptions`, `GIFExportOptions`,
+`RecordingFileFormat` and `GIFMaxWidth` are `Codable` so projects can store them (see Projects); the rest are not.
 Shortcut: `HotkeyAction.recordScreen` (see Preferences).
 ```swift
 public enum RecordingExporter {
@@ -287,8 +288,9 @@ public enum RecordingExporter {
                               frameRenderer: FrameRenderer? = nil) async throws -> URL
 }
 ```
-- `RecordedVideo(url:duration:pixelSize:)`: `url` is a unique temporary `.mp4` that the recording editor owns and
-  deletes when it closes; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
+- `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:)`: by default `url` is a unique temporary `.mp4` that the
+  recording editor owns and deletes when it closes; pass `deletesFileOnClose: false` for a file someone else owns,
+  such as the clip inside a project package; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
   status text): `.idle`, `.selecting`, `.ready`, `.countdown(Int)` (seconds left), `.recording`, `.finishing`.
 - `export` returns a new `RecordingExport-<UUID>.gif|mp4` in `outputDirectory` (default
   `RecordingExportFiles.defaultWorkingDirectory`, created if missing); the caller owns it, and `source` is only read.
@@ -358,6 +360,47 @@ public enum RecordingExporter {
   `shift(from:)` (estimated downward scroll in signature rows). `ScrollGrabPolicy(settleInterval:grabFraction:
   changeThreshold:)` decides when to grab: `shouldGrab(_:at:reference:)`, `reset()`. Grabs happen once the
   content has settled or has moved half a frame since the last grab.
+
+## Projects (`GlintProject.swift`, `ProjectStore.swift`)
+Editable `.glint` projects keep the original capture plus the editor state, so every element stays changeable after
+reopening. **Privacy:** the original capture includes everything that was redacted; share flattened exports only.
+```swift
+public struct GlintProject { var state: ProjectState; var source: ProjectSource }   // @unchecked Sendable
+public enum ProjectState { case screenshot(ScreenshotProjectState), recording(RecordingProjectState) }
+public enum ProjectSource { case image(CGImage), video(URL) }
+public enum ProjectStore {
+    public static func write(_ project: GlintProject, to url: URL, generator: String? = nil,
+                             fileManager: FileManager = .default) throws
+    public static func read(from url: URL) throws -> GlintProject
+}
+```
+- Package layout (a folder with the `glint` extension, UTI `io.github.mrashrhodes.glint.project`, conforming to
+  `com.apple.package`): `manifest.json`, `project.json`, `source/capture.png` or `source/recording.mp4`, and optional
+  `assets/background.png` / `assets/watermark.png`.
+- `ScreenshotProjectState(settings:annotations:backingScale:source:)` and
+  `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:)` are `Codable`; `ProjectState` encodes
+  with a `"kind"` key (`"screenshot"`/`"recording"`) and exposes `settings` and `annotations`. Annotation ranges stay in
+  source-recording seconds. A `.screenshot` state needs an `.image` source and `.recording` a `.video` source, else
+  `ProjectFormatError.mismatchedSource`.
+- `ProjectManifest(format:formatVersion:requiredFeatures:generator:)`: `format` must be `ProjectManifest.formatName`;
+  `formatVersion` is `currentFormatVersion` (1). `validate(supportedFeatures:)` runs before `project.json` is decoded:
+  a newer version throws `newerVersion`, an unknown required feature `unsupportedFeatures`. `generator` is
+  informational only.
+- **Extension point:** a later feature that changes how a project renders adds a string to
+  `ProjectFeatures.supported` and returns it from `ProjectFeatures.required(by:)` when a project uses it, so older
+  builds refuse that project instead of rendering it wrongly. Optional fields that older builds can ignore need no
+  feature string; decode them with `decodeIfPresent` and a default.
+- `write` encodes into a staging folder next to `url` and swaps it in with one replace, so a failure leaves any
+  existing project untouched. Image backgrounds and watermarks are re-encoded into `assets/` (the user's file paths are
+  never stored); a desktop-wallpaper background stores only the setting. Recordings are copied in, never moved.
+- `read` opens every member relative to the package with `O_NOFOLLOW` (symlinks and folders where a file belongs are
+  refused with `unsafeMember`), caps sizes (`ProjectStore.Limits`), never follows paths found in the JSON, and returns
+  asset and video URLs inside the package. Errors are `ProjectFormatError` (`LocalizedError`): `notAProject`,
+  `newerVersion(Int)`, `unsupportedFeatures([String])`, `missingMember(String)`, `unsafeMember(String)`,
+  `memberTooLarge(String)`, `damaged(String)`, `mismatchedSource`, `unreadableAsset(String)`, `writeFailed(String)`.
+- `ProjectStore.isProject(_:)` checks the extension; `defaultFileName(date:timeZone:)` gives
+  `Glint Project 2026-11-05 at 14.29.16.glint`; `contentType` is the exported `UTType`.
+- Projects are never output-retention files: `OutputRetention` only manages the images it indexed.
 
 ## Preferences
 `AppPreferences(defaults:)` (`.shared`), typed properties for folders, `saveHistory`, `saveRaw`, `saveOutput`,

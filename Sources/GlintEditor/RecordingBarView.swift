@@ -228,6 +228,13 @@ struct RecordingBarView: View {
             .disabled(!recording.canExport)
             .accessibilityLabel("Share recording")
             .help("Share the exported recording")
+            Button { actions.saveProject() } label: {
+                Label("Save as Project…", systemImage: "doc.badge.plus").labelStyle(.iconOnly)
+            }
+            .glintGlassButtonStyle()
+            .disabled(recording.sourceProblem != nil)
+            .accessibilityLabel("Save recording as project")
+            .help("Save as Project (⌥⌘S): keep the recording editable")
             Button("Save As…") { actions.saveAs() }
                 .glintGlassButtonStyle()
                 .disabled(!recording.canExport)

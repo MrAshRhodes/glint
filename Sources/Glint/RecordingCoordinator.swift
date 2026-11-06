@@ -38,6 +38,7 @@ final class RecordingCoordinator {
             let controller = RecordingEditorWindowController(recording: video, preferences: preferences,
                                                              presetStore: presetStore)
             controller.onClose = { MainActor.assumeIsolated { onClose() } }
+            controller.onProjectSaved = { RecentFiles.add($0) }
             NSApp.activate(ignoringOtherApps: true)
             controller.showEditor()
             return controller
