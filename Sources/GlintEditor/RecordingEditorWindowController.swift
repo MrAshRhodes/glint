@@ -130,6 +130,10 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
             self?.model.invalidatePreparedFile()
             Task { @MainActor [weak self] in self?.refreshOutputSize() }
         }.store(in: &subscriptions)
+        canvasModel.$annotations.combineLatest(model.$trim).sink { [weak self] annotations, trim in
+            self?.model.unresolvedRedactionIntervals = RedactionGate.unresolvedIntervals(
+                in: annotations, sourceDuration: trim.sourceDuration)
+        }.store(in: &subscriptions)
         refreshOutputSize()
         refreshTask = Task { [weak self] in await self?.model.refreshDuration() }
     }
@@ -179,6 +183,8 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
                 if !self.sizeDirty {
                     switch result {
                     case .success(let size): self.model.styledPixelSize = size
+                    // Unresolved tracked frames are reported by the recording bar; they don't change the size.
+                    case .failure(let error as RedactionGateError) where error == .unresolvedTracking: break
                     case .failure(let error): self.editor.model.statusMessage = error.localizedDescription
                     }
                 }

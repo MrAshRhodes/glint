@@ -215,7 +215,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
             return
         }
         for a in model.selectedAnnotations where a.id != model.editingID && model.isVisible(a) {
-            drawSelection(a, single: model.selection.count == 1)
+            drawSelection(model.editingView(a), single: model.selection.count == 1)
         }
         if case .zoom(let start, let end, let square) = drag { drawZoomMarquee(from: start, to: end, square: square) }
     }
@@ -288,7 +288,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private func handleHit(at v: CGPoint) -> (UUID, HandleID)? {
         guard model.selection.count == 1, let a = model.selectedAnnotations.first, model.isVisible(a) else { return nil }
-        for (id, pt) in AnnotationGeometry.handles(of: a) {
+        for (id, pt) in AnnotationGeometry.handles(of: model.editingView(a)) {
             let hv = toView(pt)
             if hypot(hv.x - v.x, hv.y - v.y) <= 8 { return (a.id, id) }
         }
@@ -297,7 +297,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     private func annotation(at imagePoint: CGPoint) -> Annotation? {
         let tol = 6 / max(viewPerImage, 0.01)
-        for a in model.visibleAnnotations.sorted(by: { $0.z > $1.z }) where AnnotationGeometry.hit(a, at: imagePoint, tol: tol) { return a }
+        for a in model.hitTestAnnotations.sorted(by: { $0.z > $1.z }) where AnnotationGeometry.hit(a, at: imagePoint, tol: tol) { return a }
         return nil
     }
 
@@ -320,7 +320,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
             beginTool(at: p)
             return
         }
-        if let (id, h) = handleHit(at: v), let a = model.annotations.first(where: { $0.id == id }),
+        if let (id, h) = handleHit(at: v), let a = model.annotations.first(where: { $0.id == id }).map(model.editingView),
            let origin = AnnotationGeometry.handles(of: a).first(where: { $0.0 == h })?.1 {
             model.beginInteraction()
             drag = .handle(start: v, perImage: max(viewPerImage, 0.0001), base: a, origin: origin, handle: h)
@@ -345,7 +345,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     private func beginMoving(_ hit: Annotation, at v: CGPoint, imagePoint p: CGPoint) {
         let part = model.selection.count == 1 ? AnnotationGeometry.magnifierPart(hit, at: p, tol: 6 / max(viewPerImage, 0.01)) : nil
         model.beginInteraction()
-        let base = Dictionary(model.selectedAnnotations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let base = Dictionary(model.selectedEditingAnnotations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         drag = .moving(start: v, perImage: max(viewPerImage, 0.0001), base: base, part: part)
     }
 

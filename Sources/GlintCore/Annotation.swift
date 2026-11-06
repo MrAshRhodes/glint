@@ -178,11 +178,15 @@ public struct Annotation: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var style: AnnotationStyle
     /// `nil` keeps the annotation visible for the whole clip. Screenshots ignore timing.
     public var visibleRange: AnnotationTiming?
+    /// Keyframes that move a recording redaction with the content it covers; `nil` keeps it fixed. Older documents
+    /// without the key decode as untracked. See `resolved(at:)`.
+    public var track: RedactionTrack?
 
     public init(id: UUID = UUID(), z: Int = 0, kind: AnnotationKind, style: AnnotationStyle = AnnotationStyle(),
-                visibleRange: AnnotationTiming? = nil) {
+                visibleRange: AnnotationTiming? = nil, track: RedactionTrack? = nil) {
         self.id = id; self.z = z; self.kind = kind; self.style = style
         self.visibleRange = visibleRange
+        self.track = track
     }
 
     public func isVisible(at time: TimeInterval) -> Bool {

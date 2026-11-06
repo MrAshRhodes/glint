@@ -113,6 +113,29 @@ at 6 s at output times `[2, 4)`. A range outside the trim contributes no visible
 Time-limited redaction, pixelation and blur leave content exposed outside their ranges; default to `nil`
 for redactions unless every other frame has been checked. Blur is not secure redaction at any time.
 
+### Tracked redactions
+`annotation.track: RedactionTrack?` (default `nil`) makes a `.redact` or `.pixelate` annotation follow moving
+content. `RedactionTrack(keyframes:uncertainIntervals:analyzedRange:frameBounds:)` stores
+`RedactionKeyframe(time:rect:source:)` (`.tracked` or `.manual`, rects in image space),
+`RedactionUncertainInterval(start:end:anchorTime:anchorRect:resolution:)` (`resolution` `nil`, `.fixedCover` or
+`.keyframes`), the analysed `AnnotationTiming` and the source frame bounds. `annotation.resolved(at:)` returns
+the annotation drawn at a source time: keyframes interpolate (tracked samples hold until the next frame), and
+unresolved or out-of-range time uses `FailSafeCover.rect(anchor:elapsed:bounds:)`, a padded rect that grows with
+the time since the last confident frame. An invalid track covers the whole frame. `Compositor.render` resolves
+tracks automatically when `annotationTime` is set. `editingView(at:)` gives the unpadded position for editors;
+`setManualKeyframe(at:rect:)`, `removeKeyframe(near:)`, `resolveInterval(containing:as:visibleRange:sourceDuration:)`
+and `reopenInterval(containing:)` edit a track.
+`RedactionGate.unresolvedIntervals(in:sourceDuration:)` lists time that still needs review (uncertain tracking,
+time outside the analysed range, invalid tracks or tracked Blur); `blocksExport(_:range:)` tests an export range
+and `validate(_:at:sourceDuration:)` throws `RedactionGateError.unresolvedTracking` so renderers fail closed.
+`RedactionTracker(url:)` (Vision-backed, on device) or `RedactionTracker(source:thresholds:makeTracker:)` runs
+`track(RedactionTrackingRequest(anchorTime:anchorRect:range:), progress:)` forwards and backwards from the anchor
+frame, honours task cancellation, and flags low-confidence results, sudden jumps, size changes and content leaving
+the frame as uncertain intervals instead of following them.
+Encoded, the optional `track` key holds `keyframes` (`time`, `rect`, `source`), `uncertainIntervals` (`start`,
+`end`, `anchorTime`, `anchorRect`, optional `resolution`), `analyzedRange` and `frameBounds`; annotations without
+it decode untracked. Tracking is an aid: callers remain responsible for reviewing every frame.
+
 `Magnifier(source:inset:shape:showsSourceOutline:showsConnector:)` (the editor's **Zoom** tool): an enlarged copy
 of `source` drawn in `inset`, both `CGRect`s in image space; `inset` may lie partly or fully outside the image
 (see canvas expansion above). `shape: MagnifierShape` (`.circle` default, `.rectangle`), `showsSourceOutline`
