@@ -138,6 +138,50 @@ struct ScrollStitcherTests {
         #expect(!undone)
     }
 
+    @Test func unchangedFooterKeepsNoUndoCopies() throws {
+        // 201 frames, 5 rows apart, under a fixed 60-row footer: only the rows moved into the footer when it was
+        // found are kept for undo, not a copy of the footer per frame.
+        var page = Page.noise(width: 64, height: 1100, seed: 3)
+        page.footer = Page.solidRows(width: 64, count: 60, (10, 120, 40), stripe: 9)
+        var stitcher = ScrollStitcher()
+        for offset in stride(from: 0, through: 1000, by: 5) {
+            #expect(stitcher.add(page.frame(at: offset, visible: 100)).warning == nil)
+        }
+        #expect(stitcher.frameCount == 201 && stitcher.undoableSteps == 200)
+        #expect(stitcher.undoBytes == 60 * 64 * 4)
+        #expect(bytes(try #require(stitcher.makeImage())) == page.expected)
+    }
+
+    @Test func undoHistoryStaysWithinItsBudget() throws {
+        var page = Page.noise(width: 64, height: 400, seed: 5)
+        page.footer = Page.solidRows(width: 64, count: 60, (40, 40, 40))
+        let footerBytes = 60 * 64 * 4
+        var stitcher = ScrollStitcher(limits: ScrollStitchLimits(maxUndoBytes: 10 * footerBytes))
+        // The footer changes on every frame after the first scroll (a live counter, say).
+        func frame(_ i: Int) -> CGImage {
+            page.frame(at: i * 10, visible: 100) { rows in
+                if i >= 2 { rows[rows.count - 1][0] = UInt8(i) }
+            }
+        }
+        for i in 0..<30 { #expect(stitcher.add(frame(i)).warning == nil) }
+        #expect(stitcher.undoBytes <= 10 * footerBytes)
+        #expect(stitcher.frameCount == 30)
+        let undoable = stitcher.undoableSteps
+        #expect(undoable > 0 && undoable < 29)
+
+        while stitcher.canUndo { stitcher.undoLast() }
+        let last = 29 - undoable
+        #expect(stitcher.frameCount == last + 1)
+        var rows = Array(page.rows[0..<(last * 10 + 100)]) + page.footer
+        rows[rows.count - 1][0] = UInt8(last)
+        #expect(bytes(try #require(stitcher.makeImage())) == rows.flatMap { $0 })
+        // The next frame still joins exactly after undoing as far as the history allows.
+        _ = stitcher.add(frame(last + 1))
+        rows = Array(page.rows[0..<((last + 1) * 10 + 100)]) + page.footer
+        rows[rows.count - 1][0] = UInt8(last + 1)
+        #expect(bytes(try #require(stitcher.makeImage())) == rows.flatMap { $0 })
+    }
+
     @Test func heightLimitStopsGrowth() {
         let page = Page.noise(height: 600)
         var stitcher = ScrollStitcher(limits: ScrollStitchLimits(maxHeight: 300))

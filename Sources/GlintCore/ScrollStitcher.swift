@@ -11,11 +11,16 @@ public struct ScrollStitchLimits: Equatable, Sendable {
     public var maxPixels: Int
     /// Fraction of the limit at which the user is warned that the capture is nearly full.
     public var warningFraction: Double
+    /// Most bytes kept only so steps can be undone (earlier footers and rows moved into the footer). When a step
+    /// would exceed it, the oldest steps can no longer be undone; what they added stays in the image.
+    public var maxUndoBytes: Int
 
-    public init(maxHeight: Int = 16_384, maxPixels: Int = 64_000_000, warningFraction: Double = 0.9) {
+    public init(maxHeight: Int = 16_384, maxPixels: Int = 64_000_000, warningFraction: Double = 0.9,
+                maxUndoBytes: Int = 16_000_000) {
         self.maxHeight = maxHeight
         self.maxPixels = maxPixels
         self.warningFraction = warningFraction
+        self.maxUndoBytes = maxUndoBytes
     }
 
     /// The tallest image allowed for frames `width` pixels wide.
@@ -104,12 +109,18 @@ public struct ScrollStitcher {
     private var footer: [UInt8] = []
     private var reference: [UInt8] = []
     private var steps: [Record] = []
+    private var frames = 0
+    /// Bytes held by `steps` for undo; kept within `limits.maxUndoBytes`.
+    private(set) var undoBytes = 0
 
     private struct Record {
         var addedRows: Int
-        var footerBefore: [UInt8]
+        /// The footer before this step, or nil when the step left it unchanged.
+        var footerBefore: [UInt8]?
         /// Rows moved from the body into the footer when this step found the sticky bands.
         var trimmed: [UInt8]?
+
+        var bytes: Int { (footerBefore?.count ?? 0) + (trimmed?.count ?? 0) }
     }
 
     /// Rows whose mean per-channel difference is at most this are treated as equal.
@@ -128,10 +139,13 @@ public struct ScrollStitcher {
     /// Height of the stitched image so far.
     public var height: Int { bodyRows + footerRows }
     public var isEmpty: Bool { width == 0 }
-    /// Whether `undoLast()` can remove a step; the first frame stays.
+    /// Whether `undoLast()` can remove a step; the first frame stays, and so do steps that
+    /// `limits.maxUndoBytes` no longer leaves room to undo.
     public var canUndo: Bool { !steps.isEmpty }
+    /// How many of the latest steps can still be undone.
+    public var undoableSteps: Int { steps.count }
     /// Frames that contributed to the image.
-    public var frameCount: Int { isEmpty ? 0 : steps.count + 1 }
+    public var frameCount: Int { frames }
     /// Largest height allowed for this width.
     public var maxRows: Int { limits.maxRows(width: max(width, 1)) }
     /// 0...1 of the height limit.
@@ -172,9 +186,11 @@ public struct ScrollStitcher {
     @discardableResult
     public mutating func undoLast() -> Bool {
         guard let step = steps.popLast() else { return false }
+        undoBytes -= step.bytes
+        frames -= 1
         body.removeLast(step.addedRows * rowBytes)
         bodyRows -= step.addedRows
-        footer = step.footerBefore
+        if let footerBefore = step.footerBefore { footer = footerBefore }
         if let trimmed = step.trimmed {
             body.append(contentsOf: trimmed)
             bodyRows += trimmed.count / rowBytes
@@ -196,6 +212,7 @@ public struct ScrollStitcher {
         reference = frame
         body = frame
         bodyRows = frameHeight
+        frames = 1
         if bodyRows > maxRows {
             body.removeLast((bodyRows - maxRows) * rowBytes)
             bodyRows = maxRows
@@ -208,7 +225,7 @@ public struct ScrollStitcher {
 
     private mutating func append(_ frame: [UInt8], shift: Int, band: Range<Int>, bands: (top: Int, bottom: Int),
                                  mismatch: Range<Int>?) -> ScrollStitchStep {
-        var record = Record(addedRows: 0, footerBefore: footer, trimmed: nil)
+        var record = Record(addedRows: 0, footerBefore: nil, trimmed: nil)
         if sticky == nil {
             let trimmed = Array(body[(frameHeight - bands.bottom) * rowBytes..<frameHeight * rowBytes])
             body.removeLast(trimmed.count)
@@ -232,10 +249,19 @@ public struct ScrollStitcher {
         let first = band.upperBound - shift
         body.append(contentsOf: frame[first * rowBytes..<(first + added) * rowBytes])
         bodyRows += added
-        footer = Array(frame[(frameHeight - bands.bottom) * rowBytes..<frameHeight * rowBytes])
+        let newFooter = frame[(frameHeight - bands.bottom) * rowBytes..<frameHeight * rowBytes]
+        if !footer.elementsEqual(newFooter) {
+            record.footerBefore = footer
+            footer = Array(newFooter)
+        }
         reference = frame
         record.addedRows = added
         steps.append(record)
+        frames += 1
+        undoBytes += record.bytes
+        while undoBytes > limits.maxUndoBytes, !steps.isEmpty {
+            undoBytes -= steps.removeFirst().bytes
+        }
         isAtLimit = height >= maxRows
         if let mismatch {
             // Band row y of the new frame sits at body row (bodyBefore - bandHeight + shift + y).

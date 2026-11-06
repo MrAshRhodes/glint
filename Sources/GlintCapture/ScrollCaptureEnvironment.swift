@@ -4,9 +4,12 @@ import ScreenCaptureKit
 
 /// Grabs the region of a scrolling capture. `signature()` is a cheap, low-resolution look used about ten times a
 /// second to notice scrolling; `frame()` is the full-resolution grab that goes to the stitcher.
+/// `signature(of:)` makes the signature of a grabbed frame, comparable with `signature()`, so the reference for
+/// later looks is exactly the snapshot the stitcher accepted.
 protocol ScrollFrameSource: AnyObject {
     func signature() async throws -> ScrollSignature
     func frame() async throws -> CGImage
+    func signature(of frame: CGImage) -> ScrollSignature?
 }
 
 /// What the scrolling-capture controls show.
@@ -109,8 +112,7 @@ final class LiveScrollFrameSource: ScrollFrameSource {
     }
 
     func signature() async throws -> ScrollSignature {
-        let width = min(Self.signatureWidth, pixelSize.width)
-        let height = max(Int((Double(width) * Double(pixelSize.height) / Double(pixelSize.width)).rounded()), 1)
+        let (width, height) = signatureSize
         // The pointer is never part of the signature: moving it must not count as scrolling.
         let image = try await grab(width: width, height: height, showsCursor: false)
         guard let signature = ScrollSignature(image: image) else { throw CaptureError.failed("Could not read the screen.") }
@@ -119,6 +121,22 @@ final class LiveScrollFrameSource: ScrollFrameSource {
 
     func frame() async throws -> CGImage {
         try await grab(width: pixelSize.width, height: pixelSize.height, showsCursor: showsCursor)
+    }
+
+    func signature(of frame: CGImage) -> ScrollSignature? {
+        // Reduce to the size `signature()` grabs first, so both follow the same path to the signature.
+        let (width, height) = signatureSize
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: ColorSpaces.sRGB,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(frame, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage().flatMap { ScrollSignature(image: $0) }
+    }
+
+    private var signatureSize: (width: Int, height: Int) {
+        let width = min(Self.signatureWidth, pixelSize.width)
+        return (width, max(Int((Double(width) * Double(pixelSize.height) / Double(pixelSize.width)).rounded()), 1))
     }
 
     private func grab(width: Int, height: Int, showsCursor: Bool) async throws -> CGImage {

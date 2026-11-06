@@ -163,7 +163,10 @@ public final class ScrollCaptureSession: ScrollingCapture {
         let frame = try await source.frame()
         try throwIfCancelled()
         let step = stitcher.add(frame)
-        reference = try await source.signature()
+        // The reference must describe the accepted snapshot itself: a second look could already show content
+        // scrolled past the stitched image, and holding still there would then never grab the rest.
+        guard let accepted = source.signature(of: frame) else { throw CaptureError.failed("Could not read the screen.") }
+        reference = accepted
         if let warning = step.warning, warning.pausesCapture {
             pause(warning)
         } else if step.addedRows > 0 || stitcher.frameCount == 1 {

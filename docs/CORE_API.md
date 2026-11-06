@@ -59,7 +59,8 @@ inset band → window frame → rounded card + two-layer shadow → background �
 so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
 deterministically by the compositor, so the editor preview and exports show the same frame.
 Aspect-ratio fitting never grows a canvas beyond the larger of its own area and an internal area budget
-(16,384 × 8,192 px), so a very tall scrolling capture with a wide aspect ratio keeps its natural size.
+(16,384 × 8,192 px), so a very tall scrolling capture with a wide aspect ratio keeps its natural size. The budget
+is judged at an output scale of 1, so reduced previews and 1x/2x exports make the same choice.
 Canvas expansion: only magnifier (`.magnify`) insets can enlarge the canvas. When an inset (with its outline,
 connector, border and shadow) reaches beyond the base region (the auto-balance crop or the full image), the
 baked content grows to include it; the auto-balance fill applies only inside the base region and the rest is
@@ -340,10 +341,13 @@ public enum RecordingExporter {
   `pruneExpired(in:now:retention:)`.
 
 ## Scrolling capture (`ScrollStitcher.swift`, `ScrollCapturePolicy.swift`)
-- `ScrollStitchLimits(maxHeight: 16_384, maxPixels: 64_000_000, warningFraction: 0.9)`, `maxRows(width:)`.
+- `ScrollStitchLimits(maxHeight: 16_384, maxPixels: 64_000_000, warningFraction: 0.9, maxUndoBytes: 16_000_000)`,
+  `maxRows(width:)`. `maxUndoBytes` bounds the memory kept only for undo (earlier footers are stored only when
+  they changed); past it the oldest steps can no longer be undone but stay in the image.
 - `ScrollStitcher(limits:)` stitches same-size frames of a region scrolled downwards: `add(_ image:) ->
   ScrollStitchStep` (`addedRows`, `warning: ScrollStitchWarning?`), `undoLast() -> Bool`, `makeImage() -> CGImage?`,
-  `thumbnail(maxWidth:maxHeight:)`, `height`, `width`, `frameHeight`, `frameCount`, `canUndo`, `isEmpty`,
+  `thumbnail(maxWidth:maxHeight:)`, `height`, `width`, `frameHeight`, `frameCount`, `canUndo`, `undoableSteps`,
+  `isEmpty`,
   `progress`, `isNearLimit`, `isAtLimit`, `sticky` (detected header/footer rows). Matching is pixel-based on the
   first frame size. Rows that stay fixed between the first two moving frames are treated as a sticky header and
   footer and appear once, at the top and bottom of the result. A frame that is rejected leaves the image unchanged.

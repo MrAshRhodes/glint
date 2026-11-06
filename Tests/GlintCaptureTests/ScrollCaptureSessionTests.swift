@@ -85,6 +85,8 @@ private final class ScrollFakeSource: ScrollFrameSource {
     let page: ScrollPage
     var offset = 0
     private(set) var frames = 0
+    /// Where the "user" has scrolled right after the frame with this number (1-based) was grabbed.
+    var offsetAfterFrame: [Int: Int] = [:]
 
     init(page: ScrollPage) { self.page = page }
 
@@ -92,8 +94,12 @@ private final class ScrollFakeSource: ScrollFrameSource {
 
     func frame() async throws -> CGImage {
         frames += 1
-        return page.frame(at: offset)
+        let image = page.frame(at: offset)
+        if let next = offsetAfterFrame[frames] { offset = next }
+        return image
     }
+
+    func signature(of frame: CGImage) -> ScrollSignature? { ScrollSignature(image: frame) }
 }
 
 @MainActor
@@ -167,6 +173,21 @@ struct ScrollCaptureSessionTests {
         #expect(harness.presenter.dismissed)
         #expect(harness.presenter.statuses.last?.frames == 4)
         #expect(harness.session.phase == .idle)
+    }
+
+    @Test func scrollingRightAfterAGrabStillGrabsTheRestOnceStill() async throws {
+        let harness = ScrollHarness()
+        harness.script = [90]
+        harness.source.offsetAfterFrame = [2: 110]
+        var idleTicks = 0
+        harness.onScriptEnd = { harness in
+            idleTicks += 1
+            if idleTicks == 10 { harness.session.finish() }
+        }
+        // The first frame is grabbed at 0; the user then scrolls to 90 and, just after that grab, on to 110.
+        let result = try await harness.run().value
+        #expect(result.image.height == 270)
+        #expect(bytes(result.image) == bytes(harness.source.page.image(rows: 0..<270)))
     }
 
     @Test func finishingWhileSelectingCancels() async {
