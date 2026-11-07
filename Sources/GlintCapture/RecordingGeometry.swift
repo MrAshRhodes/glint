@@ -13,6 +13,8 @@ struct RecordingGeometry: Equatable {
     /// Encoded video size; equals the source size unless the region exceeds the encoder limits.
     let outputWidth: Int
     let outputHeight: Int
+    /// Top-left of the display in global CG coordinates, to map global pointer positions into the video.
+    let displayOrigin: CGPoint
 
     /// Largest frame the hardware H.264 encoder accepts (level 5.1: 36 864 macroblocks).
     static let maximumPixelArea = 4096 * 2304
@@ -31,12 +33,25 @@ struct RecordingGeometry: Equatable {
         let height = Self.even(Int((local.height * scale).rounded()))
         guard width >= 2, height >= 2 else { return nil }
         self.scale = scale
+        displayOrigin = display.origin
         sourceWidth = width
         sourceHeight = height
         sourceRect = CGRect(x: local.minX, y: local.minY, width: CGFloat(width) / scale, height: CGFloat(height) / scale)
         let (outW, outH) = Self.fitted(width: width, height: height)
         outputWidth = outW
         outputHeight = outH
+    }
+
+    /// Video pixels per screen point (the display scale, reduced when the output is downscaled).
+    var videoPixelsPerPoint: CGFloat { scale * CGFloat(outputWidth) / CGFloat(sourceWidth) }
+
+    /// Where a global CG point (top-left origin) lands in the encoded video, in pixels (top-left origin).
+    /// Points outside the region map outside `0..<outputSize`.
+    func videoPoint(forGlobal point: CGPoint) -> CGPoint {
+        let sx = scale * CGFloat(outputWidth) / CGFloat(sourceWidth)
+        let sy = scale * CGFloat(outputHeight) / CGFloat(sourceHeight)
+        return CGPoint(x: (point.x - displayOrigin.x - sourceRect.minX) * sx,
+                       y: (point.y - displayOrigin.y - sourceRect.minY) * sy)
     }
 
     /// Rounds down to an even number: H.264 4:2:0 needs whole chroma samples.

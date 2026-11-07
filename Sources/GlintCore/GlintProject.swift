@@ -58,22 +58,26 @@ public struct ProjectManifest: Codable, Equatable, Sendable {
 ///
 /// A feature that adds data older builds would ignore *safely* doesn't need an entry. One whose absence would change
 /// the output adds its string to `supported` and returns it from `required(by:)` whenever a project uses it, as
-/// `redactionTracks` (#79) does and `"presentation"` (#81) is expected to. Never rename or reuse a string once
-/// released.
+/// `redactionTracks` and `presentation` do. Never rename or reuse a string once released.
 public enum ProjectFeatures {
     /// Some annotation carries a `RedactionTrack`, so it moves with content over time. A build that skipped the
     /// track would keep the redaction where it was first drawn and show the content once it moves, so such a
     /// project must be refused instead of being opened without its tracking.
     public static let redactionTracks = "redactionTracks"
 
-    /// Every feature string this build understands.
-    public static let supported: Set<String> = [redactionTracks]
+    /// Pointer samples, clicks or editable presentation settings must not be silently lost by an older build.
+    public static let presentation = "presentation"
 
-    /// The feature strings `state` relies on, written to the manifest so older builds refuse it. A project without
-    /// tracked redactions requires nothing and stays openable by builds that predate the feature.
+    /// Every feature string this build understands.
+    public static let supported: Set<String> = [redactionTracks, presentation]
+
+    /// The feature strings `state` relies on, written to the manifest so older builds refuse it.
     public static func required(by state: ProjectState) -> [String] {
         var features: [String] = []
         if state.annotations.contains(where: { $0.track != nil }) { features.append(redactionTracks) }
+        if case .recording(let recording) = state, recording.presentation != Presentation() {
+            features.append(presentation)
+        }
         return features
     }
 }
@@ -112,7 +116,7 @@ public struct ScreenshotProjectState: Codable, Equatable, Sendable {
     }
 }
 
-/// Everything needed to reopen a recording editor: the look, the timed annotations, the trim and export settings.
+/// Everything needed to reopen a recording editor: the look, annotations, trim, export and presentation settings.
 public struct RecordingProjectState: Codable, Equatable, Sendable {
     public var settings: RenderSettings
     /// Annotations keep their `visibleRange` in source seconds, independent of the trim.
@@ -122,15 +126,18 @@ public struct RecordingProjectState: Codable, Equatable, Sendable {
     /// Duration and size of the stored clip, as the capture layer measured them.
     public var duration: TimeInterval
     public var pixelSize: CGSize
+    public var presentation: Presentation
 
     public init(settings: RenderSettings, annotations: [Annotation], trim: RecordingTrim,
-                options: RecordingExportOptions, duration: TimeInterval, pixelSize: CGSize) {
+                options: RecordingExportOptions, duration: TimeInterval, pixelSize: CGSize,
+                presentation: Presentation = Presentation()) {
         self.settings = settings
         self.annotations = annotations
         self.trim = trim
         self.options = options
         self.duration = duration
         self.pixelSize = pixelSize
+        self.presentation = presentation
     }
 
     /// Longest clip a project may describe, in seconds.
@@ -148,7 +155,7 @@ public struct RecordingProjectState: Codable, Equatable, Sendable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case settings, annotations, trim, options, duration, pixelSize }
+    private enum CodingKeys: String, CodingKey { case settings, annotations, trim, options, duration, pixelSize, presentation }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -157,7 +164,8 @@ public struct RecordingProjectState: Codable, Equatable, Sendable {
                   trim: try c.decode(RecordingTrim.self, forKey: .trim),
                   options: try c.decodeIfPresent(RecordingExportOptions.self, forKey: .options) ?? RecordingExportOptions(),
                   duration: try c.decode(TimeInterval.self, forKey: .duration),
-                  pixelSize: try c.decode(CGSize.self, forKey: .pixelSize))
+                  pixelSize: try c.decode(CGSize.self, forKey: .pixelSize),
+                  presentation: try c.decodeIfPresent(Presentation.self, forKey: .presentation) ?? Presentation())
         guard Self.isValid(duration: duration, pixelSize: pixelSize) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "Recording duration or size is invalid."))

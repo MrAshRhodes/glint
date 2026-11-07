@@ -69,10 +69,12 @@ private final class FakeEngine: RecordingEngine, @unchecked Sendable {
     private var finishes = 0
     private var discards = 0
     private var startError: Error?
+    let firstFrameHostTime: TimeInterval?
 
-    init(target: RecordingTarget, startError: Error?) {
+    init(target: RecordingTarget, startError: Error?, firstFrameHostTime: TimeInterval? = nil) {
         self.target = target
         self.startError = startError
+        self.firstFrameHostTime = firstFrameHostTime
     }
 
     var startCount: Int { lock.withLock { starts } }
@@ -111,6 +113,13 @@ private final class FakeEngine: RecordingEngine, @unchecked Sendable {
 }
 
 @MainActor
+private final class ScriptedPointer: PointerSource {
+    var reading: PointerReading
+    init(_ reading: PointerReading) { self.reading = reading }
+    func read() -> PointerReading { reading }
+}
+
+@MainActor
 private final class Harness {
     typealias Run = Task<RecordedVideo, Error>
 
@@ -125,6 +134,9 @@ private final class Harness {
     private(set) var outputURLs: [URL] = []
     var clock: TimeInterval = 0
     var engineStartError: Error?
+    var engineFirstFrame: TimeInterval?
+    var pointer: ScriptedPointer?
+    private(set) var sampler: PointerSampler?
 
     nonisolated static let pickedRect = CGRect(x: 100, y: 100, width: 320, height: 200)
 
@@ -141,7 +153,8 @@ private final class Harness {
             },
             makePresenter: { [unowned self] in presenter },
             makeEngine: { [unowned self] target in
-                let engine = FakeEngine(target: target, startError: engineStartError)
+                let engine = FakeEngine(target: target, startError: engineStartError,
+                                        firstFrameHostTime: engineFirstFrame)
                 self.engine = engine
                 return engine
             },
@@ -155,7 +168,13 @@ private final class Harness {
                 try await Task.sleep(nanoseconds: slow ? 60_000_000_000 : 1_000_000)
             },
             now: { [unowned self] in clock },
-            maximumDuration: maximumDuration)
+            maximumDuration: maximumDuration,
+            makePointerSampler: { [unowned self] geometry in
+                guard let pointer else { return nil }
+                let sampler = PointerSampler(geometry: geometry, source: pointer, now: { [unowned self] in clock })
+                self.sampler = sampler
+                return sampler
+            })
         session = ScreenRecordingSession(snapToEdges: false, showsCursor: showsCursor, environment: environment)
         session.onPhaseChanged = { [unowned self] in phases.append($0) }
     }
@@ -601,5 +620,53 @@ struct ScreenRecordingSessionTests {
 
         if case CaptureError.failed? = captureError(second) {} else { Issue.record("Expected a failure, got \(second)") }
         #expect(harness.pickersCreated == 1)
+    }
+    @Test func withoutAPointerSamplerNoPresentationDataIsRecorded() async throws {
+        let harness = Harness()
+        defer { harness.cleanUp() }
+        let task = await harness.startRecording()
+        harness.session.stop()
+        #expect(try await task.value.presentation == nil)
+    }
+
+    @Test func pointerAndClicksAreRecordedInVideoPixelsOnTheVideoClock() async throws {
+        let harness = Harness(showsCursor: false)
+        defer { harness.cleanUp() }
+        // Held down before recording starts: not a click.
+        harness.pointer = ScriptedPointer(PointerReading(location: CGPoint(x: 150, y: 150), left: true, right: false))
+        harness.engineFirstFrame = 10
+        harness.clock = 9.5
+        let task = await harness.startRecording()
+        let sampler = try #require(harness.sampler)
+        sampler.tick(at: 10.2, reading: PointerReading(location: CGPoint(x: 150, y: 150), left: false, right: false))
+        sampler.tick(at: 10.5, reading: PointerReading(location: CGPoint(x: 200, y: 150), left: true, right: false))
+        sampler.tick(at: 10.6, reading: PointerReading(location: CGPoint(x: 200, y: 150), left: true, right: true))
+        sampler.tick(at: 11, reading: PointerReading(location: CGPoint(x: 900, y: 700), left: false, right: false))
+        sampler.tick(at: 11.2, reading: PointerReading(location: CGPoint(x: 900, y: 700), left: true, right: false))
+        harness.session.stop()
+        let video = try await task.value
+
+        let capture = try #require(video.presentation)
+        #expect(!capture.pointerIsBaked, "The pointer was left out of the frames, so it can be edited")
+        #expect(capture.pointerScale == 1)
+        #expect(capture.clicks.map(\.button) == [.left, .right], "Only presses inside the region are clicks")
+        #expect(abs(capture.clicks[0].time - 0.5) < 1e-9 && abs(capture.clicks[1].time - 0.6) < 1e-9)
+        #expect(capture.clicks[0].position == CGPoint(x: 100, y: 50))
+        let still = try #require(capture.pointer.position(at: 0.1))
+        let moved = try #require(capture.pointer.position(at: 0.5))
+        #expect(abs(still.x - 50) < 1e-6 && abs(still.y - 50) < 1e-6)
+        #expect(abs(moved.x - 100) < 1e-6 && abs(moved.y - 50) < 1e-6)
+    }
+
+    @Test func aBakedPointerIsMarkedSoItIsNeverDrawnTwice() async throws {
+        let harness = Harness()
+        defer { harness.cleanUp() }
+        harness.pointer = ScriptedPointer(PointerReading(location: CGPoint(x: 150, y: 150), left: false, right: false))
+        harness.clock = 4
+        let task = await harness.startRecording()
+        harness.session.stop()
+        let capture = try #require(try await task.value.presentation)
+        #expect(capture.pointerIsBaked)
+        #expect(capture.pointer.samples.first?.time == 0, "Without a first-frame time, sampling start is zero")
     }
 }

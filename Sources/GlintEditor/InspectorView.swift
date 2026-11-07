@@ -21,7 +21,7 @@ enum SwatchRenderer {
 
 /// Inspector sections whose expanded state is persisted across launches.
 enum InspectorSectionID: String, CaseIterable {
-    case preset, selection, background, layout, ratio, frame, transform, redact, text, watermark
+    case preset, selection, presentation, background, layout, ratio, frame, transform, redact, text, watermark
 
     /// UserDefaults key holding whether the section is expanded.
     var storageKey: String { "inspector.section.\(rawValue).expanded" }
@@ -29,7 +29,7 @@ enum InspectorSectionID: String, CaseIterable {
     var defaultExpanded: Bool {
         switch self {
         case .preset, .selection, .background, .layout: return true
-        case .ratio, .frame, .transform, .redact, .text, .watermark: return false
+        case .presentation, .ratio, .frame, .transform, .redact, .text, .watermark: return false
         }
     }
 
@@ -37,6 +37,7 @@ enum InspectorSectionID: String, CaseIterable {
         switch self {
         case .preset: return "square.stack.3d.up"
         case .selection: return "paintbrush.pointed"
+        case .presentation: return "cursorarrow.click.2"
         case .background: return "paintpalette"
         case .layout: return "square.dashed"
         case .ratio: return "aspectratio"
@@ -176,6 +177,8 @@ struct InspectorView: View {
     var recording: RecordingEditorModel? = nil
     var playback: RecordingPlayback? = nil
     var tracking: RedactionTrackingModel? = nil
+    /// Set for recordings: click highlights and cursor emphasis.
+    var presentation: RecordingPresentationModel? = nil
     // CLT-only builds lack the SwiftUI macro plugin, so local state lives in an ObservableObject instead of @State.
     @StateObject private var ui = InspectorState()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -183,6 +186,7 @@ struct InspectorView: View {
     // Expanded state per section, shared by every editor window and persisted across launches.
     @AppStorage("inspector.section.preset.expanded") private var presetExpanded = true
     @AppStorage("inspector.section.selection.expanded") private var selectionExpanded = true
+    @AppStorage("inspector.section.presentation.expanded") private var presentationExpanded = false
     @AppStorage("inspector.section.background.expanded") private var backgroundExpanded = true
     @AppStorage("inspector.section.layout.expanded") private var layoutExpanded = true
     @AppStorage("inspector.section.ratio.expanded") private var ratioExpanded = false
@@ -206,6 +210,11 @@ struct InspectorView: View {
                     presetsSection
                     if !model.isDesigningPreset, !model.selection.isEmpty || (model.tool != .select) {
                         annotationSection
+                    }
+                    if let presentation {
+                        section(.presentation, "Clicks & Cursor") {
+                            PresentationInspectorContent(presentation: presentation, time: model.recordingTime)
+                        }
                     }
                     backgroundSection
                     sizeSection
@@ -233,6 +242,7 @@ struct InspectorView: View {
         InspectorSectionID.allCases.filter { id in
             switch id {
             case .selection: return showsAnnotationSection
+            case .presentation: return presentation != nil
             case .redact, .text: return !model.isDesigningPreset
             default: return true
             }
@@ -272,6 +282,7 @@ struct InspectorView: View {
         switch id {
         case .preset: return $presetExpanded
         case .selection: return $selectionExpanded
+        case .presentation: return $presentationExpanded
         case .background: return $backgroundExpanded
         case .layout: return $layoutExpanded
         case .ratio: return $ratioExpanded

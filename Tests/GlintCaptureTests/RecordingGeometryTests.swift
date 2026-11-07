@@ -284,4 +284,25 @@ struct RegionNudgeTests {
         #expect(Set(RegionNudge.allCases.map(\.title)).count == 8)
         #expect(RegionNudge.allCases.allSatisfy { !$0.title.isEmpty })
     }
+    @Test func globalPointsMapIntoVideoPixelsOnDisplaysLeftOfAndAboveTheMain() throws {
+        let secondary = CGRect(x: -1920, y: -300, width: 1920, height: 1080)
+        let geometry = try #require(RecordingGeometry(
+            region: CGRect(x: -1800, y: -200, width: 400, height: 300), display: secondary, scale: 2))
+        #expect(geometry.displayOrigin == CGPoint(x: -1920, y: -300))
+        #expect(geometry.videoPoint(forGlobal: CGPoint(x: -1800, y: -200)) == .zero)
+        #expect(geometry.videoPoint(forGlobal: CGPoint(x: -1700, y: -50)) == CGPoint(x: 200, y: 300))
+        #expect(geometry.videoPixelsPerPoint == 2)
+    }
+
+    @Test func globalPointsFollowADownscaledOutput() throws {
+        let wide = CGRect(x: 0, y: 0, width: 6016, height: 3384)
+        let geometry = try #require(RecordingGeometry(region: wide, display: wide, scale: 2))
+        #expect(geometry.isDownscaled)
+        let factor = CGFloat(geometry.outputWidth) / CGFloat(geometry.sourceWidth)
+        let mapped = geometry.videoPoint(forGlobal: CGPoint(x: 3008, y: 1692))
+        #expect(abs(mapped.x - 3008 * 2 * factor) < 0.001)
+        #expect(abs(mapped.x - CGFloat(geometry.outputWidth) / 2) < 1)
+        #expect(abs(mapped.y - CGFloat(geometry.outputHeight) / 2) < 1)
+        #expect(abs(geometry.videoPixelsPerPoint - 2 * factor) < 0.0001)
+    }
 }

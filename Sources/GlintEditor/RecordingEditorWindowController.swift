@@ -77,7 +77,7 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
          preferences: AppPreferences = AppPreferences(), presetStore: PresetStore = PresetStore(),
          project: RecordingProjectState? = nil, projectName: String? = nil, placeholder: CGImage? = nil) {
         self.services = services
-        model = RecordingEditorModel(recording: recording, services: services)
+        model = RecordingEditorModel(recording: recording, services: services, presentation: project?.presentation)
         if let project {
             model.trim = project.trim
             model.options = project.options
@@ -107,6 +107,7 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
         }
         canvasModel.onBeginEditing = { [weak playback] in playback?.pause() }
         model.makeFrameRenderer = { [canvasModel] in canvasModel.recordingFrameRenderer() }
+        model.rendersTimedEffects = { [canvasModel] in canvasModel.recordingRendersTimedEffects }
         playback.onFrame = { [weak self, weak canvasModel] frame, time in
             let changedSize = canvasModel?.image.pixelSize != frame.pixelSize
             canvasModel?.updateRecordingFrame(frame, at: time)
@@ -134,6 +135,30 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
             self?.model.unresolvedRedactionIntervals = RedactionGate.unresolvedIntervals(
                 in: annotations, sourceDuration: trim.sourceDuration)
         }.store(in: &subscriptions)
+        model.presentation.undoManager = canvasModel.undoManager
+        model.presentation.$settings.sink { [weak self, weak canvasModel, weak presentation = model.presentation] settings in
+            guard let presentation else { return }
+            canvasModel?.presentation = Presentation(capture: presentation.capture, settings: settings)
+            self?.model.invalidatePreparedFile()
+        }.store(in: &subscriptions)
+        model.presentation.$editingArea.sink { [weak canvasModel] editing in
+            canvasModel?.showsWholeFrame = editing
+        }.store(in: &subscriptions)
+        model.presentation.objectWillChange.sink { [weak canvasModel, weak presentation = model.presentation] in
+            Task { @MainActor in
+                guard let presentation else { return }
+                let area = presentation.editingArea ? presentation.selectedZoom?.rect : nil
+                if canvasModel?.editedZoomArea != area { canvasModel?.editedZoomArea = area }
+            }
+        }.store(in: &subscriptions)
+        canvasModel.onZoomAreaEdit = { [weak presentation = model.presentation] area, phase in
+            guard let presentation, let id = presentation.selectedZoomID else { return }
+            switch phase {
+            case .began: presentation.beginInteraction()
+            case .changed: presentation.setZoomRect(area, id: id)
+            case .ended: presentation.endInteraction(actionName: "Change Zoom Area")
+            }
+        }
         refreshOutputSize()
         refreshTask = Task { [weak self] in await self?.model.refreshDuration() }
     }

@@ -18,6 +18,9 @@ final class ScreenRecorder: NSObject, RecordingEngine, SCStreamOutput, SCStreamD
     private var stream: SCStream?
     private var handler: (@Sendable (RecordingEngineEvent) -> Void)?
     private var systemStopTime: CMTime?
+    private var firstFrameTime: TimeInterval?
+
+    var firstFrameHostTime: TimeInterval? { lock.withLock { firstFrameTime } }
 
     init(target: RecordingTarget) {
         self.target = target
@@ -76,7 +79,11 @@ final class ScreenRecorder: NSObject, RecordingEngine, SCStreamOutput, SCStreamD
         await halt(stream)
         do {
             let summary = try await writer.finish(at: endTime)
-            lock.withLock { state = .closed }
+            let start = writer.startTime.map(\.seconds)
+            lock.withLock {
+                state = .closed
+                firstFrameTime = start
+            }
             let duration = await Self.fileDuration(of: target.outputURL) ?? summary.duration
             return RecordedVideo(url: target.outputURL, duration: duration, pixelSize: summary.pixelSize)
         } catch {

@@ -74,6 +74,8 @@ lower-z annotations remain part of the screenshot. Redactions also replace their
 frame is drawn. `RenderResult.region` is the base region in image pixels,
 for mapping editor coordinates onto `contentRect`. Rotation, flips and tilt carry the overflow with the card.
 `backgroundImage` supplies the wallpaper for `.image` styles (else loaded from path).
+`render` and `renderDetailed` also take a final optional `presentation: Presentation?` (see Recording). It applies
+only together with an `annotationTime`, and `nil` or an inert value leaves every pixel unchanged.
 Both `render` and `renderDetailed` take the final optional `annotationTime` argument. Pass the frame's
 source-recording time in seconds to draw only annotations for which `isVisible(at:)` is true. Leave it `nil`
 for still-image rendering, which draws all annotations regardless of their ranges. Layout always uses the
@@ -301,7 +303,8 @@ public final class OutputActiveFiles: @unchecked Sendable {
 ## Recording
 Recording model, GIF/MP4 exporter, and file and clipboard helpers. GlintCapture hands over a `RecordedVideo`;
 the recording editor trims and exports it. `RecordingTrim`, `RecordingExportOptions`, `GIFExportOptions`,
-`RecordingFileFormat` and `GIFMaxWidth` are `Codable` so projects can store them (see Projects); the rest are not.
+`RecordingFileFormat` and `GIFMaxWidth` are `Codable` so projects can store them (see Projects), as are the presentation
+types below. The exporter, file and clipboard types are not.
 Shortcut: `HotkeyAction.recordScreen` (see Preferences).
 ```swift
 public enum RecordingExporter {
@@ -312,10 +315,28 @@ public enum RecordingExporter {
                               frameRenderer: FrameRenderer? = nil) async throws -> URL
 }
 ```
-- `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:)`: by default `url` is a unique temporary `.mp4` that the
+- `RecordedVideo(url:duration:pixelSize:deletesFileOnClose:presentation:)`: by default `url` is a unique temporary `.mp4` that the
   recording editor owns and deletes when it closes (a reopened project's clip is its private snapshot copy, so it is
-  deleted too); pass `deletesFileOnClose: false` for a file someone else owns; `duration` is in seconds, as the capture layer measured it. `RecordingPhase` (for menu and
+  deleted too); pass `deletesFileOnClose: false` for a file someone else owns; `duration` is in seconds, as the capture layer measured it.
+  `presentation` is the pointer data recorded alongside (or `nil`). `RecordingPhase` (for menu and
   status text): `.idle`, `.selecting`, `.ready`, `.countdown(Int)` (seconds left), `.recording`, `.finishing`.
+- Presentation (all `Codable, Equatable, Sendable`; every field decodes with a default when missing, so older or
+  partial payloads load as inert). Positions are source video pixels (top-left origin); times are source-recording
+  seconds, measured from the first frame.
+  - `Presentation(capture: PresentationCapture?, settings: PresentationSettings)`; `isInert` is true when nothing
+    would be drawn. `drawsPointer` tells whether the compositor draws the pointer itself.
+  - `PresentationCapture(pointer: PointerTrack, clicks: [ClickEvent], pointerIsBaked: Bool = true, pointerScale: Double = 1)`.
+    `pointerIsBaked` means macOS drew the pointer into the frames (it can be emphasised but not resized or hidden);
+    `pointerScale` is video pixels per screen point. `PointerTrack` encodes as `[[time, x, y], …]`, collapses still
+    runs on `append(_:)` and interpolates with `position(at:)`. `ClickEvent(id:time:position:button:)`, with
+    `PointerButton` `.left`/`.right`.
+  - `PresentationSettings(clicks: ClickHighlightStyle, cursor: CursorEmphasis, zooms: [ZoomSegment])`.
+    `ClickHighlightStyle(enabled: false, leftColor:, rightColor:, size: 40, duration: 0.6, removed: Set<UUID>)`;
+    `CursorEmphasis(scale: 1, hidden: false, halo: false, haloColor:, spotlight: false, radius: 48)`.
+  - `ZoomSegment(id:start:end:rect:ease: 0.4)`: eases in, holds and eases out (`amount(at:)`); `fitted(_:in:)` grows
+    `rect` to the frame's aspect ratio (at most 8×) and keeps it inside; `viewport(at:sourceSize:)` is the visible
+    area. Where segments overlap the later start wins. Zoom never changes the output size, and redactions are applied
+    before zooming, so they cover their content at every zoom level.
 - `export` returns a new `RecordingExport-<UUID>.gif|mp4` in `outputDirectory` (default
   `RecordingExportFiles.defaultWorkingDirectory`, created if missing); the caller owns it, and `source` is only read.
   `validatedRange(_:sourceDuration:)` runs before any frame is read: it throws `invalidRange`, or `rangeTooShort` under
@@ -338,7 +359,11 @@ public enum RecordingExporter {
 - MP4 without `frameRenderer`: the whole file is passed through (re-encoded if that fails), a trimmed range gets a
   highest-quality re-encode (a passthrough cut can only start on a keyframe). With one, each frame is decoded, rendered
   and re-encoded as H.264 at its source timing, without audio; odd sizes get white padding at the right and bottom.
-- Options: `RecordingExportOptions(format:gif:)`; `RecordingFileFormat` `.gif`/`.mp4` (`fileExtension`, `displayName`,
+  With `resamplesStyledFrames`, frames are instead rendered at a fixed cadence (the source's nominal rate kept within
+  30–60 fps, `RecordingExporter.resampledFrameInterval(nominalFrameRate:)`): the newest source frame is held and
+  rendered at each output time, so time-based presentation effects (zoom, click ripples, a drawn pointer) keep moving
+  where a screen capture delivered no new frames. The editor sets it only when such effects are active.
+- Options: `RecordingExportOptions(format:gif:resamplesStyledFrames:)` (the last defaults to `false`); `RecordingFileFormat` `.gif`/`.mp4` (`fileExtension`, `displayName`,
   `utType`); `GIFExportOptions(framesPerSecond:maxWidth:)`; defaults are `.gif`, 15 fps and `.w640`. `GIFMaxWidth`
   `.w480`/`.w640`/`.w720`/`.original` (`pixelCap` 480/640/720/1280; `outputSize(for:)` keeps the aspect ratio).
 - `GIFLimits`: `frameRates` `[10, 15, 20]`, `defaultFrameRate`, `maxDuration` 30 s, `maxFrameCount` 450,
@@ -406,7 +431,7 @@ public enum ProjectStore {
   `com.apple.package`): `manifest.json`, `project.json`, `source/capture.png` or `source/recording.mp4`, and optional
   `assets/background.png` / `assets/watermark.png`.
 - `ScreenshotProjectState(settings:annotations:backingScale:source:)` and
-  `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:)` are `Codable`; `ProjectState` encodes
+  `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:presentation:)` are `Codable`; `ProjectState` encodes
   with a `"kind"` key (`"screenshot"`/`"recording"`) and exposes `settings` and `annotations`. A recording state only
   decodes when `RecordingProjectState.isValid(duration:pixelSize:)`: a finite duration up to `maxDuration` (24 h) and
   whole-pixel sides in `1...maxPixelSide` (16384); a `RecordingTrim` only when `0 ≤ start ≤ end ≤ sourceDuration`. Annotation ranges stay in
@@ -418,11 +443,11 @@ public enum ProjectStore {
   informational only.
 - **Extension point:** a feature that changes how a project renders adds a string to `ProjectFeatures.supported` and
   returns it from `ProjectFeatures.required(by:)` when a project uses it, so older builds refuse that project instead
-  of rendering it wrongly. `redactionTracks` is the first. Optional fields that older builds can ignore need no
+  of rendering it wrongly. `redactionTracks` and `presentation` use this mechanism. Optional fields that older builds can ignore need no
   feature string; decode them with `decodeIfPresent` and a default.
 - **Tracked redactions:** `ProjectFeatures.redactionTracks` (`"redactionTracks"`, never renamed) is required, and so
   written to `manifest.json`, exactly when some annotation in the state (screenshot or recording) has a `track`.
-  A project without one requires no feature and still opens in builds that predate #79. A build that doesn't know the
+  A project without one does not require the tracking feature. A build that doesn't know the
   feature refuses the project with `unsupportedFeatures` ("Update Glint to open it") rather than opening it with
   redactions that no longer follow their content. Tracks round-trip whole (keyframes, uncertain intervals and their
   resolutions, analysed range, frame bounds), so a reopened recording keeps its per-frame rect, flagged intervals and
@@ -432,6 +457,12 @@ public enum ProjectStore {
   A track that is merely invalid (no keyframes, overlapping intervals, missing frame bounds) still opens, covers the
   whole frame and blocks export until its redaction is deleted or trimmed away. `write` refuses a `project.json` over
   `Limits.projectBytes` (64 MiB) with `writeFailed`, so a project that saves also reopens.
+- **Presentation:** `RecordingProjectState.presentation` defaults to `Presentation()` when omitted, including in
+  older projects. It stores pointer samples, click events, removed click IDs, cursor styling and all zoom segments
+  in `project.json`, and restores them before the editor's preview and export subscriptions start.
+  `ProjectFeatures.presentation` (`"presentation"`, never renamed) is required whenever this value differs from
+  `Presentation()`, even for disabled effects or an inert capture: older builds must not silently discard editable
+  data. Projects with neither presentation data nor tracked redactions require no features.
 - `write` encodes into a staging folder next to `url` and swaps it in with one replace, so a failure leaves any
   existing project untouched. Image backgrounds and watermarks are re-encoded into `assets/` (the user's file paths are
   never stored); a desktop-wallpaper background stores only the setting. Recordings are copied in, never moved.

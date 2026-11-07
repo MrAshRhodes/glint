@@ -38,8 +38,8 @@ build: ## Debug build of every target
 release: ## Optimized build of every target
 	$(SWIFTW) build -c release
 
-test: ## Run the test suite (Swift Testing)
-	$(SWIFTW) test
+test: ## Run the test suite (Swift Testing), one test at a time
+	$(SWIFTW) test --no-parallel
 
 app: ## Assemble dist/Glint.app for this Mac (signed ad-hoc unless GLINT_SIGN_IDENTITY is set)
 	Scripts/build_app.sh $(VERSION_ARG) --configuration $(CONFIG)

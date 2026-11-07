@@ -56,6 +56,7 @@ enum RecordingExportState: Equatable {
 @MainActor
 final class RecordingEditorModel: ObservableObject {
     let recording: RecordedVideo
+    let presentation: RecordingPresentationModel
     @Published var trim: RecordingTrim { didSet { invalidatePreparedFile() } }
     @Published var options = RecordingExportOptions() { didSet { invalidatePreparedFile() } }
     @Published var styledPixelSize: CGSize?
@@ -63,6 +64,8 @@ final class RecordingEditorModel: ObservableObject {
     @Published var unresolvedRedactionIntervals: [UnresolvedRedactionInterval] = []
     /// Called once on the main actor when an export starts, never once per frame.
     var makeFrameRenderer: (() -> RecordingExporter.FrameRenderer)?
+    /// Whether the frame renderer animates by time (zoom, clicks, pointer) and so must be sampled at a fixed cadence.
+    var rendersTimedEffects: (() -> Bool)?
     @Published private(set) var exportState = RecordingExportState.idle
     /// Set when the file turns out not to be a readable video; every export is refused then.
     @Published private(set) var sourceProblem: String?
@@ -77,16 +80,21 @@ final class RecordingEditorModel: ObservableObject {
     private var preparationRevision = 0
     private var preparedCompletion: ((URL) -> Void)?
 
-    init(recording: RecordedVideo, services: RecordingEditorServices = RecordingEditorServices()) {
+    init(recording: RecordedVideo, services: RecordingEditorServices = RecordingEditorServices(),
+         presentation restoredPresentation: Presentation? = nil) {
         self.recording = recording
         self.services = services
+        let restored = restoredPresentation ?? Presentation(capture: recording.presentation)
+        presentation = RecordingPresentationModel(capture: restored.capture, frameSize: recording.pixelSize,
+                                                  settings: restored.settings)
         trim = RecordingTrim(sourceDuration: recording.duration)
     }
 
     /// The editable state to save in a project, with the editor's current look and annotations.
     func projectState(settings: RenderSettings, annotations: [Annotation]) -> RecordingProjectState {
         RecordingProjectState(settings: settings, annotations: annotations, trim: trim, options: options,
-                              duration: recording.duration, pixelSize: recording.pixelSize)
+                              duration: recording.duration, pixelSize: recording.pixelSize,
+                              presentation: presentation.presentation)
     }
 
     // MARK: Derived state
@@ -227,8 +235,9 @@ final class RecordingEditorModel: ObservableObject {
         lastAction = action
         exportState = .running(0)
         let range = trim.range
-        let options = options
+        var options = options
         let renderer = makeFrameRenderer?()
+        options.resamplesStyledFrames = renderer != nil && rendersTimedEffects?() == true
         let revision = preparationRevision
         exportTask = Task { [weak self] in
             guard let self else { return }

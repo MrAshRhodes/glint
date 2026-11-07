@@ -82,7 +82,7 @@ struct TrackedRedactionProjectTests {
 
     @Test func theFeatureHasAStableNameThisBuildSupports() {
         #expect(ProjectFeatures.redactionTracks == "redactionTracks", "a released feature string is never renamed")
-        #expect(ProjectFeatures.supported == ["redactionTracks"])
+        #expect(ProjectFeatures.supported.contains(ProjectFeatures.redactionTracks))
     }
 
     @Test func aProjectRequiresTheFeatureExactlyWhenSomeAnnotationIsTracked() {

@@ -29,4 +29,10 @@ protocol RecordingEngine: AnyObject, Sendable {
     func finish() async throws -> RecordedVideo
     /// Stops capturing and deletes the partial file. Safe to call at any time, also more than once.
     func discard() async
+    /// Host time (seconds, `ProcessInfo.systemUptime` clock) of the first frame in the file, once known.
+    var firstFrameHostTime: TimeInterval? { get }
+}
+
+extension RecordingEngine {
+    var firstFrameHostTime: TimeInterval? { nil }
 }

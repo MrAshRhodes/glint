@@ -43,6 +43,8 @@ struct RecordingEnvironment {
     var sleep: @Sendable (TimeInterval) async throws -> Void
     var now: @MainActor () -> TimeInterval
     var maximumDuration: TimeInterval
+    /// Tracks the pointer while recording; nil records no presentation data.
+    var makePointerSampler: @MainActor (RecordingGeometry) -> PointerSampler? = { _ in nil }
 
     @MainActor
     static var live: RecordingEnvironment {
@@ -56,7 +58,11 @@ struct RecordingEnvironment {
             },
             sleep: { try await Task.sleep(nanoseconds: UInt64(max($0, 0) * 1_000_000_000)) },
             now: { ProcessInfo.processInfo.systemUptime },
-            maximumDuration: RecordingLimits.maximumDuration)
+            maximumDuration: RecordingLimits.maximumDuration,
+            makePointerSampler: { geometry in
+                PointerSampler(geometry: geometry, source: LivePointerSource(),
+                               now: { ProcessInfo.processInfo.systemUptime })
+            })
     }
 }
 

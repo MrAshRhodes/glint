@@ -53,29 +53,34 @@ public enum Compositor {
     /// Output image of the full "beautify" pipeline. Deterministic for identical inputs.
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
     /// `annotationTime` is in source-recording seconds; `nil` draws every annotation for screenshots.
+    /// `presentation` adds a recording's pointer effects and zoom at `annotationTime`; it is ignored without one.
     public static func render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                               backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                              wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil) throws -> CGImage {
+                              wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil,
+                              presentation: Presentation? = nil) throws -> CGImage {
         try renderDetailed(image: image, settings: settings, annotations: annotations,
                            backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper,
-                           annotationTime: annotationTime).image
+                           annotationTime: annotationTime, presentation: presentation).image
     }
 
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
     /// Timed-out annotations are not drawn, but still contribute to layout so video dimensions stay constant.
+    /// A presentation zoom never changes the layout either; `region` then reports the zoomed-in source area.
     public static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                       backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                                      wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil) throws -> RenderResult {
+                                      wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil,
+                                      presentation: Presentation? = nil) throws -> RenderResult {
         try renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
                            backgroundImage: backgroundImage, wallpaper: wallpaper, bake: defaultBaker,
-                           annotationTime: annotationTime)
+                           annotationTime: annotationTime, presentation: presentation)
     }
 
     static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
-                               wallpaper: CGImage? = nil, bake: Baker, annotationTime: TimeInterval? = nil) throws -> RenderResult {
-        let source = image.glintSRGB()
-        let imageBounds = CGRect(origin: .zero, size: source.pixelSize)
+                               wallpaper: CGImage? = nil, bake: Baker, annotationTime: TimeInterval? = nil,
+                               presentation: Presentation? = nil) throws -> RenderResult {
+        let original = image.glintSRGB()
+        let imageBounds = CGRect(origin: .zero, size: original.pixelSize)
         // The single place recording time selects annotations, so preview, MP4 and GIF frames stay identical.
         let visibleAnnotations = annotationTime.map { time in
             annotations.filter { $0.isVisible(at: time) }.map { $0.resolved(at: time) }
@@ -84,11 +89,15 @@ public enum Compositor {
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
         var border: BorderInfo?
         var region: CGRect?
-        if settings.autoBalance, let b = AutoBalance.detectBorder(in: source) {
+        if settings.autoBalance, let b = AutoBalance.detectBorder(in: original) {
             border = b
-            region = AutoBalance.balanceCropRect(imageSize: source.pixelSize, border: b)
+            region = AutoBalance.balanceCropRect(imageSize: original.pixelSize, border: b)
         }
         let base = (region ?? imageBounds).integral
+        // Pointer effects are painted into the frame before annotations, so redactions cover them too.
+        let active = annotationTime.flatMap { time in presentation.flatMap { $0.isInert ? nil : ($0, time) } }
+        let source = active.map { PresentationRenderer.decorate(original, presentation: $0.0, time: $0.1) } ?? original
+        let viewport = active.flatMap { zoomViewport($0.0, at: $0.1, base: base, imageSize: original.pixelSize) }
         let expanded = expandedRegion(base: base, annotations: annotations)
         var content = source
         var foreground: AnnotationRenderer.Foreground?
@@ -141,8 +150,19 @@ public enum Compositor {
         let layout = layout(contentSize: baseSize, insetApplied: insetApplied, settings: settings,
                             backingScale: backingScale, overflow: overflow)
         let W = Int(layout.canvasSize.width), H = Int(layout.canvasSize.height)
+        // Zooming draws the already-annotated content magnified into the unchanged content rect.
+        let zoom = viewport.map { viewport -> CGRect in
+            let local = PresentationRenderer.orientedViewport(viewport, base: base, rotation: settings.rotation,
+                                                              flipH: settings.flipHorizontal,
+                                                              flipV: settings.flipVertical)
+            let sx = layout.contentRect.width / max(baseSize.width, 1)
+            let sy = layout.contentRect.height / max(baseSize.height, 1)
+            return CGRect(x: layout.contentRect.minX + local.minX * sx, y: layout.contentRect.minY + local.minY * sy,
+                          width: local.width * sx, height: local.height * sy)
+        }
+        if let viewport, zoom != nil { contentRegion = viewport }
         guard let ctx = GlintBitmap.makeContext(width: W, height: H) else {
-            if foreground != nil { throw RenderError.annotationsNotApplied }
+            if foreground != nil || viewport != nil { throw RenderError.annotationsNotApplied }
             return RenderResult(image: content, layout: layout, border: border, region: contentRegion)
         }
         let k = layout.factor
@@ -159,18 +179,18 @@ public enum Compositor {
         // 5. card (+shadow), optionally tilted
         if settings.tilt.isFlat {
             drawCard(in: ctx, content: content, foreground: foreground, layout: layout, settings: settings,
-                     insetColor: insetApplied ? insetColor : nil)
+                     insetColor: insetApplied ? insetColor : nil, zoom: zoom)
         } else if let layer = GlintBitmap.makeContext(width: W, height: H) {
             drawCard(in: layer, content: content, foreground: foreground, layout: layout, settings: settings,
-                     insetColor: insetApplied ? insetColor : nil)
+                     insetColor: insetApplied ? insetColor : nil, zoom: zoom)
             if let flat = layer.makeImage(), let tilted = perspective(flat, tilt: settings.tilt) {
                 ctx.draw(tilted, in: CGRect(x: 0, y: 0, width: W, height: H))
             } else if let flat = layer.makeImage() {
                 ctx.draw(flat, in: CGRect(x: 0, y: 0, width: W, height: H))
-            } else if foreground != nil {
+            } else if foreground != nil || zoom != nil {
                 throw RenderError.annotationsNotApplied
             }
-        } else if foreground != nil {
+        } else if foreground != nil || zoom != nil {
             throw RenderError.annotationsNotApplied
         }
 
@@ -178,10 +198,20 @@ public enum Compositor {
         if settings.watermark.enabled { drawWatermark(settings.watermark, in: ctx, canvas: layout.canvasSize, factor: k) }
 
         guard let rendered = ctx.makeImage() else {
-            if foreground != nil { throw RenderError.annotationsNotApplied }
+            if foreground != nil || zoom != nil { throw RenderError.annotationsNotApplied }
             return RenderResult(image: content, layout: layout, border: border, region: contentRegion)
         }
         return RenderResult(image: rendered, layout: layout, border: border, region: contentRegion)
+    }
+
+    /// The zoomed-in part of `base` (source pixels) at `time`, with the content's aspect ratio, or nil for none.
+    static func zoomViewport(_ presentation: Presentation, at time: TimeInterval, base: CGRect,
+                             imageSize: CGSize) -> CGRect? {
+        guard base.width >= 1, base.height >= 1,
+              let viewport = presentation.settings.viewport(at: time, sourceSize: imageSize) else { return nil }
+        let local = ZoomSegment.fitted(viewport.offsetBy(dx: -base.minX, dy: -base.minY), in: base.size)
+        guard local.width < base.width - 0.01 || local.height < base.height - 0.01 else { return nil }
+        return local.offsetBy(dx: base.minX, dy: base.minY)
     }
 
     /// Longest side, and largest area, in pixels the magnifier overflow may grow the content to (unless `base` is
@@ -311,9 +341,11 @@ public enum Compositor {
         CGRect(x: r.minX, y: canvasHeight - r.maxY, width: r.width, height: r.height)
     }
 
+    /// `zoom` is the canvas rect (top-left pixels) to magnify into `layout.contentRect`; magnifier insets then
+    /// stay inside the card instead of floating beyond it.
     private static func drawCard(in ctx: CGContext, content: CGImage, foreground: AnnotationRenderer.Foreground?,
                                  layout: RenderLayout, settings: RenderSettings,
-                                 insetColor: RGBAColor?) {
+                                 insetColor: RGBAColor?, zoom: CGRect? = nil) {
         let H = layout.canvasSize.height, k = layout.factor
         let card = toBL(layout.cardRect, canvasHeight: H)
         let cornerRadius = settings.windowFrame.metrics.corner.resolve(settings.cornerRadius)
@@ -345,7 +377,13 @@ public enum Compositor {
                                 bar: layout.barHeight, k: k, radius: radius, frame: settings.windowFrame)
         FrameRenderer.drawChrome(frame)
         ctx.interpolationQuality = .high
-        ctx.draw(content, in: toBL(layout.overflowRect, canvasHeight: H))
+        if let zoom {
+            zoomed(ctx, zoom: zoom, layout: layout, clip: path) {
+                ctx.draw(content, in: toBL(layout.overflowRect, canvasHeight: H))
+            }
+        } else {
+            ctx.draw(content, in: toBL(layout.overflowRect, canvasHeight: H))
+        }
         FrameRenderer.drawOverlay(frame)
         ctx.restoreGState()
 
@@ -363,7 +401,7 @@ public enum Compositor {
 
         // Magnifier insets beyond the card float over the background. The card already drew everything inside
         // it and the screenshot's own rectangle stays clipped by the card's corners.
-        if layout.overflowRect != layout.contentRect {
+        if zoom == nil, layout.overflowRect != layout.contentRect {
             ctx.saveGState()
             let overflow = toBL(layout.overflowRect, canvasHeight: H)
             let everything = overflow.union(card)
@@ -378,8 +416,32 @@ public enum Compositor {
             ctx.restoreGState()
         }
 
-        foreground?.draw(in: ctx, rect: toBL(layout.overflowRect, canvasHeight: H), rotation: settings.rotation,
-                         flipH: settings.flipHorizontal, flipV: settings.flipVertical)
+        let drawForeground: () -> Void = {
+            foreground?.draw(in: ctx, rect: toBL(layout.overflowRect, canvasHeight: H), rotation: settings.rotation,
+                             flipH: settings.flipHorizontal, flipV: settings.flipVertical)
+        }
+        if let zoom, foreground != nil {
+            zoomed(ctx, zoom: zoom, layout: layout, clip: path, draw: drawForeground)
+        } else {
+            drawForeground()
+        }
+    }
+
+    /// Runs `draw` clipped to the card's content and magnified so the `zoom` canvas rect fills the content rect.
+    private static func zoomed(_ ctx: CGContext, zoom: CGRect, layout: RenderLayout, clip: CGPath,
+                               draw: () -> Void) {
+        let H = layout.canvasSize.height
+        let target = toBL(layout.contentRect, canvasHeight: H), source = toBL(zoom, canvasHeight: H)
+        guard source.width > 0, source.height > 0 else { return }
+        ctx.saveGState()
+        ctx.addPath(clip)
+        ctx.clip()
+        ctx.clip(to: target)
+        ctx.translateBy(x: target.minX, y: target.minY)
+        ctx.scaleBy(x: target.width / source.width, y: target.height / source.height)
+        ctx.translateBy(x: -source.minX, y: -source.minY)
+        draw()
+        ctx.restoreGState()
     }
 
     // MARK: Tilt

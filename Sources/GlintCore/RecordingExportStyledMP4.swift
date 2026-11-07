@@ -20,7 +20,21 @@ extension RecordingExporter {
         }
     }
 
+    private enum StyledSourceFrame {
+        case end, skip
+        /// An oriented frame, its trim-relative presentation time and the source-recording seconds it shows.
+        case frame(CGImage, CMTime, TimeInterval)
+    }
+
+    /// The output cadence used when styled frames are resampled: the source's nominal rate, kept within 30–60 fps so
+    /// a sparse capture (whose nominal rate can be very low) still animates smoothly.
+    static func resampledFrameInterval(nominalFrameRate: Float) -> TimeInterval {
+        let rate = nominalFrameRate.isFinite ? Double(nominalFrameRate) : 0
+        return 1 / min(max(rate, 30), 60)
+    }
+
     static func writeStyledMP4(asset: AVAsset, range: ClosedRange<TimeInterval>, to url: URL,
+                               resamples: Bool = false,
                                progress: ProgressHandler?, frameRenderer: @escaping FrameRenderer) async throws {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw RecordingExportError.sourceUnreadable("it has no video track.")
@@ -33,6 +47,8 @@ extension RecordingExporter {
         let minimumFrameDuration = try await track.load(.minFrameDuration)
         let frameDuration = minimumFrameDuration.isNumeric && minimumFrameDuration.seconds > 0
             ? minimumFrameDuration : CMTime(value: 1, timescale: 30)
+        let outputInterval: TimeInterval? = resamples
+            ? resampledFrameInterval(nominalFrameRate: try await track.load(.nominalFrameRate)) : nil
         let start = CMTime(seconds: range.lowerBound, preferredTimescale: 600_000)
         let end = CMTime(seconds: range.upperBound, preferredTimescale: 600_000)
         let duration = end - start
@@ -69,8 +85,10 @@ extension RecordingExporter {
                 let lastTime: CMTime? = try await BlockingWork.run { cancellation in
                     cancellation.onCancel { session.cancel() }
                     var previousTime: CMTime?
-                    while true {
-                        try cancellation.check()
+                    // Render the newest source frame at each output tick, including gaps in sparse captures.
+                    var held: CGImage?
+                    var tick = 0
+                    func waitUntilReady() throws {
                         while !encoder.isReady {
                             try cancellation.check()
                             guard writer.status == .writing else {
@@ -78,15 +96,35 @@ extension RecordingExporter {
                             }
                             Thread.sleep(forTimeInterval: 0.002)
                         }
-                        let hasSample = try autoreleasepool {
-                            guard let sample = output.copyNextSampleBuffer() else { return false }
+                    }
+                    func emitHeld(before limit: CMTime) throws {
+                        guard let held, let outputInterval else { return }
+                        while true {
+                            let tickTime = CMTime(seconds: Double(tick) * outputInterval, preferredTimescale: 600_000)
+                            guard tickTime < limit, tickTime < duration else { return }
+                            try cancellation.check()
+                            try waitUntilReady()
+                            try autoreleasepool {
+                                let rendered = try frameRenderer(held, range.lowerBound + tickTime.seconds)
+                                try cancellation.check()
+                                try encoder.append(rendered, at: tickTime)
+                            }
+                            tick += 1
+                            progress?(min(0.99, max(0, tickTime.seconds / duration.seconds)))
+                        }
+                    }
+                    while true {
+                        try cancellation.check()
+                        if outputInterval == nil { try waitUntilReady() }
+                        let frame: StyledSourceFrame = try autoreleasepool {
+                            guard let sample = output.copyNextSampleBuffer() else { return .end }
                             let time = CMSampleBufferGetPresentationTimeStamp(sample)
                             guard time.isNumeric else {
                                 throw RecordingExportError.encodingFailed("a frame has no presentation timestamp")
                             }
                             let sampleDuration = CMSampleBufferGetDuration(sample)
                             let length = sampleDuration.isNumeric && sampleDuration.seconds > 0 ? sampleDuration : frameDuration
-                            guard time < end, time + length > start else { return true }
+                            guard time < end, time + length > start else { return .skip }
                             let presentationTime = max(.zero, time - start)
                             guard previousTime == nil || presentationTime > previousTime! else {
                                 throw RecordingExportError.encodingFailed("frame timestamps are not increasing")
@@ -102,15 +140,31 @@ extension RecordingExporter {
                                 throw RecordingExportError.encodingFailed("couldn't orient a video frame")
                             }
                             // The first sample may begin before the trim, but its visible portion starts at the trim.
-                            let rendered = try frameRenderer(image, max(time.seconds, range.lowerBound))
-                            try cancellation.check()
-                            try encoder.append(rendered, at: presentationTime)
-                            previousTime = presentationTime
-                            progress?(min(0.99, max(0, presentationTime.seconds / duration.seconds)))
-                            return true
+                            return .frame(image, presentationTime, max(time.seconds, range.lowerBound))
                         }
-                        if !hasSample { break }
+                        switch frame {
+                        case .end:
+                            break
+                        case .skip:
+                            continue
+                        case .frame(let image, let presentationTime, let sourceSeconds):
+                            if outputInterval != nil {
+                                try emitHeld(before: presentationTime)
+                                held = image
+                            } else {
+                                try autoreleasepool {
+                                    let rendered = try frameRenderer(image, sourceSeconds)
+                                    try cancellation.check()
+                                    try encoder.append(rendered, at: presentationTime)
+                                }
+                                progress?(min(0.99, max(0, presentationTime.seconds / duration.seconds)))
+                            }
+                            previousTime = presentationTime
+                            continue
+                        }
+                        break
                     }
+                    try emitHeld(before: duration)
                     return previousTime
                 }
                 try Task.checkCancellation()

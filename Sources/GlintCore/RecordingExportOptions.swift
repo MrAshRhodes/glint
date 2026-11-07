@@ -82,10 +82,16 @@ public struct GIFExportOptions: Codable, Equatable, Sendable {
 public struct RecordingExportOptions: Codable, Equatable, Sendable {
     public var format: RecordingFileFormat
     public var gif: GIFExportOptions
+    /// Styled MP4 only: render at a fixed cadence (holding the latest source frame) instead of once per source frame.
+    /// Needed when the frame renderer animates by time — zooms, click ripples, a drawn pointer — because a screen
+    /// capture delivers no frames while nothing on screen changes. GIFs are always sampled at their own frame rate.
+    public var resamplesStyledFrames: Bool
 
-    public init(format: RecordingFileFormat = .gif, gif: GIFExportOptions = GIFExportOptions()) {
+    public init(format: RecordingFileFormat = .gif, gif: GIFExportOptions = GIFExportOptions(),
+                resamplesStyledFrames: Bool = false) {
         self.format = format
         self.gif = gif
+        self.resamplesStyledFrames = resamplesStyledFrames
     }
 
     private enum CodingKeys: String, CodingKey { case format, gif }

@@ -33,6 +33,7 @@ public final class ScreenRecordingSession {
     private var picker: (any RegionPicking)?
     private var presenter: (any RecordingPresenting)?
     private var engine: (any RecordingEngine)?
+    private var pointerSampler: PointerSampler?
 
     private var hasStarted = false
     private var isFinished = false
@@ -139,6 +140,10 @@ public final class ScreenRecordingSession {
         }
 
         try await runCountdown(request.choice, presenter: presenter)
+        let sampler = environment.makePointerSampler(geometry)
+        pointerSampler = sampler
+        // Started first so the pointer is known from the very first frame on.
+        sampler?.start()
         try await engine.start()
         try throwIfCancelled()
         presenter.showRecording(elapsed: 0)
@@ -149,7 +154,9 @@ public final class ScreenRecordingSession {
         setPhase(.finishing)
         presenter.dismiss()
         self.presenter = nil
-        let video = try await engine.finish()
+        sampler?.stop()
+        var video = try await engine.finish()
+        video.presentation = sampler?.capture(firstFrameTime: engine.firstFrameHostTime, pointerIsBaked: showsCursor)
         if cancelRequested {
             try? FileManager.default.removeItem(at: video.url)
             throw CaptureError.cancelled
@@ -195,6 +202,8 @@ public final class ScreenRecordingSession {
     }
 
     private func abort() async {
+        pointerSampler?.stop()
+        pointerSampler = nil
         picker?.cancel()
         picker = nil
         presenter?.dismiss()
@@ -206,6 +215,8 @@ public final class ScreenRecordingSession {
     }
 
     private func finishRun() {
+        pointerSampler?.stop()
+        pointerSampler = nil
         presenter = nil
         engine = nil
         picker = nil

@@ -144,8 +144,19 @@ struct ProjectEditorTests {
         trim.setStart(0.4)
         trim.setEnd(1.5)
         let options = RecordingExportOptions(format: .mp4)
+        let click = ClickEvent(time: 0.6, position: CGPoint(x: 40, y: 30))
+        let presentation = Presentation(
+            capture: PresentationCapture(
+                pointer: PointerTrack(samples: [PointerSample(time: 0, position: CGPoint(x: 20, y: 20)),
+                                                PointerSample(time: 2, position: CGPoint(x: 100, y: 50))]),
+                clicks: [click], pointerIsBaked: false),
+            settings: PresentationSettings(
+                clicks: ClickHighlightStyle(enabled: true, removed: [click.id]),
+                cursor: CursorEmphasis(scale: 2, halo: true),
+                zooms: [ZoomSegment(start: 0.5, end: 1.5, rect: CGRect(x: 40, y: 20, width: 60, height: 40))]))
         let state = RecordingProjectState(settings: savedLook(), annotations: savedAnnotations(), trim: trim,
-                                          options: options, duration: clip.duration, pixelSize: clip.pixelSize)
+                                          options: options, duration: clip.duration, pixelSize: clip.pixelSize,
+                                          presentation: presentation)
         let controller = try RecordingEditorWindowController(recording: clip, services: fixture.services(), project: state,
                                                              projectName: "Demo")
         var closes = 0
@@ -154,11 +165,29 @@ struct ProjectEditorTests {
         #expect(controller.model.trim == trim && controller.model.options == options)
         #expect(controller.editor.model.settings.padding == savedLook().padding)
         #expect(controller.editor.model.annotations == savedAnnotations())
+        #expect(controller.model.presentation.presentation == presentation)
+        #expect(controller.editor.model.presentation == presentation)
+        #expect(controller.model.presentation.pointerIsEditable)
         #expect(controller.window?.title == "Glint — Demo")
         let project = try #require(controller.editor.makeProject?())
         #expect(project.state == .recording(state))
         guard case .video(let url) = project.source else { Issue.record("expected a video source"); return }
         #expect(url == clip.url)
+
+        let frame = controller.editor.model.image
+        let renderer = controller.editor.model.recordingFrameRenderer()
+        controller.editor.model.updateRecordingFrame(frame, at: 1)
+        try expectSamePixels(try controller.editor.model.renderFinal(), try renderer(frame, 1))
+        let undo = controller.editor.model.undoManager
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        controller.model.presentation.restoreClicks()
+        undo.endUndoGrouping()
+        #expect(controller.editor.model.presentation?.settings.clicks.removed.isEmpty == true)
+        undo.undo()
+        #expect(controller.editor.model.presentation == presentation)
+        let savedAgain = try #require(controller.editor.makeProject?())
+        #expect(savedAgain.state == .recording(state))
 
         controller.window?.close()
         #expect(closes == 1)
