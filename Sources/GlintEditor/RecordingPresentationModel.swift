@@ -24,9 +24,10 @@ final class RecordingPresentationModel: ObservableObject {
     weak var undoManager: UndoManager?
     private var interactionStart: PresentationSettings?
 
-    init(capture: PresentationCapture?, frameSize: CGSize) {
+    init(capture: PresentationCapture?, frameSize: CGSize, settings: PresentationSettings = PresentationSettings()) {
         self.capture = capture
         self.frameSize = frameSize
+        self.settings = settings
     }
 
     var presentation: Presentation { Presentation(capture: capture, settings: settings) }

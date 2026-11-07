@@ -431,7 +431,7 @@ public enum ProjectStore {
   `com.apple.package`): `manifest.json`, `project.json`, `source/capture.png` or `source/recording.mp4`, and optional
   `assets/background.png` / `assets/watermark.png`.
 - `ScreenshotProjectState(settings:annotations:backingScale:source:)` and
-  `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:)` are `Codable`; `ProjectState` encodes
+  `RecordingProjectState(settings:annotations:trim:options:duration:pixelSize:presentation:)` are `Codable`; `ProjectState` encodes
   with a `"kind"` key (`"screenshot"`/`"recording"`) and exposes `settings` and `annotations`. A recording state only
   decodes when `RecordingProjectState.isValid(duration:pixelSize:)`: a finite duration up to `maxDuration` (24 h) and
   whole-pixel sides in `1...maxPixelSide` (16384); a `RecordingTrim` only when `0 ≤ start ≤ end ≤ sourceDuration`. Annotation ranges stay in
@@ -443,11 +443,11 @@ public enum ProjectStore {
   informational only.
 - **Extension point:** a feature that changes how a project renders adds a string to `ProjectFeatures.supported` and
   returns it from `ProjectFeatures.required(by:)` when a project uses it, so older builds refuse that project instead
-  of rendering it wrongly. `redactionTracks` is the first. Optional fields that older builds can ignore need no
+  of rendering it wrongly. `redactionTracks` and `presentation` use this mechanism. Optional fields that older builds can ignore need no
   feature string; decode them with `decodeIfPresent` and a default.
 - **Tracked redactions:** `ProjectFeatures.redactionTracks` (`"redactionTracks"`, never renamed) is required, and so
   written to `manifest.json`, exactly when some annotation in the state (screenshot or recording) has a `track`.
-  A project without one requires no feature and still opens in builds that predate #79. A build that doesn't know the
+  A project without one does not require the tracking feature. A build that doesn't know the
   feature refuses the project with `unsupportedFeatures` ("Update Glint to open it") rather than opening it with
   redactions that no longer follow their content. Tracks round-trip whole (keyframes, uncertain intervals and their
   resolutions, analysed range, frame bounds), so a reopened recording keeps its per-frame rect, flagged intervals and
@@ -457,6 +457,12 @@ public enum ProjectStore {
   A track that is merely invalid (no keyframes, overlapping intervals, missing frame bounds) still opens, covers the
   whole frame and blocks export until its redaction is deleted or trimmed away. `write` refuses a `project.json` over
   `Limits.projectBytes` (64 MiB) with `writeFailed`, so a project that saves also reopens.
+- **Presentation:** `RecordingProjectState.presentation` defaults to `Presentation()` when omitted, including in
+  older projects. It stores pointer samples, click events, removed click IDs, cursor styling and all zoom segments
+  in `project.json`, and restores them before the editor's preview and export subscriptions start.
+  `ProjectFeatures.presentation` (`"presentation"`, never renamed) is required whenever this value differs from
+  `Presentation()`, even for disabled effects or an inert capture: older builds must not silently discard editable
+  data. Projects with neither presentation data nor tracked redactions require no features.
 - `write` encodes into a staging folder next to `url` and swaps it in with one replace, so a failure leaves any
   existing project untouched. Image backgrounds and watermarks are re-encoded into `assets/` (the user's file paths are
   never stored); a desktop-wallpaper background stores only the setting. Recordings are copied in, never moved.

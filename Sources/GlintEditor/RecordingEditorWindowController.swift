@@ -77,7 +77,7 @@ public final class RecordingEditorWindowController: NSWindowController, NSWindow
          preferences: AppPreferences = AppPreferences(), presetStore: PresetStore = PresetStore(),
          project: RecordingProjectState? = nil, projectName: String? = nil, placeholder: CGImage? = nil) {
         self.services = services
-        model = RecordingEditorModel(recording: recording, services: services)
+        model = RecordingEditorModel(recording: recording, services: services, presentation: project?.presentation)
         if let project {
             model.trim = project.trim
             model.options = project.options

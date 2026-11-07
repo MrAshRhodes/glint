@@ -151,6 +151,68 @@ struct ProjectStoreTests {
         #expect(FileManager.default.fileExists(atPath: clip.path), "Saving copies the clip; it never moves it")
     }
 
+    @Test func recordingProjectsKeepAllPresentationDataAndRequireItsFeature() throws {
+        let s = try ProjectScratch(); defer { s.cleanUp() }
+        let clip = s.url("temp.mp4")
+        try Data("clip bytes".utf8).write(to: clip)
+        let left = ClickEvent(time: 0.6, position: CGPoint(x: 40, y: 30))
+        let right = ClickEvent(time: 1.2, position: CGPoint(x: 80, y: 40), button: .right)
+        let presentation = Presentation(
+            capture: PresentationCapture(
+                pointer: PointerTrack(samples: [PointerSample(time: 0, position: CGPoint(x: 20, y: 20)),
+                                                PointerSample(time: 2, position: CGPoint(x: 100, y: 50))]),
+                clicks: [left, right], pointerIsBaked: false, pointerScale: 2),
+            settings: PresentationSettings(
+                clicks: ClickHighlightStyle(enabled: true, leftColor: .black, rightColor: .white,
+                                            size: 60, duration: 1, removed: [right.id]),
+                cursor: CursorEmphasis(scale: 2, hidden: true, halo: true, spotlight: true, radius: 80),
+                zooms: [ZoomSegment(start: 0.5, end: 1.5, rect: CGRect(x: 40, y: 20, width: 60, height: 40), ease: 0.2)]))
+        let state = RecordingProjectState(settings: .default, annotations: [], trim: RecordingTrim(sourceDuration: 2),
+                                          options: RecordingExportOptions(), duration: 2,
+                                          pixelSize: CGSize(width: 160, height: 90), presentation: presentation)
+        let url = s.url("Presentation.glint")
+        try ProjectStore.write(GlintProject(state: .recording(state), source: .video(clip)), to: url)
+        let opened = try s.read(url)
+        defer { opened.discardSnapshot() }
+        #expect(opened.state == .recording(state))
+        let manifest = try JSONDecoder().decode(ProjectManifest.self,
+            from: Data(contentsOf: url.appendingPathComponent(ProjectStore.Member.manifest)))
+        #expect(ProjectFeatures.presentation == "presentation")
+        #expect(ProjectFeatures.supported.contains(ProjectFeatures.presentation))
+        #expect(manifest.requiredFeatures == ["presentation"])
+        #expect(throws: ProjectFormatError.unsupportedFeatures(["presentation"])) {
+            try manifest.validate(supportedFeatures: [ProjectFeatures.redactionTracks])
+        }
+        #expect(throws: Never.self) { try manifest.validate() }
+
+        let again = s.url("Again.glint")
+        try ProjectStore.write(opened, to: again)
+        let reopened = try s.read(again)
+        defer { reopened.discardSnapshot() }
+        #expect(reopened.state == opened.state)
+    }
+
+    @Test func legacyProjectsStayInertButEvenInactivePresentationEditsArePreserved() throws {
+        var state = RecordingProjectState(settings: .default, annotations: [], trim: RecordingTrim(sourceDuration: 2),
+                                          options: RecordingExportOptions(), duration: 2,
+                                          pixelSize: CGSize(width: 160, height: 90))
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        json.removeValue(forKey: "presentation")
+        let legacy = try JSONDecoder().decode(RecordingProjectState.self,
+                                              from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.presentation == Presentation())
+        #expect(ProjectFeatures.required(by: .recording(legacy)).isEmpty)
+
+        state.presentation.capture = PresentationCapture(pointer: PointerTrack(), clicks: [])
+        #expect(state.presentation.isInert)
+        #expect(ProjectFeatures.required(by: .recording(state)) == ["presentation"],
+                "Even disabled recorded data must remain editable after reopening")
+        state.presentation = Presentation(settings: PresentationSettings(clicks: ClickHighlightStyle(size: 60)))
+        #expect(state.presentation.isInert)
+        #expect(ProjectFeatures.required(by: .recording(state)) == ["presentation"],
+                "Disabled effects still have settings to preserve")
+    }
+
     @Test func savingOverAProjectReplacesItInOneStep() throws {
         let s = try ProjectScratch(); defer { s.cleanUp() }
         let url = s.url("Steps.glint")

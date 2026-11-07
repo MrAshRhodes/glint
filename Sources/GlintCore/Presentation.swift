@@ -111,8 +111,8 @@ public struct ClickEvent: Codable, Equatable, Hashable, Identifiable, Sendable {
     }
 }
 
-/// What Glint recorded about the pointer alongside a video. It stays in memory with the recording and is
-/// discarded when the editor closes; nothing is written next to the clip.
+/// What Glint recorded about the pointer alongside a video. It stays in memory unless explicitly saved in
+/// an editable project; nothing is written next to an exported clip.
 public struct PresentationCapture: Codable, Equatable, Sendable {
     public var pointer: PointerTrack
     public var clicks: [ClickEvent]

@@ -229,6 +229,39 @@ struct PresentationRenderingTests {
         }
     }
 
+    @Test func trackedRedactionsKeepCoveringMovingContentWhileZooming() throws {
+        func secret(at time: Double) -> CGRect {
+            CGRect(x: 60 + time * 20, y: 40, width: 16, height: 10)
+        }
+        let track = RedactionTrack(
+            keyframes: [RedactionKeyframe(time: 0, rect: secret(at: 0), source: .manual),
+                        RedactionKeyframe(time: 2, rect: secret(at: 2), source: .manual)],
+            analyzedRange: AnnotationTiming(start: 0, end: 2), frameBounds: CGRect(x: 0, y: 0, width: 160, height: 90))
+        let annotation = Annotation(kind: .redact(secret(at: 0)), style: AnnotationStyle(color: .black), track: track)
+        let presentation = Presentation(settings: PresentationSettings(
+            zooms: [ZoomSegment(start: 0, end: 2, rect: CGRect(x: 40, y: 22.5, width: 80, height: 45))]))
+        for time in [0.0, 0.2, 0.8, 1.0, 1.8, 2.0] {
+            let ctx = try #require(GlintBitmap.makeContext(width: 160, height: 90))
+            ctx.setFillColor(RGBAColor.white.cgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: 160, height: 90))
+            ctx.setFillColor(red.cgColor)
+            ctx.fill(secret(at: time))
+            let image = try #require(ctx.makeImage())
+            for effects in [Presentation(), presentation] {
+                let result = try Compositor.render(image: image, settings: settings, annotations: [annotation],
+                                                   annotationTime: time, presentation: effects)
+                let pixels = try #require(PixelBuffer(result))
+                let leaked = (0..<result.height).contains { y in
+                    (0..<result.width).contains { x in
+                        let pixel = pixels.pixel(x, y)
+                        return pixel.0 > 120 && pixel.1 < 90 && pixel.2 < 90
+                    }
+                }
+                #expect(!leaked, "Moving content must stay covered before and during zoom at \(time)")
+            }
+        }
+    }
+
     @Test func editablePointerIsDrawnEnlargedOrHidden() throws {
         let image = TestImages.solid(160, 90, .white)
         var presentation = Presentation(capture: capture(pointer: CGPoint(x: 40, y: 20), baked: false))

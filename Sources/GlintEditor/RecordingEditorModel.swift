@@ -80,17 +80,21 @@ final class RecordingEditorModel: ObservableObject {
     private var preparationRevision = 0
     private var preparedCompletion: ((URL) -> Void)?
 
-    init(recording: RecordedVideo, services: RecordingEditorServices = RecordingEditorServices()) {
+    init(recording: RecordedVideo, services: RecordingEditorServices = RecordingEditorServices(),
+         presentation restoredPresentation: Presentation? = nil) {
         self.recording = recording
         self.services = services
-        presentation = RecordingPresentationModel(capture: recording.presentation, frameSize: recording.pixelSize)
+        let restored = restoredPresentation ?? Presentation(capture: recording.presentation)
+        presentation = RecordingPresentationModel(capture: restored.capture, frameSize: recording.pixelSize,
+                                                  settings: restored.settings)
         trim = RecordingTrim(sourceDuration: recording.duration)
     }
 
     /// The editable state to save in a project, with the editor's current look and annotations.
     func projectState(settings: RenderSettings, annotations: [Annotation]) -> RecordingProjectState {
         RecordingProjectState(settings: settings, annotations: annotations, trim: trim, options: options,
-                              duration: recording.duration, pixelSize: recording.pixelSize)
+                              duration: recording.duration, pixelSize: recording.pixelSize,
+                              presentation: presentation.presentation)
     }
 
     // MARK: Derived state
