@@ -203,20 +203,19 @@ struct TrackedRedactionEditorTests {
         #expect(tracking.message == "Tracking cancelled.")
     }
 
-    @Test func cancellingTrackingStopsTheTracker() async throws {
+    /// The fake tracker runs until it is cancelled, so the test can't pass by the tracker simply finishing first.
+    @Test(.timeLimit(.minutes(1))) func cancellingTrackingStopsTheTracker() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let editor = recordingEditor(f)
         let annotation = Annotation(kind: .redact(CGRect(x: 10, y: 10, width: 20, height: 20)))
         editor.setAnnotations([annotation], actionName: nil)
         let state = WorkerState()
-        let late = Self.halfTracked().track!
         let tracking = RedactionTrackingModel(url: URL(fileURLWithPath: "/nonexistent.mp4")) { _, _ in
             state.set(running: true)
             defer { state.set(running: false, stopped: true) }
             while true {
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: 10_000_000)
-                if state.iterations > 1_000 { return late }
             }
         }
         tracking.track(annotation.id, editor: editor, sourceDuration: 2)
@@ -255,7 +254,7 @@ private final class RequestLog: @unchecked Sendable {
 
 private final class WorkerState: @unchecked Sendable {
     private let lock = NSLock()
-    private var isRunning = false, isStopped = false, count = 0
+    private var isRunning = false, isStopped = false
 
     func set(running: Bool, stopped: Bool = false) {
         lock.lock(); defer { lock.unlock() }
@@ -265,6 +264,4 @@ private final class WorkerState: @unchecked Sendable {
 
     var running: Bool { lock.lock(); defer { lock.unlock() }; return isRunning }
     var stopped: Bool { lock.lock(); defer { lock.unlock() }; return isStopped }
-    /// Counts each poll, so a worker that is never cancelled still finishes eventually.
-    var iterations: Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
 }
