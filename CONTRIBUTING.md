@@ -170,7 +170,7 @@ Glint (executable) ──► GlintCapture ──► GlintCore
         └────────────► GlintCore
 ```
 
-- **GlintCore** is the foundation and has no dependency on the other targets. It holds the document model, the renderer that composites a screenshot onto a background, auto-balance, OCR and redaction, export, and presets. It stays free of windows and views so that it can be unit tested; Foundation, CoreGraphics, CoreImage and Vision are all fine here.
+- **GlintCore** is the foundation and has no dependency on the other targets. It holds the document model, the renderer that composites a screenshot onto a background, auto-balance, OCR and redaction, export, and presets. It stays free of windows and views so that it can be unit tested; Foundation, CoreGraphics, CoreImage, Accelerate and Vision are all fine here.
 - **GlintCapture** turns "the user wants a screenshot" into an image: ScreenCaptureKit, the selection overlay, the window picker and the global hotkeys.
 - **GlintEditor** is the annotation editor: the canvas, the tools and the inspector sidebar.
 - **Glint** is the app shell. It owns the menu bar item, preferences, the quick-access overlay, the `glint://` URL scheme and in-app updates, and wires the other targets together. `Updates.swift` holds `UpdateController`, which decides whether this copy can update itself (a direct install with a valid feed and key), is managed by Homebrew, or can't update, and which owns the "Check for Updates…" action and the opt-in schedule. `SparkleUpdateEngine.swift` is the only file that talks to Sparkle; tests replace it with a fake `UpdateEngine`. `UpdatesSection.swift` is the Preferences → About view, and the pure policy (frequencies, Homebrew receipt checks, feed and key validation) lives in `GlintCore/UpdatePolicy.swift`.
@@ -235,6 +235,12 @@ After `make test` and `make app`, point Preferences → Output → History folde
 4. **Other settings.** With **Save styled output** on, the kept image is the file already saved, not a second one. `Raw/`, files saved with Save or Save As, and files that were already in `Output/` are never changed.
 5. **Cleanup.** Choose **1 day**. With Glint quit, set the `date` (seconds since 1970) of two kept images in the scratch `.glint-output-index.json` to more than a day ago, `touch` one of them, and add a symlink, a pre-existing image, a Raw image and a manual save, then relaunch. Shortly after launch only the untouched back-dated image moves to the Trash. The `touch`ed image stays and is no longer tracked, the other files stay, a file being dragged is skipped, and nothing is removed the instant the picker changes. Choosing **Forever** again removes nothing else.
 6. **History off.** Turn **Keep history** off: the toggle is dimmed with an explanation, nothing new is kept or removed, and Glint never turns history back on. Turning it on again resumes keeping and cleanup.
+
+## Scrolling capture
+
+Frame matching lives in `GlintCore/ScrollStitcher.swift` and the grab timing in `ScrollCapturePolicy.swift`, so both are unit tested with synthetic images (sticky headers, repeating stripes, an animated band, undo and the height limit). `GlintCapture/ScrollCaptureSession.swift` drives them from an injected frame source, clock and presenter; tests use fakes and never touch the screen. Nothing is written to disk until the result reaches the editor.
+
+Before a release, after `make app`, check by hand: start with ⌃⌥⌘8 and scroll a long web page with a sticky header (the header appears once); scroll back up and use **Undo** and **Retry**; cancel with Esc and confirm nothing opens; finish with the shortcut and confirm the editor opens at Fit Width with Fit, Fit Width and 100% zoom working; Capture Text on the result reads the bottom of the page; and a very long page stops at the height limit with a warning.
 
 ## Product site
 

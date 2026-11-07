@@ -473,6 +473,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             case "a": model.selectAll()
             case "]": model.reorder(.forward)
             case "[": model.reorder(.backward)
+            case "0", "8", "9": model.canvasZoom = CanvasZoom(shortcutKey: key) ?? .fit
             default: return false
             }
             return true

@@ -58,6 +58,9 @@ inset band → window frame → rounded card + two-layer shadow → background �
 `RenderLayout.screenRect` is the content plus its inset band; the frame's insets surround it inside `cardRect`,
 so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
 deterministically by the compositor, so the editor preview and exports show the same frame.
+Aspect-ratio fitting never grows a canvas beyond the larger of its own area and an internal area budget
+(16,384 × 8,192 px), so a very tall scrolling capture with a wide aspect ratio keeps its natural size. The budget
+is judged at an output scale of 1, so reduced previews and 1x/2x exports make the same choice.
 Canvas expansion: only magnifier (`.magnify`) insets can enlarge the canvas. When an inset (with its outline,
 connector, border and shadow) reaches beyond the base region (the auto-balance crop or the full image), the
 baked content grows to include it; the auto-balance fill applies only inside the base region and the rest is
@@ -147,6 +150,8 @@ are local to the editor session; automatic redaction remains plain opaque Solid.
 ## OCR / redaction
 - `TextRecognizer.recognize(in:) async throws -> [RecognizedLine]` (`text`, `box`, `words`, `confidence`,
   `rect(for: Range<String.Index>)`).
+  Images taller than 4,096 px are read in 4,096 px bands with a 256 px overlap; boxes are mapped back to the
+  full image and lines repeated in an overlap are removed, so OCR and auto-redaction cover tall scrolling captures.
 - `SensitiveCategory` (`email, phone, creditCard, ipAddress, apiKey, ssn, url, macAddress, custom`),
   `SensitiveInfoOptions(categories:, customWords:, caseSensitive:)` (+ `.default`, `.all`),
   `SensitiveInfoDetector(options:).matches(in: String) -> [SensitiveMatch]`,
@@ -335,6 +340,25 @@ public enum RecordingExporter {
   MP4 as a file URL only. Copies are kept for `retention` (24 h); each copy first runs
   `pruneExpired(in:now:retention:)`.
 
+## Scrolling capture (`ScrollStitcher.swift`, `ScrollCapturePolicy.swift`)
+- `ScrollStitchLimits(maxHeight: 16_384, maxPixels: 64_000_000, warningFraction: 0.9, maxUndoBytes: 16_000_000)`,
+  `maxRows(width:)`. `maxUndoBytes` bounds the memory kept only for undo (earlier footers are stored only when
+  they changed); past it the oldest steps can no longer be undone but stay in the image.
+- `ScrollStitcher(limits:)` stitches same-size frames of a region scrolled downwards: `add(_ image:) ->
+  ScrollStitchStep` (`addedRows`, `warning: ScrollStitchWarning?`), `undoLast() -> Bool`, `makeImage() -> CGImage?`,
+  `thumbnail(maxWidth:maxHeight:)`, `height`, `width`, `frameHeight`, `frameCount`, `canUndo`, `undoableSteps`,
+  `isEmpty`,
+  `progress`, `isNearLimit`, `isAtLimit`, `sticky` (detected header/footer rows). Matching is pixel-based on the
+  first frame size. Rows that stay fixed between the first two moving frames are treated as a sticky header and
+  footer and appear once, at the top and bottom of the result. A frame that is rejected leaves the image unchanged.
+- `ScrollStitchWarning`: `lowConfidence(rows:)` (frame added; rows of the result that differed, e.g. animation),
+  `ambiguousRepeat`, `noMovement`, `scrolledBack`, `tooFast`, `sizeChanged`, `heightLimit`; `message` and
+  `pausesCapture` (every warning except `noMovement`).
+- `ScrollSignature(image:columns:)` is a small luma fingerprint of a frame, with `difference(from:)` and
+  `shift(from:)` (estimated downward scroll in signature rows). `ScrollGrabPolicy(settleInterval:grabFraction:
+  changeThreshold:)` decides when to grab: `shouldGrab(_:at:reference:)`, `reset()`. Grabs happen once the
+  content has settled or has moved half a frame since the last grab.
+
 ## Preferences
 `AppPreferences(defaults:)` (`.shared`), typed properties for folders, `saveHistory`, `saveRaw`, `saveOutput`,
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
@@ -351,4 +375,4 @@ The `AppPreferences.redactStyle` property has been removed. The legacy `glint.re
 by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`
 (`captureArea` ⌃⌥⌘4, `captureAreaToClipboard` ⌃⌥⌘5, `captureWindow` ⌃⌥⌘6, `captureFullscreen` ⌃⌥⌘3,
-`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9); `HotkeyAction.defaultCombo`.
+`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9, `captureScrolling` ⌃⌥⌘8); `HotkeyAction.defaultCombo`.

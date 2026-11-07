@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 
 public enum CaptureKind: String, Sendable, Codable {
-    case area, window, fullscreen, lastArea, textOnly
+    case area, window, fullscreen, lastArea, textOnly, scrolling
 }
 
 /// Modes usable with a countdown timer.
@@ -21,6 +21,16 @@ public struct CaptureResult {
     public let windowInfo: WindowInfo?
 
     public var pixelSize: CGSize { CGSize(width: image.width, height: image.height) }
+
+    public init(image: CGImage, scale: CGFloat, displayID: CGDirectDisplayID, rect: CGRect, kind: CaptureKind,
+                windowInfo: WindowInfo?) {
+        self.image = image
+        self.scale = scale
+        self.displayID = displayID
+        self.rect = rect
+        self.kind = kind
+        self.windowInfo = windowInfo
+    }
 }
 
 public struct CaptureOptions: Sendable {

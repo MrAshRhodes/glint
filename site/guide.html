@@ -42,7 +42,7 @@
     <header class="guide-hero wrap"><span class="kicker">Glint / The field guide</span><h1>From first capture<br>to final file.</h1><p>Installation, updates and all the useful details in between. Keep this page close; the rest happens on your Mac.</p></header>
     <div class="guide wrap">
       <nav class="toc" aria-label="On this page"><h2>On this page</h2><ol>
-        <li><a href="#install">Install</a></li><li><a href="#updates">Update Glint</a></li><li><a href="#permissions">Permissions</a></li><li><a href="#capture">Capture</a></li><li><a href="#recording">Record your screen</a></li><li><a href="#editor">Style your image</a></li><li><a href="#annotations">Annotations</a></li><li><a href="#redaction">Redaction &amp; privacy</a></li><li><a href="#presets">Presets</a></li><li><a href="#export">Export &amp; folders</a></li><li><a href="#preferences">Preferences</a></li><li><a href="#automation">Automation</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#source">Build from source</a></li>
+        <li><a href="#install">Install</a></li><li><a href="#updates">Update Glint</a></li><li><a href="#permissions">Permissions</a></li><li><a href="#capture">Capture</a></li><li><a href="#scrolling-capture">Scrolling capture</a></li><li><a href="#recording">Record your screen</a></li><li><a href="#editor">Style your image</a></li><li><a href="#annotations">Annotations</a></li><li><a href="#redaction">Redaction &amp; privacy</a></li><li><a href="#presets">Presets</a></li><li><a href="#export">Export &amp; folders</a></li><li><a href="#preferences">Preferences</a></li><li><a href="#automation">Automation</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#source">Build from source</a></li>
       </ol></nav>
       <article class="prose" aria-label="Glint user guide">
         <section id="install">
@@ -101,7 +101,7 @@
           <p>Use the menu bar icon to capture an area, a window or the full screen. <strong>Capture with Timer</strong> gives you 3, 5 or 10 seconds to get ready. <strong>Repeat Last Area</strong> captures the same region again.</p>
           <p>Default shortcuts use Control + Option + Command:</p>
           <table><caption class="visually-hidden">Default capture shortcuts</caption><thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th></tr></thead><tbody>
-            <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr><tr><td><kbd>⌃⌥⌘ 9</kbd></td><td>Record screen (start, stop)</td></tr>
+            <tr><td><kbd>⌃⌥⌘ 4</kbd></td><td>Area, open in editor</td></tr><tr><td><kbd>⌃⌥⌘ 5</kbd></td><td>Area, copy to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ 6</kbd></td><td>Window</td></tr><tr><td><kbd>⌃⌥⌘ 3</kbd></td><td>Full screen</td></tr><tr><td><kbd>⌃⌥⌘ 7</kbd></td><td>Text recognition (OCR) to clipboard</td></tr><tr><td><kbd>⌃⌥⌘ R</kbd></td><td>Repeat last area</td></tr><tr><td><kbd>⌃⌥⌘ 9</kbd></td><td>Record screen (start, stop)</td></tr><tr><td><kbd>⌃⌥⌘ 8</kbd></td><td>Scrolling capture (start, finish)</td></tr>
           </tbody></table>
           <p>Cancel a selection with <kbd>Esc</kbd>. Change the shortcuts in Preferences if another app uses the same combination. To record a video clip instead of a still image, see <a href="#recording">Record your screen</a>.</p>
           <h3 id="capturing-menus">Capture open menus and pop-ups</h3>
@@ -112,6 +112,14 @@
           <p>While selecting an area, the anchor and moving corner can align to nearby visible window bounds or display edges. Guides show the active alignment, and the captured rectangle is the one shown in the preview. This also applies to area-to-clipboard, Capture Text and timed area selection. The selection stays on the display where the drag began.</p>
           <p>Hold <kbd>⌘</kbd> to temporarily invert the setting: with snapping off, hold to snap; with it on, hold for free selection. Releasing the key restores the saved setting, even without moving the mouse. The overlay hint shows the current state. <kbd>Shift</kbd>-drag still makes a square; <kbd>Shift</kbd>-arrow still nudges by 10 points. <kbd>Space</kbd> switches area/window mode, <kbd>Return</kbd> confirms, and <kbd>Esc</kbd> or right-click cancels.</p>
           <p>Targets are sampled when the overlay opens. Restart selection if another window moves. Snapping uses rectangular window bounds, not shadows, rounded contours, controls, cards or images inside a window. Arbitrary visual-content detection is not enabled, and snapping does not take an extra screen image or request Accessibility permission.</p>
+        </section>
+        <section id="scrolling-capture">
+          <h2>Scrolling capture</h2>
+          <p>Capture a page, list or document that is taller than its window as one image. Choose <strong>Scrolling Capture</strong> from the menu bar icon or press <kbd>⌃⌥⌘ 8</kbd>, then select the area that scrolls. Leave out scroll bars and anything that changes on its own, such as videos or animated banners.</p>
+          <p>Scroll down at a steady pace with the trackpad, mouse wheel or keyboard. Glint grabs a frame each time the content settles and stitches it onto the image. A floating panel beside the area shows a live preview and the current height. Finish with <strong>Done</strong> or by pressing <kbd>⌃⌥⌘ 8</kbd> again; <strong>Scrolling Capture</strong> in the menu changes to <strong>Finish Scrolling Capture</strong> while one is in progress. Press <kbd>Esc</kbd> or <strong>Cancel</strong> to discard it. Nothing is saved until the result opens in the editor.</p>
+          <p>Headers and footers that stay in place while you scroll appear once, at the top and bottom of the result. Glint pauses and explains why when it cannot place a frame confidently: the content repeats, scrolled back up, jumped too far, changed size, or matched only approximately. While paused, choose <strong>Resume</strong> (<kbd>Return</kbd> finishes with <strong>Done</strong>), <strong>Undo</strong> (<kbd>⌘Z</kbd>) or <strong>Retry</strong> (<kbd>⌘R</kbd>), which removes the last step and grabs again. Undo steps back through recent steps; on a very long capture whose footer keeps changing, the oldest steps stay in the image once Glint stops keeping their undo history. An approximate join is marked in the preview so you can check it.</p>
+          <p>A capture stops at 16,384 pixels high or 64 megapixels, whichever comes first; Glint warns as you approach the limit. The result opens in the editor like any screenshot, and Capture Text and auto-redaction read its full height. Use the zoom menu in the bottom bar, or <kbd>⌘9</kbd> (Fit), <kbd>⌘8</kbd> (Fit Width) and <kbd>⌘0</kbd> (100%), to inspect it; very tall images open at Fit Width so you can scroll through them.</p>
+          <p>Glint only compares pictures of the screen, so it cannot scroll for you or capture content that is not drawn. Fast scrolling, smooth-scroll animations and content that changes while you scroll can cause pauses; scroll more slowly and use <strong>Retry</strong>.</p>
         </section>
         <section id="recording">
           <h2>Record your screen</h2>
@@ -263,6 +271,7 @@
 glint://capture-window
 glint://capture-fullscreen
 glint://capture-text
+glint://capture-scrolling
 glint://repeat-last
 glint://preferences
 glint://preset?name=Clean

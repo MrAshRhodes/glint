@@ -1,4 +1,5 @@
 import AppKit
+import GlintCapture
 @testable import GlintCore
 import Testing
 @testable import Glint
@@ -33,6 +34,7 @@ private final class CaptureFixture {
     var renderedImages: [CGImage] = []
     var retryRequests: [(title: String, message: String)] = []
     var retry: () -> Bool = { false }
+    var scrolling: (any ScrollingCapture)?
 
     init() throws {
         directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -90,6 +92,7 @@ private final class CaptureFixture {
         }
         services.addRecent = { [self] in recent.append($0) }
         services.sound = { [self] in sounds += 1 }
+        if let scrolling { services.makeScrollingCapture = { scrolling } }
         return CapturePipeline(prefs: preferences, presetStore: presets, services: services)
     }
 
@@ -102,6 +105,36 @@ private final class CaptureFixture {
         retry = { false }
         preferences.defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+/// Stands in for a scrolling capture: it runs until it is finished or cancelled.
+@MainActor
+private final class FakeScrollingCapture: ScrollingCapture {
+    let result: CaptureResult
+    private(set) var finishes = 0
+    private(set) var isRunning = false
+    private var continuation: CheckedContinuation<CaptureResult, Error>?
+
+    init(image: CGImage) {
+        result = CaptureResult(image: image, scale: 2, displayID: 1, rect: CGRect(x: 0, y: 0, width: 50, height: 400),
+                               kind: .scrolling, windowInfo: nil)
+    }
+
+    func run() async throws -> CaptureResult {
+        isRunning = true
+        return try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func finish() {
+        finishes += 1
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+
+    func cancel() {
+        continuation?.resume(throwing: CaptureError.cancelled)
+        continuation = nil
     }
 }
 
@@ -471,5 +504,56 @@ struct CapturePipelineTests {
         #expect(f.retryRequests.count == 100 && f.renderedImages.count == 100)
         #expect(f.renderedImages.allSatisfy { $0 === f.image })
         #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty && f.sounds == 1)
+    }
+}
+
+@Suite("Scrolling capture in the pipeline")
+@MainActor
+struct ScrollingCapturePipelineTests {
+    private func tallImage(height: Int) throws -> CGImage {
+        let context = try #require(GlintBitmap.makeContext(width: 50, height: height))
+        context.setFillColor(RGBAColor.white.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 50, height: height))
+        return try #require(context.makeImage())
+    }
+
+    @Test func secondPressFinishesAndTheWholeImageIsRedacted() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.hideWindowsDuringCapture = false
+        f.preferences.autoRedact = true
+        let capture = FakeScrollingCapture(image: try tallImage(height: 9000))
+        f.scrolling = capture
+        let pipeline = f.pipeline()
+
+        let task = try #require(pipeline.start(.scrolling))
+        for _ in 0..<100 where !capture.isRunning { await Task.yield() }
+        #expect(pipeline.isScrollingCaptureActive)
+        #expect(pipeline.isBusy)
+        // Another capture can't start meanwhile; the scrolling shortcut finishes instead.
+        #expect(pipeline.start(.area) == nil)
+        #expect(pipeline.start(.scrolling) == nil)
+        #expect(capture.finishes == 1)
+        await task.value
+
+        #expect(!pipeline.isScrollingCaptureActive && !pipeline.isBusy)
+        // Recognition sees the full height, so redaction covers text far below the first screen.
+        #expect(f.recognizedImages.map(\.height) == [9000])
+        #expect(f.renderedImages.map(\.height) == [9000])
+        #expect(f.copies + f.writes.count > 0)
+    }
+
+    @Test func cancellingLeavesNothingBehind() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.hideWindowsDuringCapture = false
+        let capture = FakeScrollingCapture(image: f.image)
+        f.scrolling = capture
+        let pipeline = f.pipeline()
+
+        let task = try #require(pipeline.start(.scrolling))
+        for _ in 0..<100 where !capture.isRunning { await Task.yield() }
+        capture.cancel()
+        await task.value
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
     }
 }

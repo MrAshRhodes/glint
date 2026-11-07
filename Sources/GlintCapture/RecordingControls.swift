@@ -4,7 +4,7 @@ import GlintCore
 /// Every window of the recording UI is non-activating (the app being recorded keeps focus) and excluded from
 /// screen capture, so none of it reaches the video; `ScreenRecorder` also leaves out the whole app.
 @MainActor
-private func configureOverlayPanel(_ panel: NSPanel, levelOffset: Int) {
+func configureOverlayPanel(_ panel: NSPanel, levelOffset: Int) {
     panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + levelOffset)
     panel.sharingType = .none
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]

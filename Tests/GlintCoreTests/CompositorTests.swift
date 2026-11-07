@@ -38,6 +38,41 @@ struct CompositorTests {
         #expect(r.image.width == 159 + 70 && r.image.height == 59 + 70)
     }
 
+    @Test func aspectRatioIsDroppedWhenItWouldExceedTheAreaBudget() {
+        var s = settings()
+        s.aspectRatio = .r16x9
+        let tall = Compositor.layout(contentSize: CGSize(width: 1200, height: 16_000), insetApplied: true,
+                                     settings: s, backingScale: 1)
+        #expect(tall.canvasSize == CGSize(width: 1270, height: 16_070))
+        let normal = Compositor.layout(contentSize: CGSize(width: 1200, height: 1600), insetApplied: true,
+                                       settings: s, backingScale: 1)
+        #expect(abs(normal.canvasSize.width / normal.canvasSize.height - 16.0 / 9) < 0.01)
+    }
+
+    @Test func aspectRatioBudgetIsTheSameForPreviewAndExport() {
+        var s = settings()
+        s.padding = 0
+        s.inset = 0
+        s.aspectRatio = .r16x9
+        func canvas(_ scale: Double) -> CGSize {
+            s.outputScale = scale
+            return Compositor.layout(contentSize: CGSize(width: 2000, height: 16_000), insetApplied: false,
+                                     settings: s, backingScale: 1).canvasSize
+        }
+        #expect(canvas(1) == CGSize(width: 2000, height: 16_000))
+        #expect(canvas(0.25) == CGSize(width: 500, height: 4000))
+        #expect(canvas(2) == CGSize(width: 4000, height: 32_000))
+        // Within the budget the ratio applies at every scale.
+        func ratio(_ scale: Double, height: CGFloat) -> CGFloat {
+            s.outputScale = scale
+            let size = Compositor.layout(contentSize: CGSize(width: 2000, height: height), insetApplied: false,
+                                         settings: s, backingScale: 1).canvasSize
+            return size.width / size.height
+        }
+        #expect(abs(ratio(0.25, height: 4000) - 16.0 / 9) < 0.01)
+        #expect(abs(ratio(1, height: 4000) - 16.0 / 9) < 0.01)
+    }
+
     @Test func aspectRatioFitting() throws {
         var s = settings()
         s.aspectRatio = .r16x9

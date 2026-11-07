@@ -36,6 +36,7 @@ final class CapturePipeline {
             $0.showEditor()
         }
         var screenScale: @MainActor () -> CGFloat = { NSScreen.main?.backingScaleFactor ?? 2 }
+        var makeScrollingCapture: @MainActor () -> any ScrollingCapture = { ScreenCapturer.shared.scrollingSession() }
     }
 
     let prefs: AppPreferences
@@ -46,6 +47,8 @@ final class CapturePipeline {
     private let services: Services
     private var editors: [EditorWindowController] = []
     private var busy = false
+    /// The scrolling capture in progress; pressing its shortcut again finishes it.
+    private var activeScroll: (any ScrollingCapture)?
     private var reportedCleanupFailures: Set<String> = []
     private lazy var quickAccess = QuickAccessPanel()
     var onStatusTitle: ((String?) -> Void)?
@@ -54,6 +57,7 @@ final class CapturePipeline {
     private var availabilityRequest = UUID()
 
     var isBusy: Bool { busy || isRecordingActive() }
+    var isScrollingCaptureActive: Bool { activeScroll != nil }
 
     /// Set by the app shell so screenshots never start while a screen recording is in progress.
     var isRecordingActive: () -> Bool = { false }
@@ -65,12 +69,18 @@ final class CapturePipeline {
         retention = services.retention(prefs)
     }
 
-    enum Mode: Equatable { case area, window, fullscreen, repeatLast, text, areaToClipboard, timer(Int) }
+    enum Mode: Equatable { case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int) }
 
     // MARK: capture entry
 
-    func start(_ mode: Mode) {
-        guard !isBusy else { return }
+    /// Starts a capture. While a scrolling capture runs, starting another one finishes it instead.
+    @discardableResult
+    func start(_ mode: Mode) -> Task<Void, Never>? {
+        if mode == .scrolling, let activeScroll {
+            activeScroll.finish()
+            return nil
+        }
+        guard !isBusy else { return nil }
         busy = true
         let capturer = ScreenCapturer.shared
         let defaults = UserDefaults.standard
@@ -80,9 +90,10 @@ final class CapturePipeline {
         if !remember { capturer.lastArea = nil }
         let hidden = prefs.hideWindowsDuringCapture ? hideOwnWindows() : []
 
-        Task { @MainActor in
+        return Task { @MainActor in
             defer {
                 busy = false
+                activeScroll = nil
                 onStatusTitle?(nil)
                 for w in hidden { w.orderFront(nil) }
             }
@@ -91,6 +102,13 @@ final class CapturePipeline {
                 case .text:
                     let image = try await capturer.captureTextOnly()
                     await recognizeText(in: image)
+                case .scrolling:
+                    let session = services.makeScrollingCapture()
+                    activeScroll = session
+                    let result = try await session.run()
+                    activeScroll = nil
+                    for w in hidden { w.orderFront(nil) }
+                    await handle(result, source: String(describing: result.kind))
                 case .area, .window, .fullscreen, .repeatLast, .areaToClipboard, .timer:
                     let result: CaptureResult
                     switch mode {

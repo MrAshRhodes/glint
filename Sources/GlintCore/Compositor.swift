@@ -255,7 +255,13 @@ public enum Compositor {
         let used = localCard.union(localOverflow)
         var W = used.width + 2 * padding, H = used.height + 2 * padding
         if let r = settings.aspectRatio.ratio {
-            if W / H < r { W = (H * r).rounded(.up) } else { H = (W / r).rounded(.up) }
+            var w = W, h = H
+            if w / h < r { w = (h * r).rounded(.up) } else { h = (w / r).rounded(.up) }
+            // A very tall scrolling capture under a wide preset would grow a canvas of hundreds of megapixels;
+            // past the renderer's area budget the preset's ratio is left out rather than exhausting memory. The
+            // budget is judged at an output scale of 1, so reduced previews and scaled exports decide alike.
+            let full = 1 / (outScale * outScale)
+            if w * h * full <= max(maxExpandedArea, W * H * full) { W = w; H = h }
         }
         let dx = floor((W - used.width) / 2) - used.minX, dy = floor((H - used.height) / 2) - used.minY
         let card = localCard.offsetBy(dx: dx, dy: dy)
