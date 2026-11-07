@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-07
+
 ### Added
 
 - Scrolling capture. Choose **Scrolling Capture** from the menu bar icon or press ⌃⌥⌘8, select the scrolling area, then scroll at a steady pace. Glint grabs a frame whenever the content settles, stitches the frames into one tall image and shows a live preview with its height in a floating panel. Press the same shortcut or **Done** to finish, or Esc to cancel. Sticky headers and footers appear once. When Glint is unsure of a match, the content stops moving, scrolls back or jumps too far, it pauses and offers **Resume**, **Undo** or **Retry**; a low-confidence join is marked in the preview. Captures stop at 16,384 pixels high or 64 megapixels. The result opens in the editor like any screenshot, and OCR reads the whole height. Also available as `glint://capture-scrolling`. ([#80])
@@ -237,7 +239,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/MrAshRhodes/glint/compare/v1.5.4...v1.5.5
