@@ -109,9 +109,14 @@ final class RedactionTrackingModel: ObservableObject {
 
     func loadFrameTimes() async {
         guard frameTimes.isEmpty else { return }
-        let url = url
-        let times = await Task.detached(priority: .utility) { (try? await Self.readFrameTimes(url)) ?? [] }.value
-        frameTimes = times
+        do {
+            let times = try await Self.readFrameTimes(url)
+            try Task.checkCancellation()
+            frameTimes = times
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
+            message = "Couldn't load recording frames: \(error.localizedDescription)"
+        }
     }
 
     /// The first frame after `time`, or nil at the end.
@@ -133,20 +138,34 @@ final class RedactionTrackingModel: ObservableObject {
     /// Reads presentation times without decoding frames.
     nonisolated static func readFrameTimes(_ url: URL) async throws -> [TimeInterval] {
         let asset = AVURLAsset(url: url)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return [] }
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw RecordingExportError.sourceUnreadable("it has no video track.")
+        }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { return [] }
-        reader.add(output)
-        guard reader.startReading() else { return [] }
-        defer { reader.cancelReading() }
-        var times: [TimeInterval] = []
-        while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
-            let time = CMSampleBufferGetPresentationTimeStamp(sample)
-            if time.isNumeric, CMSampleBufferGetNumSamples(sample) > 0 { times.append(time.seconds) }
+        guard reader.canAdd(output) else {
+            throw RecordingExportError.sourceUnreadable("couldn't create a frame reader.")
         }
-        return times.sorted()
+        reader.add(output)
+        return try await BlockingWork.run(qos: .utility) { cancellation in
+            try cancellation.check()
+            guard reader.startReading() else {
+                throw RecordingExportError.sourceUnreadable(reader.error?.localizedDescription ?? "couldn't start reading.")
+            }
+            defer { reader.cancelReading() }
+            cancellation.onCancel { reader.cancelReading() }
+            var times: [TimeInterval] = []
+            while let sample = output.copyNextSampleBuffer() {
+                try cancellation.check()
+                let time = CMSampleBufferGetPresentationTimeStamp(sample)
+                if time.isNumeric, CMSampleBufferGetNumSamples(sample) > 0 { times.append(time.seconds) }
+            }
+            try cancellation.check()
+            guard reader.status == .completed else {
+                throw RecordingExportError.sourceUnreadable(reader.error?.localizedDescription ?? "the frame reader stopped.")
+            }
+            return times.sorted()
+        }
     }
 }

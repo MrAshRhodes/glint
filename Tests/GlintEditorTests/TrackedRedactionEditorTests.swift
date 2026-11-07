@@ -226,6 +226,36 @@ struct TrackedRedactionEditorTests {
         #expect(editor.annotations.first?.track == nil)
     }
 
+    @Test func loadsEveryReviewFrameAndReportsReadFailures() async throws {
+        let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
+        let recording = try await fixture.recording(frames: 12, fps: 6)
+        let tracking = RedactionTrackingModel(url: recording.url)
+        await tracking.loadFrameTimes()
+        #expect(tracking.frameTimes.count == 12)
+        #expect(tracking.frameTimes == tracking.frameTimes.sorted())
+        let first = try #require(tracking.frameTimes.first)
+        #expect(tracking.nextFrame(after: first) == tracking.frameTimes.dropFirst().first)
+        #expect(tracking.message == nil)
+
+        let missing = RedactionTrackingModel(url: fixture.directory.appendingPathComponent("missing.mp4"))
+        await missing.loadFrameTimes()
+        #expect(missing.frameTimes.isEmpty)
+        #expect(missing.message?.contains("Couldn't load recording frames") == true)
+    }
+
+    @Test func cancelledFrameLoadingDoesNotPublishTimesOrAnError() async throws {
+        let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
+        let recording = try await fixture.recording()
+        let tracking = RedactionTrackingModel(url: recording.url)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await tracking.loadFrameTimes()
+        }
+        await task.value
+        #expect(tracking.frameTimes.isEmpty)
+        #expect(tracking.message == nil)
+    }
+
     @Test func nextFlaggedWrapsAround() {
         let id = UUID()
         let intervals = [UnresolvedRedactionInterval(annotationID: id, start: 1, end: 2, reason: .uncertainTracking),

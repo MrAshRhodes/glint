@@ -37,8 +37,8 @@ public protocol FrameTracker: AnyObject {
 /// Supplies decoded frames in presentation order.
 public protocol TrackingFrameSource: Sendable {
     /// Calls `body` with every frame shown during `range`, starting with the frame already on screen at
-    /// `range.lowerBound`. Returning false stops reading.
-    func readFrames(in range: ClosedRange<TimeInterval>, _ body: (TrackingFrame) throws -> Bool) async throws
+    /// `range.lowerBound`. Returning false stops reading. Calls are serial and finish before this method returns.
+    func readFrames(in range: ClosedRange<TimeInterval>, _ body: @escaping (TrackingFrame) throws -> Bool) async throws
 }
 
 /// Reads frames from a recording with `AVAssetReader`, oriented like the editor and exporters show them.
@@ -55,7 +55,7 @@ public struct AssetTrackingFrameSource: TrackingFrameSource {
         self.maxDimension = maxDimension
     }
 
-    public func readFrames(in range: ClosedRange<TimeInterval>, _ body: (TrackingFrame) throws -> Bool) async throws {
+    public func readFrames(in range: ClosedRange<TimeInterval>, _ body: @escaping (TrackingFrame) throws -> Bool) async throws {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw RecordingExportError.sourceUnreadable("it has no video track.")
@@ -75,38 +75,45 @@ public struct AssetTrackingFrameSource: TrackingFrameSource {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw RecordingExportError.encodingFailed("couldn't create a video reader") }
         reader.add(output)
-        guard reader.startReading() else {
-            throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "couldn't start reading")
-        }
-        defer { reader.cancelReading() }
-        let context = CIContext(options: [.cacheIntermediates: false])
-        var held: TrackingFrame?
-        var finished = false
-        while !finished {
-            try Task.checkCancellation()
-            let frame: TrackingFrame?? = try autoreleasepool {
-                guard let sample = output.copyNextSampleBuffer() else { return .none }
-                let time = CMSampleBufferGetPresentationTimeStamp(sample)
-                guard time.isNumeric, let buffer = CMSampleBufferGetImageBuffer(sample) else { return .some(nil) }
-                return .some(try Self.lumaFrame(buffer, time: time.seconds, transform: transform,
-                                                maxDimension: maxDimension, context: context))
+        let maxDimension = maxDimension
+        try await BlockingWork.run { cancellation in
+            try cancellation.check()
+            guard reader.startReading() else {
+                throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "couldn't start reading")
             }
-            guard let next = frame else { break }
-            guard let next else { continue }
-            if next.time <= range.lowerBound {
-                held = next
-                continue
+            defer { reader.cancelReading() }
+            cancellation.onCancel { reader.cancelReading() }
+            let context = CIContext(options: [.cacheIntermediates: false])
+            var held: TrackingFrame?
+            var finished = false
+            while !finished {
+                try cancellation.check()
+                let frame: TrackingFrame?? = try autoreleasepool {
+                    guard let sample = output.copyNextSampleBuffer() else { return .none }
+                    let time = CMSampleBufferGetPresentationTimeStamp(sample)
+                    guard time.isNumeric, let buffer = CMSampleBufferGetImageBuffer(sample) else { return .some(nil) }
+                    return .some(try Self.lumaFrame(buffer, time: time.seconds, transform: transform,
+                                                    maxDimension: maxDimension, context: context))
+                }
+                guard let next = frame else { break }
+                guard let next else { continue }
+                if next.time <= range.lowerBound {
+                    held = next
+                    continue
+                }
+                if let pending = held {
+                    held = nil
+                    if try !body(pending) { finished = true; break }
+                }
+                if next.time > range.upperBound { break }
+                if try !body(next) { finished = true }
             }
-            if let pending = held {
-                held = nil
-                if try !body(pending) { finished = true; break }
+            // Cancelling stops the reader early, which must not look like the end of the clip.
+            try cancellation.check()
+            if !finished, let pending = held { _ = try body(pending) }
+            if reader.status == .failed {
+                throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "the reader stopped")
             }
-            if next.time > range.upperBound { break }
-            if try !body(next) { finished = true }
-        }
-        if !finished, let pending = held { _ = try body(pending) }
-        if reader.status == .failed {
-            throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "the reader stopped")
         }
     }
 

@@ -119,15 +119,24 @@ struct TrackedRedactionExportTests {
         ])
         reader.add(output)
         #expect(reader.startReading())
-        let context = CIContext(options: [.cacheIntermediates: false])
-        var frames: [CGImage] = []
-        while let sample = output.copyNextSampleBuffer() {
-            let buffer = try #require(CMSampleBufferGetImageBuffer(sample))
-            let image = CIImage(cvPixelBuffer: buffer)
-            frames.append(try #require(context.createCGImage(image, from: image.extent,
-                                                              format: .RGBA8, colorSpace: ColorSpaces.sRGB)))
+        // Decoding blocks, so keep it off the few threads every other test needs.
+        let (frames, status) = try await BlockingWork.run { _ in
+            let context = CIContext(options: [.cacheIntermediates: false])
+            var frames: [CGImage] = []
+            while let sample = output.copyNextSampleBuffer() {
+                guard let buffer = CMSampleBufferGetImageBuffer(sample) else {
+                    throw RecordingExportError.encodingFailed("a decoded sample has no image buffer")
+                }
+                let image = CIImage(cvPixelBuffer: buffer)
+                guard let frame = context.createCGImage(image, from: image.extent,
+                                                        format: .RGBA8, colorSpace: ColorSpaces.sRGB) else {
+                    throw RecordingExportError.encodingFailed("couldn't convert a decoded frame")
+                }
+                frames.append(frame)
+            }
+            return (frames, reader.status)
         }
-        #expect(reader.status == .completed)
+        #expect(status == .completed)
         return frames
     }
 
@@ -309,7 +318,7 @@ struct ListFrameSource: TrackingFrameSource {
     var leadIn: TimeInterval?
     static let size = CGSize(width: 320, height: 180)
 
-    func readFrames(in range: ClosedRange<TimeInterval>, _ body: (TrackingFrame) throws -> Bool) async throws {
+    func readFrames(in range: ClosedRange<TimeInterval>, _ body: @escaping (TrackingFrame) throws -> Bool) async throws {
         let held = times.last { $0 <= range.lowerBound && range.lowerBound - $0 <= (leadIn ?? .infinity) }
         let later = times.filter { $0 > range.lowerBound && $0 <= range.upperBound }
         for time in (held.map { [$0] } ?? []) + later {
