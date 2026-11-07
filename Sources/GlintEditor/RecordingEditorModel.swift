@@ -59,6 +59,8 @@ final class RecordingEditorModel: ObservableObject {
     @Published var trim: RecordingTrim { didSet { invalidatePreparedFile() } }
     @Published var options = RecordingExportOptions() { didSet { invalidatePreparedFile() } }
     @Published var styledPixelSize: CGSize?
+    /// Tracked-redaction time that still needs review; any of it inside the trim range blocks every export.
+    @Published var unresolvedRedactionIntervals: [UnresolvedRedactionInterval] = []
     /// Called once on the main actor when an export starts, never once per frame.
     var makeFrameRenderer: (() -> RecordingExporter.FrameRenderer)?
     @Published private(set) var exportState = RecordingExportState.idle
@@ -100,7 +102,18 @@ final class RecordingEditorModel: ObservableObject {
         return GIFLimits.issue(duration: trim.duration, options: options.gif)
     }
 
-    var canExport: Bool { !isClosed && !isExporting && sourceProblem == nil && gifLimitIssue == nil }
+    /// Unresolved tracked-redaction intervals that reach the exported range.
+    var blockingRedactionIntervals: [UnresolvedRedactionInterval] {
+        unresolvedRedactionIntervals.filter { $0.intersects(trim.range) }
+    }
+
+    var hasBlockingRedactionIntervals: Bool {
+        RedactionGate.blocksExport(unresolvedRedactionIntervals, range: trim.range)
+    }
+
+    var canExport: Bool {
+        !isClosed && !isExporting && sourceProblem == nil && gifLimitIssue == nil && !hasBlockingRedactionIntervals
+    }
 
     var canRetry: Bool {
         if case .failed = exportState { return lastAction != nil && !isExporting }
@@ -186,6 +199,8 @@ final class RecordingEditorModel: ObservableObject {
     @discardableResult
     func prepareFile(completion: ((URL) -> Void)? = nil) -> URL? {
         guard !isClosed else { return nil }
+        // Checked before the cached file too: a prepared file must not outlive a newly flagged interval.
+        guard !hasBlockingRedactionIntervals else { return nil }
         if let preparedURL {
             completion?(preparedURL)
             return preparedURL

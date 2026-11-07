@@ -21,7 +21,7 @@ extension RecordingExporter {
     }
 
     static func writeStyledMP4(asset: AVAsset, range: ClosedRange<TimeInterval>, to url: URL,
-                               progress: ProgressHandler?, frameRenderer: FrameRenderer) async throws {
+                               progress: ProgressHandler?, frameRenderer: @escaping FrameRenderer) async throws {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw RecordingExportError.sourceUnreadable("it has no video track.")
         }
@@ -66,54 +66,58 @@ extension RecordingExporter {
                 guard reader.startReading() else {
                     throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "couldn't start reading")
                 }
-                var previousTime: CMTime?
-                while true {
-                    try Task.checkCancellation()
-                    while !encoder.isReady {
-                        try Task.checkCancellation()
-                        guard writer.status == .writing else {
-                            throw RecordingExportError.encodingFailed(writer.error?.localizedDescription ?? "the writer stopped")
+                let lastTime: CMTime? = try await BlockingWork.run { cancellation in
+                    cancellation.onCancel { session.cancel() }
+                    var previousTime: CMTime?
+                    while true {
+                        try cancellation.check()
+                        while !encoder.isReady {
+                            try cancellation.check()
+                            guard writer.status == .writing else {
+                                throw RecordingExportError.encodingFailed(writer.error?.localizedDescription ?? "the writer stopped")
+                            }
+                            Thread.sleep(forTimeInterval: 0.002)
                         }
-                        try await Task.sleep(nanoseconds: 2_000_000)
+                        let hasSample = try autoreleasepool {
+                            guard let sample = output.copyNextSampleBuffer() else { return false }
+                            let time = CMSampleBufferGetPresentationTimeStamp(sample)
+                            guard time.isNumeric else {
+                                throw RecordingExportError.encodingFailed("a frame has no presentation timestamp")
+                            }
+                            let sampleDuration = CMSampleBufferGetDuration(sample)
+                            let length = sampleDuration.isNumeric && sampleDuration.seconds > 0 ? sampleDuration : frameDuration
+                            guard time < end, time + length > start else { return true }
+                            let presentationTime = max(.zero, time - start)
+                            guard previousTime == nil || presentationTime > previousTime! else {
+                                throw RecordingExportError.encodingFailed("frame timestamps are not increasing")
+                            }
+                            guard let buffer = CMSampleBufferGetImageBuffer(sample) else {
+                                throw RecordingExportError.encodingFailed("a video frame has no image buffer")
+                            }
+                            let oriented = CIImage(cvPixelBuffer: buffer).transformed(by: transform)
+                            let extent = oriented.extent.integral
+                            let normalized = oriented.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+                            guard let image = context.createCGImage(normalized, from: CGRect(origin: .zero, size: extent.size),
+                                                                    format: .RGBA8, colorSpace: ColorSpaces.sRGB) else {
+                                throw RecordingExportError.encodingFailed("couldn't orient a video frame")
+                            }
+                            // The first sample may begin before the trim, but its visible portion starts at the trim.
+                            let rendered = try frameRenderer(image, max(time.seconds, range.lowerBound))
+                            try cancellation.check()
+                            try encoder.append(rendered, at: presentationTime)
+                            previousTime = presentationTime
+                            progress?(min(0.99, max(0, presentationTime.seconds / duration.seconds)))
+                            return true
+                        }
+                        if !hasSample { break }
                     }
-                    let hasSample = try autoreleasepool {
-                        guard let sample = output.copyNextSampleBuffer() else { return false }
-                        let time = CMSampleBufferGetPresentationTimeStamp(sample)
-                        guard time.isNumeric else {
-                            throw RecordingExportError.encodingFailed("a frame has no presentation timestamp")
-                        }
-                        let sampleDuration = CMSampleBufferGetDuration(sample)
-                        let length = sampleDuration.isNumeric && sampleDuration.seconds > 0 ? sampleDuration : frameDuration
-                        guard time < end, time + length > start else { return true }
-                        let presentationTime = max(.zero, time - start)
-                        guard previousTime == nil || presentationTime > previousTime! else {
-                            throw RecordingExportError.encodingFailed("frame timestamps are not increasing")
-                        }
-                        guard let buffer = CMSampleBufferGetImageBuffer(sample) else {
-                            throw RecordingExportError.encodingFailed("a video frame has no image buffer")
-                        }
-                        let oriented = CIImage(cvPixelBuffer: buffer).transformed(by: transform)
-                        let extent = oriented.extent.integral
-                        let normalized = oriented.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-                        guard let image = context.createCGImage(normalized, from: CGRect(origin: .zero, size: extent.size),
-                                                                format: .RGBA8, colorSpace: ColorSpaces.sRGB) else {
-                            throw RecordingExportError.encodingFailed("couldn't orient a video frame")
-                        }
-                        // The first sample may begin before the trim, but its visible portion starts at the trim.
-                        let rendered = try frameRenderer(image, max(time.seconds, range.lowerBound))
-                        try Task.checkCancellation()
-                        try encoder.append(rendered, at: presentationTime)
-                        previousTime = presentationTime
-                        progress?(min(0.99, max(0, presentationTime.seconds / duration.seconds)))
-                        return true
-                    }
-                    if !hasSample { break }
+                    return previousTime
                 }
                 try Task.checkCancellation()
                 guard reader.status == .completed else {
                     throw RecordingExportError.encodingFailed(reader.error?.localizedDescription ?? "the reader stopped")
                 }
-                guard previousTime != nil else {
+                guard lastTime != nil else {
                     throw RecordingExportError.encodingFailed("the selected range contains no video frames")
                 }
                 encoder.finish(at: duration)

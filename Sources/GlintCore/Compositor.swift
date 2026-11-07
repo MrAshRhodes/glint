@@ -76,7 +76,10 @@ public enum Compositor {
                                wallpaper: CGImage? = nil, bake: Baker, annotationTime: TimeInterval? = nil) throws -> RenderResult {
         let source = image.glintSRGB()
         let imageBounds = CGRect(origin: .zero, size: source.pixelSize)
-        let visibleAnnotations = annotationTime.map { time in annotations.filter { $0.isVisible(at: time) } } ?? annotations
+        // The single place recording time selects annotations, so preview, MP4 and GIF frames stay identical.
+        let visibleAnnotations = annotationTime.map { time in
+            annotations.filter { $0.isVisible(at: time) }.map { $0.resolved(at: time) }
+        } ?? annotations
 
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
         var border: BorderInfo?

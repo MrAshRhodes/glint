@@ -30,8 +30,10 @@ jobs:
       - name: Build
         run: swift build
 
+      # A normal run takes a few minutes. If it stalls, print stack samples of the test processes so the
+      # cause can be found, instead of letting the job time out with no evidence.
       - name: Test
-        run: swift test
+        run: Scripts/run_with_hang_sampler.sh --minutes 12 -- swift test
 
       - name: Test the product site
         run: node --test .github/scripts/site.test.cjs

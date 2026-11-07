@@ -94,7 +94,7 @@ public enum ProjectStore {
             let manifest = ProjectManifest(requiredFeatures: ProjectFeatures.required(by: state).sorted(),
                                            generator: generator)
             try encoder.encode(manifest).write(to: package.appendingPathComponent(Member.manifest))
-            try encoder.encode(state).write(to: package.appendingPathComponent(Member.project))
+            try encodeProject(state).write(to: package.appendingPathComponent(Member.project))
             try RecordingExportFiles.commit(package, to: url, fileManager: fileManager)
         } catch let error as ProjectFormatError {
             throw error
@@ -107,6 +107,16 @@ public enum ProjectStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
+    }
+
+    /// The bytes of `project.json`. Refuses what `read` would refuse, so a project that saves also reopens instead
+    /// of being lost to the size cap later (tracked redactions make it the one member that can grow large).
+    static func encodeProject(_ state: ProjectState, limit: Int = Limits.projectBytes) throws -> Data {
+        let data = try encoder.encode(state)
+        guard data.count <= limit else {
+            throw ProjectFormatError.writeFailed("the project holds more annotation data than Glint can reopen.")
+        }
+        return data
     }
 
     /// Copies the background and watermark images into the package and points the settings at the members, so the

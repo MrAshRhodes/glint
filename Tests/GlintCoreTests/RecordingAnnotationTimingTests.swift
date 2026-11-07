@@ -21,15 +21,24 @@ struct RecordingAnnotationTimingTests {
         ])
         reader.add(output)
         #expect(reader.startReading())
-        let context = CIContext(options: [.cacheIntermediates: false])
-        var frames: [CGImage] = []
-        while let sample = output.copyNextSampleBuffer() {
-            let buffer = try #require(CMSampleBufferGetImageBuffer(sample))
-            let image = CIImage(cvPixelBuffer: buffer)
-            frames.append(try #require(context.createCGImage(image, from: image.extent,
-                                                              format: .RGBA8, colorSpace: ColorSpaces.sRGB)))
+        // Decoding blocks, so keep it off the few threads every other test needs.
+        let (frames, status) = try await BlockingWork.run { _ in
+            let context = CIContext(options: [.cacheIntermediates: false])
+            var frames: [CGImage] = []
+            while let sample = output.copyNextSampleBuffer() {
+                guard let buffer = CMSampleBufferGetImageBuffer(sample) else {
+                    throw RecordingExportError.encodingFailed("a decoded sample has no image buffer")
+                }
+                let image = CIImage(cvPixelBuffer: buffer)
+                guard let frame = context.createCGImage(image, from: image.extent,
+                                                        format: .RGBA8, colorSpace: ColorSpaces.sRGB) else {
+                    throw RecordingExportError.encodingFailed("couldn't convert a decoded frame")
+                }
+                frames.append(frame)
+            }
+            return (frames, reader.status)
         }
-        #expect(reader.status == .completed)
+        #expect(status == .completed)
         return frames
     }
 

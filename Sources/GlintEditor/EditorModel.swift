@@ -411,6 +411,8 @@ final class EditorModel: ObservableObject {
         return { frame, time in
             // A missing background must not be lazily read halfway through the clip if the file reappears.
             if case .image = settings.background, background == nil { throw CocoaError(.fileReadNoSuchFile) }
+            // Fails closed even if the export gate was bypassed: an unreviewed tracked frame is never written.
+            try RedactionGate.validate(annotations, at: time)
             return try Compositor.render(image: frame, settings: settings, annotations: annotations,
                                          backingScale: scale, backgroundImage: background, wallpaper: wallpaper,
                                          annotationTime: time)
@@ -517,7 +519,7 @@ final class EditorModel: ObservableObject {
     }
 
     /// Applies a live (non-undoable) change during a drag.
-    func updateLive(_ new: [Annotation]) { annotations = new }
+    func updateLive(_ new: [Annotation]) { annotations = absorbingTrackedEdits(new) }
 
     func endInteraction(actionName: String) {
         guard let base = interactionBase else { return }
@@ -561,7 +563,7 @@ final class EditorModel: ObservableObject {
 
     func replace(_ a: Annotation) {
         guard let i = annotations.firstIndex(where: { $0.id == a.id }) else { return }
-        annotations[i] = a
+        annotations[i] = isRecording ? Self.absorbTrackedEdit(a, current: annotations[i], at: recordingTime) : a
     }
 
     func nextCounterNumber() -> Int {
@@ -598,8 +600,10 @@ final class EditorModel: ObservableObject {
         let d = CGSize(width: dx, height: dy)
         // A lone magnifier nudges its inset; its source stays on the detail it magnifies.
         let part: MagnifierPart? = selection.count == 1 ? .inset : nil
-        setAnnotations(annotations.map { selection.contains($0.id) ? AnnotationGeometry.moved($0, part: part, by: d) : $0 },
-                       actionName: "Move")
+        let moved = annotations.map {
+            selection.contains($0.id) ? AnnotationGeometry.moved(editingView($0), part: part, by: d) : $0
+        }
+        setAnnotations(absorbingTrackedEdits(moved), actionName: "Move")
     }
 
     func reorder(_ move: ZOrderMove) {
@@ -696,8 +700,11 @@ final class EditorModel: ObservableObject {
 
     func setRedactStyle(_ mode: RedactionStyle) {
         redactStyle = mode
+        let skipsTracked = mode == .blur && selectionHasTrackedRedaction
+        if skipsTracked { statusMessage = "Tracked redactions can't use Blur. Remove tracking first." }
         let updated = annotations.map { annotation -> Annotation in
             guard selection.contains(annotation.id), redactionMode(of: annotation) != nil else { return annotation }
+            if mode == .blur, annotation.track != nil { return annotation }
             var annotation = annotation
             let rect = annotation.boundingBox
             if annotation.isObfuscation && mode != .blur { annotation.style.color = redactColor }

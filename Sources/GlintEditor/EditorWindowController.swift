@@ -170,6 +170,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     let actions = EditorActions()
     let recording: RecordingEditorModel?
     let playback: RecordingPlayback?
+    let tracking: RedactionTrackingModel?
     private let canvas: CanvasView
     private weak var recordingControls: NSView?
     private var dragFiles: Set<URL> = []
@@ -203,6 +204,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         self.model = model
         self.recording = recording
         self.playback = playback
+        tracking = recording.map { RedactionTrackingModel(url: $0.recording.url) }
         self.exportServices = exportServices
         self.canvas = CanvasView(model: model)
 
@@ -268,8 +270,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         toolbar.setContentHuggingPriority(.required, for: .horizontal)
         let bottom: NSView
         let bottomHeight: CGFloat
-        if let recording, let playback {
-            bottom = Self.host(RecordingBarView(editor: model, recording: recording, playback: playback, actions: actions), sizing: [])
+        if let recording, let playback, let tracking {
+            bottom = Self.host(RecordingBarView(editor: model, recording: recording, playback: playback, actions: actions,
+                                                tracking: tracking), sizing: [])
             recordingControls = bottom
             bottomHeight = RecordingBarView.contentHeight
         } else {
@@ -279,7 +282,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             bottomHeight = metrics.bottomBarHeight
         }
 
-        let inspectorContent = Self.host(InspectorView(model: model), sizing: [])
+        let inspectorContent = Self.host(InspectorView(model: model, recording: recording, playback: playback,
+                                                       tracking: tracking), sizing: [])
         inspectorContent.wantsLayer = true
         inspectorContent.layer?.cornerRadius = GlintDesign.panelCornerRadius
         inspectorContent.layer?.cornerCurve = .continuous
@@ -651,6 +655,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             }
             return true
         }
+        if flags == .shift, let recording, let playback, key == "n" {
+            canvas.endEditing()
+            playback.pause()
+            guard let next = RedactionTrackingModel.nextFlagged(after: playback.currentTime,
+                                                                in: recording.unresolvedRedactionIntervals) else { return false }
+            model.selection = [next.annotationID]
+            playback.seek(to: next.start)
+            return true
+        }
         if flags == .shift, let recording, let playback, key == "i" || key == "o" {
             guard !recording.isExporting, !model.selection.isEmpty else { return false }
             canvas.endEditing()
@@ -668,8 +681,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
                 }
                 switch event.keyCode {
                 case 49: canvas.endEditing(); playback.togglePlayback(); return true
-                case 123: playback.pause(); playback.seek(to: playback.currentTime - 1.0 / 30); return true
-                case 124: playback.pause(); playback.seek(to: playback.currentTime + 1.0 / 30); return true
+                case 123:
+                    playback.pause()
+                    let now = playback.currentTime
+                    playback.seek(to: tracking?.previousFrame(before: now) ?? now - 1.0 / 30)
+                    return true
+                case 124:
+                    playback.pause()
+                    let now = playback.currentTime
+                    playback.seek(to: tracking?.nextFrame(after: now) ?? now + 1.0 / 30)
+                    return true
                 default: break
                 }
                 if key == "i" { recording.setTrimStart(playback.currentTime); return true }
@@ -694,6 +715,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     public func windowWillClose(_ notification: Notification) {
         isClosed = true
+        tracking?.shutdown()
         clearRetry()
         canvas.endEditing()
         for url in dragFiles { try? FileManager.default.removeItem(at: url) }

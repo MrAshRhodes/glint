@@ -6,6 +6,7 @@ struct RecordingAnnotationTimeline: View {
     @ObservedObject var recording: RecordingEditorModel
     @ObservedObject var playback: RecordingPlayback
     @ObservedObject var actions: EditorActions
+    @ObservedObject var tracking: RedactionTrackingModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -15,7 +16,10 @@ struct RecordingAnnotationTimeline: View {
                 LazyVStack(spacing: 2) {
                     ForEach(editor.annotations.sorted { $0.z < $1.z }) { annotation in
                         RecordingAnnotationLane(editor: editor, recording: recording, playback: playback,
-                                                actions: actions, annotation: annotation)
+                                                actions: actions, annotation: annotation,
+                                                unresolved: recording.unresolvedRedactionIntervals.filter {
+                                                    $0.annotationID == annotation.id
+                                                })
                     }
                 }
             }
@@ -27,6 +31,9 @@ struct RecordingAnnotationTimeline: View {
                 }
             }
             timingControls.frame(height: 32)
+            RedactionTrackingControls(editor: editor, recording: recording, playback: playback,
+                                      actions: actions, tracking: tracking)
+                .frame(height: 30)
         }
         .disabled(recording.isExporting || recording.trim.sourceDuration <= 0)
         .accessibilityElement(children: .contain)
@@ -99,6 +106,7 @@ private struct RecordingAnnotationLane: View {
     @ObservedObject var playback: RecordingPlayback
     @ObservedObject var actions: EditorActions
     let annotation: Annotation
+    let unresolved: [UnresolvedRedactionInterval]
     @StateObject private var drag = TimelineDragState()
 
     private var start: TimeInterval { annotation.visibleRange?.start ?? 0 }
@@ -137,6 +145,7 @@ private struct RecordingAnnotationLane: View {
                         .placed(atX: layout.x(at: recording.trim.end))
                         .allowsHitTesting(false)
                     rangeBar(layout)
+                    if let track = annotation.track { trackMarks(track, layout: layout) }
                     Rectangle().fill(Color.primary)
                         .frame(width: 1, height: 30)
                         .placed(atX: layout.x(at: playback.currentTime))
@@ -205,6 +214,42 @@ private struct RecordingAnnotationLane: View {
             }
             .help("Drag to move the range; drag its edges to change the duration")
             .placed(atX: layout.x(at: start))
+    }
+
+    /// Keyframe ticks, plus a button for every interval that still needs review.
+    @ViewBuilder
+    private func trackMarks(_ track: RedactionTrack, layout: TimelineLayout) -> some View {
+        ForEach(Array(track.keyframes.enumerated()), id: \.offset) { _, keyframe in
+            Rectangle()
+                .fill(keyframe.source == .manual ? Color.primary : Color.accentColor)
+                .frame(width: keyframe.source == .manual ? 2 : 1, height: keyframe.source == .manual ? 14 : 6)
+                .placed(atX: layout.x(at: keyframe.time))
+                .offset(y: 10)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        ForEach(unresolved, id: \.self) { interval in
+            let label = "Needs review: \(String(format: "%.2f to %.2f seconds", interval.start, interval.end))"
+            Button {
+                actions.commitEditing()
+                playback.pause()
+                editor.selection = [annotation.id]
+                playback.seek(to: interval.start)
+            } label: {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.orange.opacity(0.75))
+                    .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Color.orange, lineWidth: 1))
+                    .frame(width: max(layout.x(at: interval.end) - layout.x(at: interval.start), 4), height: 10)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(!recording.isExporting)
+            .placed(atX: layout.x(at: interval.start))
+            .offset(y: -10)
+            .accessibilityLabel(label)
+            .accessibilityHint("Moves the playhead to the first frame that needs review")
+            .help("\(label). Tracking was unsure here; a large cover hides it until you review it.")
+        }
     }
 
     private func move(to time: TimeInterval, live: Bool = false) {

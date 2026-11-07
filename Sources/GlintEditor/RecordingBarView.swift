@@ -8,7 +8,8 @@ struct RecordingBarView: View {
     @ObservedObject var recording: RecordingEditorModel
     @ObservedObject var playback: RecordingPlayback
     @ObservedObject var actions: EditorActions
-    static let contentHeight: CGFloat = 320
+    @ObservedObject var tracking: RedactionTrackingModel
+    static let contentHeight: CGFloat = 354
 
     @StateObject private var presentation = RecordingBarPresentation()
 
@@ -18,8 +19,9 @@ struct RecordingBarView: View {
                 VStack(spacing: 4) {
                     transport.frame(height: 46)
                     trimAndFormat.frame(height: 32)
-                    RecordingAnnotationTimeline(editor: editor, recording: recording, playback: playback, actions: actions)
-                        .frame(height: 144)
+                    RecordingAnnotationTimeline(editor: editor, recording: recording, playback: playback,
+                                                actions: actions, tracking: tracking)
+                        .frame(height: 178)
                     status.frame(height: 22)
                 }
                 .padding(6)
@@ -158,6 +160,32 @@ struct RecordingBarView: View {
                     .buttonStyle(.borderless)
                     .accessibilityLabel("Cancel recording export")
             }
+        } else if !recording.blockingRedactionIntervals.isEmpty {
+            let count = recording.blockingRedactionIntervals.count
+            let message = "\(count) tracked-redaction interval\(count == 1 ? " needs" : "s need") review before export."
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).accessibilityHidden(true)
+                Text(message + " You remain responsible for checking every frame.")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .help(message + " Flagged frames use a large cover until you accept it or add keyframes. "
+                          + "Tracking is an aid: you remain responsible for checking every frame.")
+                    .accessibilityLabel(message + " You remain responsible for checking every frame.")
+                Spacer(minLength: 0)
+                Button("Review next") {
+                    actions.commitEditing()
+                    playback.pause()
+                    if let next = RedactionTrackingModel.nextFlagged(after: playback.currentTime,
+                                                                    in: recording.blockingRedactionIntervals) {
+                        editor.selection = [next.annotationID]
+                        playback.seek(to: next.start)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Review the next tracked-redaction interval")
+                .help("Jump to the next interval that needs review (Shift+N)")
+            }
         } else if let issue = recording.gifLimitIssue {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -194,6 +222,7 @@ struct RecordingBarView: View {
 
     private var statusDescription: String {
         if let problem = recording.sourceProblem ?? playback.frameProblem ?? editor.statusMessage { return problem }
+        if let message = tracking.message { return message }
         if editor.hasTimeLimitedRedactions {
             return "Time-limited redactions expose content outside their range. Check the whole clip before sharing."
         }
