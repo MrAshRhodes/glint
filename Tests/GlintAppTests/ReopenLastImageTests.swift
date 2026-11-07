@@ -1465,6 +1465,43 @@ struct ProjectOpeningTests {
         #expect(!f.exists(clip) && f.snapshotFolders().isEmpty, "closing the editor removes only the private copy")
     }
 
+    /// The app's own open path, from the file on disk: a tracked redaction comes back with its track, and the time
+    /// tracking didn't cover still blocks every export.
+    @Test func aTrackedRecordingProjectKeepsItsTrackAndStaysBlockedWhenOpened() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let followed = CGRect(x: 4, y: 4, width: 20, height: 10)
+        let track = RedactionTrack(
+            keyframes: [RedactionKeyframe(time: 0, rect: followed, source: .tracked),
+                        RedactionKeyframe(time: 1, rect: followed.offsetBy(dx: 26, dy: 0), source: .tracked)],
+            analyzedRange: AnnotationTiming(start: 0, end: 1), frameBounds: CGRect(x: 0, y: 0, width: 64, height: 36))
+        let tracked = Annotation(kind: .redact(followed), track: track)
+        let clip = f.directory.appendingPathComponent("clip.mp4")
+        try Data("x".utf8).write(to: clip)
+        let state = RecordingProjectState(settings: RenderSettings(autoBalance: false), annotations: [tracked],
+                                          trim: RecordingTrim(sourceDuration: 4),
+                                          options: RecordingExportOptions(format: .mp4), duration: 4,
+                                          pixelSize: CGSize(width: 64, height: 36))
+        let folder = f.directory.appendingPathComponent("Manual", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("Tracked.glint")
+        try ProjectStore.write(GlintProject(state: .recording(state), source: .video(clip)), to: url)
+
+        await f.pipeline.openProject(url)
+
+        let recorder = try #require(f.presentedRecordings.first)
+        #expect(f.notifications.isEmpty && f.recent == [url])
+        #expect(recorder.editor.model.annotations == [tracked], "the track is read back exactly")
+        #expect(recorder.editor.model.annotations.first?.resolved(at: 0.5).redactionRect
+            == tracked.resolved(at: 0.5).redactionRect)
+        #expect(recorder.model.unresolvedRedactionIntervals
+            == [UnresolvedRedactionInterval(annotationID: tracked.id, start: 1, end: 4, reason: .outsideTrackedRange)])
+        #expect(recorder.model.hasBlockingRedactionIntervals)
+        #expect(recorder.model.prepareFile() == nil)
+        recorder.window?.close()
+        for _ in 0..<400 where !f.snapshotFolders().isEmpty { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(f.snapshotFolders().isEmpty)
+    }
+
     @Test func aRecordingProjectWithAnImpossibleSizeIsReportedInsteadOfCrashing() async throws {
         let f = try ReopenFixture(); defer { f.cleanUp() }
         let (project, _) = try recordingProject(f, pixelSize: CGSize(width: 1e20, height: 36))

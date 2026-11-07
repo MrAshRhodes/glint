@@ -98,6 +98,12 @@ public struct RedactionTrack: Codable, Equatable, Hashable, Sendable {
     public static let frameTolerance: TimeInterval = 1.0 / 30 + 0.002
     /// Extra pixels around every tracked position.
     public static let padding: CGFloat = 2
+    /// Most keyframes a track read from a project may hold. A 10-minute recording at 30 fps yields about 18,000, so
+    /// this leaves room for any real clip while keeping a damaged or hostile project from flooding the timeline.
+    public static let maxKeyframes = 100_000
+    /// Most uncertain intervals a track read from a project may hold. Tracking stops at its first loss in each
+    /// direction and the user resolves what lies outside the analysed range, so real tracks hold only a handful.
+    public static let maxUncertainIntervals = 1_000
 
     public init(keyframes: [RedactionKeyframe], uncertainIntervals: [RedactionUncertainInterval] = [],
                 analyzedRange: AnnotationTiming, frameBounds: CGRect) {
@@ -111,12 +117,27 @@ public struct RedactionTrack: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // A malformed track still decodes; `isValid` then fails closed (whole-frame cover, export blocked).
-        self.init(keyframes: try c.decodeIfPresent([RedactionKeyframe].self, forKey: .keyframes) ?? [],
-                  uncertainIntervals: try c.decodeIfPresent([RedactionUncertainInterval].self,
-                                                            forKey: .uncertainIntervals) ?? [],
+        let keyframes = try c.decodeIfPresent([RedactionKeyframe].self, forKey: .keyframes) ?? []
+        let intervals = try c.decodeIfPresent([RedactionUncertainInterval].self, forKey: .uncertainIntervals) ?? []
+        // Oversized tracks are refused outright. Merely malformed ones still decode, and `isValid` then fails
+        // closed (whole-frame cover, export blocked) so the user can see and repair them.
+        guard keyframes.count <= Self.maxKeyframes, intervals.count <= Self.maxUncertainIntervals else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "A redaction track has too many entries."))
+        }
+        self.init(keyframes: keyframes, uncertainIntervals: intervals,
                   analyzedRange: try c.decode(AnnotationTiming.self, forKey: .analyzedRange),
                   frameBounds: try c.decodeIfPresent(CGRect.self, forKey: .frameBounds) ?? .null)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(keyframes, forKey: .keyframes)
+        try c.encode(uncertainIntervals, forKey: .uncertainIntervals)
+        try c.encode(analyzedRange, forKey: .analyzedRange)
+        // A track that lost its bounds holds `.null`, which JSON can't represent. It is invalid and blocks export;
+        // leaving the bounds out keeps it saveable, and it decodes back to that same blocked state.
+        if frameBounds.isFiniteRect { try c.encode(frameBounds, forKey: .frameBounds) }
     }
 
     /// False when the data can't be trusted to place the redaction; such tracks block export.
