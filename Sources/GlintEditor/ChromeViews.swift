@@ -37,7 +37,10 @@ struct RedactionModePicker: View {
 
     var body: some View {
         Picker("Redaction style", selection: Binding(get: { model.currentRedactStyle }, set: { model.setRedactStyle($0) })) {
-            ForEach(RedactionStyle.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            // Blur can't be tracked, so it isn't offered while a tracked redaction is selected.
+            ForEach(RedactionStyle.allCases.filter { $0 != .blur || !model.selectionHasTrackedRedaction }, id: \.self) {
+                Text($0.displayName).tag($0)
+            }
         }
         .pickerStyle(.menu)
         .accessibilityLabel("Redaction style")

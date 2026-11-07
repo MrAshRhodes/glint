@@ -37,8 +37,9 @@ struct RecordingBarTests {
                                     source: nil, isRecording: true)
         let editor = EditorModel(context: context, preferences: fixture.preferences, presetStore: fixture.presets)
         configure(editor)
+        let tracking = RedactionTrackingModel(url: video.url)
         let host = NSHostingView(rootView: RecordingBarView(editor: editor, recording: recording,
-                                                          playback: playback, actions: actions))
+                                                          playback: playback, actions: actions, tracking: tracking))
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -154,6 +155,25 @@ struct RecordingBarTests {
             try press("Fit to limit", in: host)
             #expect(recording.trim.duration == 30)
             #expect(recording.canExport)
+        }
+    }
+
+    @Test func unresolvedTrackedRedactionsWarnAndDisableExport() throws {
+        let id = UUID()
+        try withBar { host, recording, playback, _ in
+            recording.unresolvedRedactionIntervals = [
+                UnresolvedRedactionInterval(annotationID: id, start: 4, end: 5, reason: .uncertainTracking),
+            ]
+            host.layoutSubtreeIfNeeded()
+            #expect(!recording.canExport)
+            for label in ["Copy recording", "Save recording", "Share recording"] {
+                #expect(try node(label, in: host).value(forKey: "accessibilityEnabled") as? Bool == false)
+            }
+            try press("Review the next tracked-redaction interval", in: host)
+            #expect(abs(playback.currentTime - 4) < 0.001)
+            recording.setTrimEnd(4)
+            host.layoutSubtreeIfNeeded()
+            #expect(recording.canExport, "an interval trimmed out of the export no longer blocks it")
         }
     }
 

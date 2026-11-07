@@ -145,18 +145,23 @@ struct RecordingEditorWindowTests {
         #expect(closes == 1)
     }
 
-    @Test func closingDuringARealExportLeavesNoExportFilesBehind() async throws {
+    @Test(.timeLimit(.minutes(1))) func closingDuringARealExportLeavesNoExportFilesBehind() async throws {
         let fixture = try RecordingEditorFixture(); defer { fixture.cleanUp() }
         let recording = try await fixture.recording(frames: 200, fps: 20, size: CGSize(width: 960, height: 540))
         let controller = RecordingEditorWindowController(recording: recording, services: fixture.services())
         var closes = 0
-        controller.onClose = { closes += 1 }
+        let (closed, didClose) = AsyncStream<Void>.makeStream()
+        controller.onClose = {
+            closes += 1
+            didClose.yield()
+            didClose.finish()
+        }
         controller.model.options.gif = GIFExportOptions(framesPerSecond: 20, maxWidth: .original)
 
         controller.save()
         await waitUntil { controller.model.isExporting }
         controller.window?.close()
-        await waitUntil { closes > 0 }
+        for await _ in closed {}
 
         #expect(closes == 1 && !exists(recording.url))
         #expect(fixture.stagingLeftovers.isEmpty)

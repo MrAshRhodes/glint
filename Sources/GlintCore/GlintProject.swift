@@ -10,9 +10,9 @@ import Foundation
 ///
 /// Extending the format: prefer adding a defaulted (`decodeIfPresent`) field to the state types below; older builds
 /// then ignore it and newer builds read older projects. When an older build would produce *wrong output* by ignoring
-/// the new data (for example tracked redactions that would stop covering moving content), also register a feature
-/// string in `ProjectFeatures` instead of bumping `currentFormatVersion`. Bump the version only for changes an older
-/// build cannot even parse.
+/// the new data (tracked redactions are the first case: without their track they would stop covering moving
+/// content), also register a feature string in `ProjectFeatures` instead of bumping `currentFormatVersion`. Bump
+/// the version only for changes an older build cannot even parse.
 public struct ProjectManifest: Codable, Equatable, Sendable {
     /// Identifies the file as a Glint project. Also the exported uniform type identifier.
     public static let formatName = "io.github.mrashrhodes.glint.project"
@@ -57,15 +57,24 @@ public struct ProjectManifest: Codable, Equatable, Sendable {
 /// Optional capabilities a project can depend on, named by stable strings in `ProjectManifest.requiredFeatures`.
 ///
 /// A feature that adds data older builds would ignore *safely* doesn't need an entry. One whose absence would change
-/// the output adds its string to `supported` and returns it from `required(by:)` whenever a project uses it, for
-/// example `"redactionTracks"` (#79) or `"presentation"` (#81). Never rename or reuse a string once released.
+/// the output adds its string to `supported` and returns it from `required(by:)` whenever a project uses it, as
+/// `redactionTracks` (#79) does and `"presentation"` (#81) is expected to. Never rename or reuse a string once
+/// released.
 public enum ProjectFeatures {
-    /// Every feature string this build understands.
-    public static let supported: Set<String> = []
+    /// Some annotation carries a `RedactionTrack`, so it moves with content over time. A build that skipped the
+    /// track would keep the redaction where it was first drawn and show the content once it moves, so such a
+    /// project must be refused instead of being opened without its tracking.
+    public static let redactionTracks = "redactionTracks"
 
-    /// The feature strings `state` relies on, written to the manifest so older builds refuse it.
+    /// Every feature string this build understands.
+    public static let supported: Set<String> = [redactionTracks]
+
+    /// The feature strings `state` relies on, written to the manifest so older builds refuse it. A project without
+    /// tracked redactions requires nothing and stays openable by builds that predate the feature.
     public static func required(by state: ProjectState) -> [String] {
-        []
+        var features: [String] = []
+        if state.annotations.contains(where: { $0.track != nil }) { features.append(redactionTracks) }
+        return features
     }
 }
 

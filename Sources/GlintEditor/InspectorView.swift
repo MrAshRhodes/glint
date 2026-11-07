@@ -173,6 +173,9 @@ final class InspectorState: ObservableObject {
 
 struct InspectorView: View {
     @ObservedObject var model: EditorModel
+    var recording: RecordingEditorModel? = nil
+    var playback: RecordingPlayback? = nil
+    var tracking: RedactionTrackingModel? = nil
     // CLT-only builds lack the SwiftUI macro plugin, so local state lives in an ObservableObject instead of @State.
     @StateObject private var ui = InspectorState()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -746,9 +749,23 @@ struct InspectorView: View {
                     model.preferences.autoRedactOptions = model.redactOptions
                 })).textFieldStyle(.roundedBorder)
             Text(model.isRecording
-                 ? "Automatic redaction is unavailable for recordings. Manual annotations stay fixed across the whole clip; review every frame before sharing."
+                 ? "Automatic redaction is unavailable for recordings. Redactions stay fixed unless you track them: "
+                    + "select a solid or pixelated redaction and choose Track. Tracking runs on this Mac and flags "
+                    + "frames it isn't sure about, which block export until you review them. You remain "
+                    + "responsible for checking every frame before sharing."
                  : "Auto-redact always uses solid fill. Review the image before sharing; detection can miss information.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.isRecording, let tracking, let recording, model.selection.count == 1,
+               let selected = model.selectedAnnotations.first, selected.isTrackable {
+                Button(selected.track == nil ? "Track Selected Redaction" : "Re-track Selected Redaction") {
+                    playback?.pause()
+                    tracking.track(selected.id, editor: model, sourceDuration: recording.trim.sourceDuration)
+                }
+                .disabled(tracking.isTracking || recording.isExporting)
+                .accessibilityLabel(selected.track == nil ? "Track selected redaction" : "Track selected redaction again")
+                .help("Follow the content under the redaction from the current frame. Progress and review are in the "
+                      + "recording bar.")
+            }
             HStack {
                 ColorPicker("Colour", selection: colorBinding({ model.redactColor }) { model.setRedactColor($0) }, supportsOpacity: false)
                 Spacer()
