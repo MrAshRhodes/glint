@@ -1,6 +1,7 @@
 import AppKit
 import GlintCapture
 import GlintCore
+import GlintEditor
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
@@ -30,6 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// How long quitting waits for kept screenshots that are still being written.
     var terminationGrace: Duration = .seconds(3)
     var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
+    /// Project saves quitting waits for.
+    var projectSaves: ProjectSaveActivity = .shared
+    /// Explains why quitting was cancelled while a project was still being saved.
+    var notifyProjectSavePreventedQuit: () -> Void = {
+        Notifier.post(title: "Glint didn't quit", body: "A project is still being saved. Try quitting again once it's done.")
+    }
     /// Asked before quitting while footage is being recorded; returning false keeps Glint running.
     var confirmDiscardRecording: @MainActor () -> Bool = {
         let alert = NSAlert()
@@ -57,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         Self.applyActivationPolicy()
         Self.applyTheme()
         installMainMenu()
+        // Snapshots of opened projects are only needed while their editor is open; a crash can leave some behind.
+        Task.detached(priority: .utility) { ProjectStore.removeAllSnapshots() }
         // Starts a schedule the user chose; with the default (never) nothing is requested.
         _ = UpdateController.shared
         PreferencesWindowController.shared = PreferencesWindowController(prefs: prefs, store: presetStore)
@@ -113,11 +122,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             if recorder.isCapturing, !confirmDiscardRecording() { return .terminateCancel }
             recorder.cancel()
         }
-        guard pipeline.isKeepingScreenshots else { return .terminateNow }
-        Task { @MainActor [pipeline, terminationGrace, replyToTermination] in
-            let drained = await pipeline.waitForRetention(timeout: terminationGrace)
+        let keeping = pipeline.isKeepingScreenshots
+        guard keeping || projectSaves.isActive else { return .terminateNow }
+        Task { @MainActor [pipeline, terminationGrace, replyToTermination, projectSaves, notifyProjectSavePreventedQuit] in
+            let drained = keeping ? await pipeline.waitForRetention(timeout: terminationGrace) : true
             if !drained { pipeline.notifyRetentionPreventedQuit() }
-            replyToTermination(drained)
+            // A project being written would be left half-saved, so quitting waits for it too.
+            let saved = await projectSaves.waitUntilIdle(timeout: terminationGrace)
+            if !saved { notifyProjectSavePreventedQuit() }
+            replyToTermination(drained && saved)
         }
         return .terminateLater
     }
@@ -312,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     @objc private func openImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = [.image, ProjectStore.contentType]
         panel.allowsMultipleSelection = true
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK { panel.urls.forEach(pipeline.openFile) }
@@ -343,6 +356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         file.delegate = self
         file.addItem(withTitle: "Open Image…", action: #selector(openImage), keyEquivalent: "o").target = self
         addReopenItem(to: file)
+        let saveProject = file.addItem(withTitle: "Save as Project…",
+                                       action: #selector(EditorWindowController.saveAsProject(_:)), keyEquivalent: "s")
+        saveProject.keyEquivalentModifierMask = [.command, .option]
         file.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     }
 

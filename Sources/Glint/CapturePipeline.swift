@@ -37,6 +37,11 @@ final class CapturePipeline {
         }
         var screenScale: @MainActor () -> CGFloat = { NSScreen.main?.backingScaleFactor ?? 2 }
         var makeScrollingCapture: @MainActor () -> any ScrollingCapture = { ScreenCapturer.shared.scrollingSession() }
+        var readProject: @Sendable (URL) throws -> GlintProject = { try ProjectStore.read(from: $0) }
+        var presentRecordingEditor: @MainActor (RecordingEditorWindowController) -> Void = {
+            NSApp.activate(ignoringOtherApps: true)
+            $0.showEditor()
+        }
     }
 
     let prefs: AppPreferences
@@ -46,6 +51,7 @@ final class CapturePipeline {
     let retentionQueue = RetentionQueue()
     private let services: Services
     private var editors: [EditorWindowController] = []
+    private var recordingEditors: [RecordingEditorWindowController] = []
     private var busy = false
     /// The scrolling capture in progress; pressing its shortcut again finishes it.
     private var activeScroll: (any ScrollingCapture)?
@@ -378,8 +384,11 @@ final class CapturePipeline {
 
     // MARK: editor
 
-    func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false) {
-        let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed)
+    @discardableResult
+    func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
+                    restored: EditorRestoreState? = nil) -> EditorWindowController {
+        let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed,
+                                    restored: restored)
         let controller = EditorWindowController(context: context, preferences: prefs, presetStore: presetStore)
         editors.append(controller)
         controller.onClose = { [weak self, weak controller] in
@@ -396,7 +405,72 @@ final class CapturePipeline {
             case .dragged: self?.keep(image, backingScale: backingScale, sharedAs: .dragged)
             }
         }
+        controller.onProjectSaved = { [weak self] url in self?.services.addRecent(url) }
+        controller.onProjectSaveFailed = { [weak self] url, error in self?.reportProjectSaveFailure(url, error) }
         services.presentEditor(controller)
+        return controller
+    }
+
+    private func reportProjectSaveFailure(_ url: URL, _ error: Error) {
+        services.notify("Project not saved", "\(url.lastPathComponent): \(error.localizedDescription)", nil)
+    }
+
+    /// Opens a saved `.glint` project with its look, annotations (and, for recordings, trim and export settings)
+    /// exactly as they were saved. A project Glint can't read safely is reported and nothing is opened.
+    func openProject(_ url: URL) async {
+        let read = services.readProject
+        let result = await Task.detached(priority: .userInitiated) { Result { try read(url) } }.value
+        let project: GlintProject
+        switch result {
+        case .success(let value): project = value
+        case .failure(let error):
+            services.notify("Cannot open project", "\(url.lastPathComponent): \(error.localizedDescription)", nil)
+            return
+        }
+        let name = url.deletingPathExtension().lastPathComponent
+        switch (project.state, project.source) {
+        case (.screenshot(let state), .image(let image)):
+            services.addRecent(url)
+            let controller = openEditor(image: image, scale: CGFloat(state.backingScale), rawURL: nil,
+                                        source: state.source,
+                                        restored: EditorRestoreState(settings: state.settings,
+                                                                     annotations: state.annotations, projectName: name))
+            let removeEditor = controller.onClose
+            // The opened assets live in a private snapshot; it goes once no save can still be reading it.
+            controller.onClose = { [weak controller] in
+                removeEditor?()
+                Task { @MainActor in
+                    await controller?.waitForProjectSave()
+                    project.discardSnapshot()
+                }
+            }
+        case (.recording(let state), .video(let videoURL)):
+            // The clip is Glint's private snapshot of the project's video, so it goes when the editor closes.
+            let video = RecordedVideo(url: videoURL, duration: state.duration, pixelSize: state.pixelSize,
+                                      deletesFileOnClose: true)
+            let controller: RecordingEditorWindowController
+            do {
+                controller = try RecordingEditorWindowController(recording: video, project: state, projectName: name,
+                                                                 preferences: prefs, presetStore: presetStore)
+            } catch {
+                project.discardSnapshot()
+                services.notify("Cannot open project", "\(url.lastPathComponent): \(error.localizedDescription)", nil)
+                return
+            }
+            services.addRecent(url)
+            recordingEditors.append(controller)
+            controller.onClose = { [weak self, weak controller] in
+                project.discardSnapshot()
+                guard let self, let controller else { return }
+                self.recordingEditors.removeAll { $0 === controller }
+            }
+            controller.onProjectSaved = { [weak self] saved in self?.services.addRecent(saved) }
+            controller.onProjectSaveFailed = { [weak self] saved, error in self?.reportProjectSaveFailure(saved, error) }
+            services.presentRecordingEditor(controller)
+        default:
+            project.discardSnapshot()
+            services.notify("Cannot open project", "\(url.lastPathComponent): \(ProjectFormatError.mismatchedSource.localizedDescription)", nil)
+        }
     }
 
     /// Opens the newest kept screenshot as a finished image (nothing is styled again). A file that is missing or
@@ -436,6 +510,10 @@ final class CapturePipeline {
     }
 
     func openFile(_ url: URL) {
+        if ProjectStore.isProject(url) {
+            Task { await openProject(url) }
+            return
+        }
         let kept = retention.isManaged(url)
         guard let image = GlintImageIO.load(url: url) else {
             if kept {

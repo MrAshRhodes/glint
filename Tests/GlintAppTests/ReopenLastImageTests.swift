@@ -185,6 +185,14 @@ private final class ReopenFixture {
     var copySucceeds = true
     var failRender = false
     var presented: [EditorWindowController] = []
+    var presentedRecordings: [RecordingEditorWindowController] = []
+    var readProject: (@Sendable (URL) throws -> GlintProject)?
+    /// Where opened projects keep their private copies.
+    var snapshotRoot: URL { directory.appendingPathComponent("Snapshots", isDirectory: true) }
+
+    func snapshotFolders() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: snapshotRoot.path)) ?? []).filter { !$0.hasPrefix(".") }
+    }
     var screenScale: CGFloat = 1
     var latestRetainedOutput: (@Sendable (OutputRetention) -> RetainedOutput?)?
     lazy var pipeline: CapturePipeline = makePipeline()
@@ -232,6 +240,9 @@ private final class ReopenFixture {
             return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.presentEditor = { [self] in presented.append($0) }
+        services.presentRecordingEditor = { [self] in presentedRecordings.append($0) }
+        let snapshots = snapshotRoot
+        services.readProject = readProject ?? { try ProjectStore.read(from: $0, snapshotRoot: snapshots) }
         services.screenScale = { [self] in screenScale }
         if let latestRetainedOutput { services.latestRetainedOutput = latestRetainedOutput }
         services.retention = { [clock, trash, activeFiles] in
@@ -1104,6 +1115,42 @@ struct ReopenLastImageTests {
         #expect(replies.snapshot == [false])
     }
 
+    @Test func quitWaitsForAProjectThatIsStillBeingSaved() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let delegate = AppDelegate(prefs: f.preferences, menu: NSMenu())
+        delegate.pipeline = f.pipeline
+        delegate.terminationGrace = .seconds(300)
+        let saves = ProjectSaveActivity()
+        delegate.projectSaves = saves
+        let replies = Box<[Bool]>([])
+        delegate.replyToTermination = { reply in replies.withValue { $0.append(reply) } }
+        saves.begin()
+        #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
+        for _ in 0..<3 { await Task.yield() }
+        #expect(replies.snapshot.isEmpty)
+        saves.end()
+        let replied = await eventually { replies.snapshot == [true] }
+        #expect(replied)
+    }
+
+    @Test func quitIsCancelledWhileAProjectSaveOutlastsTheGraceTime() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let delegate = AppDelegate(prefs: f.preferences, menu: NSMenu())
+        delegate.pipeline = f.pipeline
+        delegate.terminationGrace = .milliseconds(50)
+        let saves = ProjectSaveActivity()
+        delegate.projectSaves = saves
+        var warned = 0
+        delegate.notifyProjectSavePreventedQuit = { warned += 1 }
+        let replies = Box<[Bool]>([])
+        delegate.replyToTermination = { reply in replies.withValue { $0.append(reply) } }
+        saves.begin()
+        defer { saves.end() }
+        #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
+        let replied = await eventually { replies.snapshot == [false] }
+        #expect(replied && warned == 1)
+    }
+
     // MARK: menus
 
     @Test func statusMenuListsReopenLastImageRightAfterOpenRecent() throws {
@@ -1126,10 +1173,14 @@ struct ReopenLastImageTests {
         delegate.pipeline = f.pipeline
         let file = NSMenu(title: "File")
         delegate.populateFileMenu(file)
-        #expect(file.items.map(\.title) == ["Open Image…", "Reopen Last Image", "Close"])
+        #expect(file.items.map(\.title) == ["Open Image…", "Reopen Last Image", "Save as Project…", "Close"])
         let reopen = file.items[1]
         #expect(reopen.target === delegate && reopen.action != nil && reopen.keyEquivalent.isEmpty)
-        let keys = file.items.map(\.keyEquivalent).filter { !$0.isEmpty }
+        let saveProject = file.items[2]
+        #expect(saveProject.target == nil && saveProject.action == #selector(EditorWindowController.saveAsProject(_:)))
+        #expect(saveProject.keyEquivalent == "s" && saveProject.keyEquivalentModifierMask == [.command, .option])
+        let keys = file.items.filter { !$0.keyEquivalent.isEmpty }
+            .map { "\($0.keyEquivalentModifierMask.rawValue)-\($0.keyEquivalent)" }
         #expect(Set(keys).count == keys.count)
     }
 
@@ -1292,5 +1343,150 @@ struct ReopenLastImageTests {
         #expect(files.contains(a))
         drag = nil
         #expect(!files.contains(a))
+    }
+}
+
+@Suite("Opening editable projects")
+@MainActor
+struct ProjectOpeningTests {
+    private func saveProject(_ f: ReopenFixture, in folder: String = "Manual", annotations: [Annotation]) throws -> URL {
+        let folderURL = f.directory.appendingPathComponent(folder, isDirectory: true)
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let url = folderURL.appendingPathComponent("Bug report.glint")
+        let look = RenderSettings(padding: 30, cornerRadius: 4, shadow: .none, background: .transparent, autoBalance: false)
+        let state = ScreenshotProjectState(settings: look, annotations: annotations, backingScale: 2, source: "region")
+        try ProjectStore.write(GlintProject(state: .screenshot(state), source: .image(f.solid(3))), to: url)
+        return url
+    }
+
+    @Test func theAppDeclaresAndOwnsTheProjectType() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
+        let plist = try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let types = try #require(plist["UTExportedTypeDeclarations"] as? [[String: Any]])
+        let declared = try #require(types.first { $0["UTTypeIdentifier"] as? String == ProjectStore.contentType.identifier })
+        #expect((declared["UTTypeConformsTo"] as? [String])?.contains("com.apple.package") == true)
+        let tags = declared["UTTypeTagSpecification"] as? [String: Any]
+        #expect(tags?["public.filename-extension"] as? [String] == [ProjectStore.fileExtension])
+        let documents = try #require(plist["CFBundleDocumentTypes"] as? [[String: Any]])
+        let document = try #require(documents.first {
+            ($0["LSItemContentTypes"] as? [String]) == [ProjectStore.contentType.identifier]
+        })
+        #expect(document["LSHandlerRank"] as? String == "Owner" && document["LSTypeIsPackage"] as? Bool == true)
+        #expect(document["CFBundleTypeRole"] as? String == "Editor")
+    }
+
+    @Test func openingAProjectRestoresItsLookAndAnnotations() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let annotations = [Annotation(z: 0, kind: .redact(CGRect(x: 1, y: 1, width: 20, height: 10)))]
+        let url = try saveProject(f, annotations: annotations)
+
+        await f.pipeline.openProject(url)
+
+        let editor = try #require(f.presented.first)
+        #expect(editor.model.annotations == annotations)
+        #expect(editor.model.settings.padding == 30 && editor.model.backingScale == 2)
+        #expect(editor.window?.title == "Glint — Bug report")
+        #expect(f.recent == [url])
+        #expect(f.notifications.isEmpty)
+        editor.window?.close()
+    }
+
+    @Test func openFileSendsProjectsToTheProjectReader() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let url = try saveProject(f, annotations: [])
+        f.pipeline.openFile(url)
+        for _ in 0..<400 where f.presented.isEmpty { try await Task.sleep(nanoseconds: 5_000_000) }
+        let editor = try #require(f.presented.first)
+        #expect(!editor.model.isComposed && editor.model.isRestored)
+        editor.window?.close()
+    }
+
+    @Test func aProjectGlintCannotReadIsReportedAndNothingOpens() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let url = try saveProject(f, annotations: [])
+        let manifest = url.appendingPathComponent(ProjectStore.Member.manifest)
+        try Data(#"{"format":"io.github.mrashrhodes.glint.project","formatVersion":99}"#.utf8).write(to: manifest)
+
+        await f.pipeline.openProject(url)
+
+        #expect(f.presented.isEmpty && f.recent.isEmpty)
+        #expect(f.notifications.map(\.title) == ["Cannot open project"])
+        #expect(f.notifications.first?.body.contains("newer version of Glint") == true)
+    }
+
+    @Test func closingAScreenshotProjectDiscardsItsPrivateCopies() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let background = f.directory.appendingPathComponent("bg.png")
+        try Exporter.write(f.solid(3), to: background)
+        let url = f.directory.appendingPathComponent("Look.glint")
+        let look = RenderSettings(padding: 30, background: .image(path: background.path, fit: .fill), autoBalance: false)
+        try ProjectStore.write(GlintProject(state: .screenshot(ScreenshotProjectState(settings: look, annotations: [],
+                                                                                      backingScale: 2)),
+                                            source: .image(f.solid(3))), to: url)
+        await f.pipeline.openProject(url)
+        #expect(f.snapshotFolders().count == 1)
+
+        try #require(f.presented.first).window?.close()
+        for _ in 0..<400 where !f.snapshotFolders().isEmpty { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(f.snapshotFolders().isEmpty)
+        #expect(f.exists(url), "the project itself is untouched")
+    }
+
+    private func recordingProject(_ f: ReopenFixture, pixelSize: CGSize = CGSize(width: 64, height: 36),
+                                  trim: RecordingTrim = RecordingTrim(sourceDuration: 4)) throws -> (GlintProject, URL) {
+        let snapshot = f.snapshotRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        let clip = snapshot.appendingPathComponent("recording.mp4")
+        try Data("x".utf8).write(to: clip)
+        let state = RecordingProjectState(settings: RenderSettings(autoBalance: false), annotations: [], trim: trim,
+                                          options: RecordingExportOptions(format: .mp4), duration: 4,
+                                          pixelSize: pixelSize)
+        return (GlintProject(state: .recording(state), source: .video(clip), snapshotDirectory: snapshot), clip)
+    }
+
+    @Test func aRecordingProjectEditsAPrivateCopyOfItsClip() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        var trim = RecordingTrim(sourceDuration: 4)
+        trim.setStart(1)
+        let (project, clip) = try recordingProject(f, trim: trim)
+        f.readProject = { _ in project }
+        let url = f.directory.appendingPathComponent("Manual/Demo.glint")
+
+        await f.pipeline.openProject(url)
+
+        let editor = try #require(f.presentedRecordings.first)
+        #expect(editor.model.trim == trim && editor.model.options.format == .mp4)
+        #expect(editor.model.recording.url == clip && editor.model.recording.deletesFileOnClose)
+        #expect(f.recent == [url])
+        editor.window?.close()
+        for _ in 0..<400 where !f.snapshotFolders().isEmpty { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(!f.exists(clip) && f.snapshotFolders().isEmpty, "closing the editor removes only the private copy")
+    }
+
+    @Test func aRecordingProjectWithAnImpossibleSizeIsReportedInsteadOfCrashing() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let (project, _) = try recordingProject(f, pixelSize: CGSize(width: 1e20, height: 36))
+        f.readProject = { _ in project }
+
+        await f.pipeline.openProject(f.directory.appendingPathComponent("Manual/Huge.glint"))
+
+        #expect(f.presentedRecordings.isEmpty && f.recent.isEmpty)
+        #expect(f.notifications.map(\.title) == ["Cannot open project"])
+        #expect(f.snapshotFolders().isEmpty)
+    }
+
+    @Test func retentionCleanupNeverTouchesProjects() async throws {
+        let f = try ReopenFixture(); defer { f.cleanUp() }
+        let expired = try await f.keepExpiredImage(1)
+        let project = try saveProject(f, in: "History/Output", annotations: [])
+        #expect(!f.pipeline.retention.isManaged(project))
+
+        await f.pipeline.runOutputCleanup()
+
+        #expect(!f.exists(expired) && f.exists(project))
+        #expect(f.trash.trashed.map(\.lastPathComponent) == [expired.lastPathComponent])
+        #expect(f.latest.map { !$0.url.path.hasSuffix(".glint") } ?? true)
     }
 }

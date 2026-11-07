@@ -3,7 +3,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// The container a recording is exported to.
-public enum RecordingFileFormat: String, CaseIterable, Sendable, Equatable {
+public enum RecordingFileFormat: String, CaseIterable, Codable, Sendable, Equatable {
     case gif, mp4
 
     public var fileExtension: String { rawValue }
@@ -24,7 +24,7 @@ public enum RecordingFileFormat: String, CaseIterable, Sendable, Equatable {
 }
 
 /// Upper bound on a GIF's pixel width. Frames are never scaled up.
-public enum GIFMaxWidth: String, CaseIterable, Sendable, Equatable {
+public enum GIFMaxWidth: String, CaseIterable, Codable, Sendable, Equatable {
     case w480, w640, w720, original
 
     public var displayName: String {
@@ -55,7 +55,7 @@ public enum GIFMaxWidth: String, CaseIterable, Sendable, Equatable {
     }
 }
 
-public struct GIFExportOptions: Equatable, Sendable {
+public struct GIFExportOptions: Codable, Equatable, Sendable {
     public var framesPerSecond: Int
     public var maxWidth: GIFMaxWidth
 
@@ -63,15 +63,38 @@ public struct GIFExportOptions: Equatable, Sendable {
         self.framesPerSecond = framesPerSecond
         self.maxWidth = maxWidth
     }
+
+    private enum CodingKeys: String, CodingKey { case framesPerSecond, maxWidth }
+
+    /// Missing keys fall back to the defaults. A frame rate the picker can't show is refused rather than replaced,
+    /// so a project never reopens with export settings that differ from the ones it was saved with.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(framesPerSecond: try c.decodeIfPresent(Int.self, forKey: .framesPerSecond) ?? GIFLimits.defaultFrameRate,
+                  maxWidth: try c.decodeIfPresent(GIFMaxWidth.self, forKey: .maxWidth) ?? .w640)
+        guard GIFLimits.isSupported(framesPerSecond: framesPerSecond) else {
+            throw DecodingError.dataCorruptedError(forKey: .framesPerSecond, in: c,
+                                                   debugDescription: "Unsupported GIF frame rate \(framesPerSecond).")
+        }
+    }
 }
 
-public struct RecordingExportOptions: Equatable, Sendable {
+public struct RecordingExportOptions: Codable, Equatable, Sendable {
     public var format: RecordingFileFormat
     public var gif: GIFExportOptions
 
     public init(format: RecordingFileFormat = .gif, gif: GIFExportOptions = GIFExportOptions()) {
         self.format = format
         self.gif = gif
+    }
+
+    private enum CodingKeys: String, CodingKey { case format, gif }
+
+    /// Missing keys fall back to the defaults, like `AnnotationStyle`, so later fields can be added compatibly.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(format: try c.decodeIfPresent(RecordingFileFormat.self, forKey: .format) ?? .gif,
+                  gif: try c.decodeIfPresent(GIFExportOptions.self, forKey: .gif) ?? GIFExportOptions())
     }
 }
 

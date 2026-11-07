@@ -12,20 +12,40 @@ public struct EditorContext {
     /// time, and look changes made in the session are not remembered for the next capture.
     public let isComposed: Bool
     public let isRecording: Bool
+    /// The look and annotations of a reopened project. When set, the editor starts with exactly these:
+    /// remembered settings and auto-redaction are not applied, and changes made in the session are not
+    /// remembered for the next capture.
+    public let restored: EditorRestoreState?
 
     public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                isRecording: Bool = false) {
+                isRecording: Bool = false, restored: EditorRestoreState? = nil) {
         self.image = image
         self.backingScale = backingScale
         self.rawURL = rawURL
         self.source = source
         self.isComposed = isComposed
         self.isRecording = isRecording
+        self.restored = restored
     }
 
     var windowTitle: String {
         if isComposed { return "Glint — last image" }
+        if let name = restored?.projectName { return "Glint — \(name)" }
         return source.map { "Glint — \($0)" } ?? "Glint"
+    }
+}
+
+/// The editable state a project restores into the editor.
+public struct EditorRestoreState: Equatable {
+    public var settings: RenderSettings
+    public var annotations: [Annotation]
+    /// Shown in the window title, normally the project's file name without its extension.
+    public var projectName: String?
+
+    public init(settings: RenderSettings, annotations: [Annotation], projectName: String? = nil) {
+        self.settings = settings
+        self.annotations = annotations
+        self.projectName = projectName
     }
 }
 

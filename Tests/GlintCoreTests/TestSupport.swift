@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreText
 import Foundation
+import Testing
 @testable import GlintCore
 
 enum TestImages {
@@ -50,4 +51,13 @@ enum TestImages {
         let p = PixelBuffer(image)!.pixel(x, y)
         return (p.0, p.1, p.2, p.3)
     }
+}
+
+/// Fails unless both images have the same size and byte-for-byte identical RGBA8 pixels.
+func expectSamePixels(_ actual: CGImage, _ expected: CGImage, sourceLocation: SourceLocation = #_sourceLocation) throws {
+    #expect(actual.width == expected.width && actual.height == expected.height, sourceLocation: sourceLocation)
+    let a = try #require(PixelBuffer(actual), sourceLocation: sourceLocation)
+    let e = try #require(PixelBuffer(expected), sourceLocation: sourceLocation)
+    let firstDifference = zip(a.data, e.data).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+    #expect(firstDifference == nil, "First differing byte: \(firstDifference ?? -1)", sourceLocation: sourceLocation)
 }

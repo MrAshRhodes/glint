@@ -104,6 +104,8 @@ final class EditorModel: ObservableObject {
     let source: String?
     /// The image is already a finished output, so it opens flattened and its look isn't remembered.
     let isComposed: Bool
+    /// The editor was opened from a saved project, so its look is the project's and isn't remembered.
+    let isRestored: Bool
     let preferences: AppPreferences
     let presetStore: PresetStore
     /// Set when the editor only designs a preset; the image is a throwaway preview.
@@ -197,13 +199,14 @@ final class EditorModel: ObservableObject {
         self.rawURL = context.rawURL
         self.source = context.source
         self.isComposed = context.isComposed
+        self.isRestored = context.restored != nil
         self.preferences = preferences
         self.presetStore = presetStore
         self.design = design
         self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
-        var initialSettings = design?.settings
+        var initialSettings = design?.settings ?? context.restored?.settings
             ?? (context.isComposed ? .passThrough : EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore))
         if context.isRecording { initialSettings.autoBalance = false }
         self.settings = initialSettings
@@ -216,15 +219,23 @@ final class EditorModel: ObservableObject {
         self.defaultStyle = style
         self.presets = presetStore.presets
         self.designMakeDefault = designIsDefault
+        if design == nil, let restored = context.restored { self.annotations = restored.annotations }
         refreshWallpaper()
         requestRender()
-        if preferences.autoRedact, design == nil, !isComposed, !isRecording { Task { await self.runAutoRedact(announce: false) } }
+        if preferences.autoRedact, design == nil, !isComposed, !isRecording, !isRestored { Task { await self.runAutoRedact(announce: false) } }
     }
 
     // MARK: State helpers
 
-    /// A normal capture remembers its look for the next one; a preset designer or reopened image must not overwrite it.
-    private var remembersSettings: Bool { design == nil && !isComposed && !isRecording }
+    /// A normal capture remembers its look for the next one; a preset designer, reopened image or project must not
+    /// overwrite it.
+    private var remembersSettings: Bool { design == nil && !isComposed && !isRecording && !isRestored }
+
+    /// The editable state to save in a project: the original capture's look and annotations, never flattened.
+    func screenshotProjectState() -> ScreenshotProjectState {
+        ScreenshotProjectState(settings: settings, annotations: annotations, backingScale: Double(backingScale),
+                               source: source)
+    }
 
     var isEditable: Bool {
         settings.tilt.isFlat && settings.rotation == .none && !settings.flipHorizontal && !settings.flipVertical
