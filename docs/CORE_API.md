@@ -134,7 +134,8 @@ frame, honours task cancellation, and flags low-confidence results, sudden jumps
 the frame as uncertain intervals instead of following them.
 Encoded, the optional `track` key holds `keyframes` (`time`, `rect`, `source`), `uncertainIntervals` (`start`,
 `end`, `anchorTime`, `anchorRect`, optional `resolution`), `analyzedRange` and `frameBounds`; annotations without
-it decode untracked. Tracking is an aid: callers remain responsible for reviewing every frame.
+it decode untracked. Tracking is an aid: callers remain responsible for reviewing every frame. Editable projects
+(see Projects below) keep tracks, so a reopened recording is still blocked until its flagged time is reviewed.
 
 `Magnifier(source:inset:shape:showsSourceOutline:showsConnector:)` (the editor's **Zoom** tool): an enlarged copy
 of `source` drawn in `inset`, both `CGRect`s in image space; `inset` may lie partly or fully outside the image
@@ -415,10 +416,22 @@ public enum ProjectStore {
   `formatVersion` is `currentFormatVersion` (1). `validate(supportedFeatures:)` runs before `project.json` is decoded:
   a newer version throws `newerVersion`, an unknown required feature `unsupportedFeatures`. `generator` is
   informational only.
-- **Extension point:** a later feature that changes how a project renders adds a string to
-  `ProjectFeatures.supported` and returns it from `ProjectFeatures.required(by:)` when a project uses it, so older
-  builds refuse that project instead of rendering it wrongly. Optional fields that older builds can ignore need no
+- **Extension point:** a feature that changes how a project renders adds a string to `ProjectFeatures.supported` and
+  returns it from `ProjectFeatures.required(by:)` when a project uses it, so older builds refuse that project instead
+  of rendering it wrongly. `redactionTracks` is the first. Optional fields that older builds can ignore need no
   feature string; decode them with `decodeIfPresent` and a default.
+- **Tracked redactions:** `ProjectFeatures.redactionTracks` (`"redactionTracks"`, never renamed) is required, and so
+  written to `manifest.json`, exactly when some annotation in the state (screenshot or recording) has a `track`.
+  A project without one requires no feature and still opens in builds that predate #79. A build that doesn't know the
+  feature refuses the project with `unsupportedFeatures` ("Update Glint to open it") rather than opening it with
+  redactions that no longer follow their content. Tracks round-trip whole (keyframes, uncertain intervals and their
+  resolutions, analysed range, frame bounds), so a reopened recording keeps its per-frame rect, flagged intervals and
+  fail-safe cover, and `RedactionGate` still blocks Export, Copy, Share and Drag until every flagged interval inside
+  the trim is accepted, keyframed or trimmed away. A track with more than `RedactionTrack.maxKeyframes` (100,000)
+  keyframes or `maxUncertainIntervals` (1,000) intervals fails to decode, so `read` refuses the project as `damaged`.
+  A track that is merely invalid (no keyframes, overlapping intervals, missing frame bounds) still opens, covers the
+  whole frame and blocks export until its redaction is deleted or trimmed away. `write` refuses a `project.json` over
+  `Limits.projectBytes` (64 MiB) with `writeFailed`, so a project that saves also reopens.
 - `write` encodes into a staging folder next to `url` and swaps it in with one replace, so a failure leaves any
   existing project untouched. Image backgrounds and watermarks are re-encoded into `assets/` (the user's file paths are
   never stored); a desktop-wallpaper background stores only the setting. Recordings are copied in, never moved.
