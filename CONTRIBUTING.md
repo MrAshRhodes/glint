@@ -20,7 +20,7 @@ make run        # assemble dist/Glint.app and open it
 | Target | What it does |
 | --- | --- |
 | `make build` / `make release` | Debug / optimized build of every target. |
-| `make test` | Runs the Swift Testing suite. |
+| `make test` | Runs the Swift Testing suite, one test at a time (see below). |
 | `make app` | Assembles `dist/Glint.app` for this Mac and signs it, ad-hoc unless `GLINT_SIGN_IDENTITY` is set (`CONFIG=debug` for a debug build). See [Signing and permissions](#signing-and-permissions). |
 | `make universal` | Same, with arm64 and x86_64 slices merged by `lipo`. |
 | `make run` | `make app`, then opens the app. It is a menu bar app, so look for its icon in the menu bar. |
@@ -33,6 +33,8 @@ make run        # assemble dist/Glint.app and open it
 | `make clean` | Removes `.build` and `dist`. |
 
 Every SwiftPM call goes through `Scripts/swiftw.sh`. With Xcode installed it is plain `swift`; on a Command Line Tools-only Mac it adds the flags described next.
+
+`make test` and CI run the suite with `--no-parallel`, one test at a time. Many tests open real AppKit windows, which all share the one main thread. Run together on a small machine such as a 3-core CI runner, they queue behind each other and their timed waits expire although nothing is wrong. Pass the same flag when you call `swift test` yourself.
 
 ### Profiling the capture overlay
 
@@ -134,7 +136,7 @@ Glint builds without Xcode, with a few differences:
 
   ```sh
   CLT=/Library/Developer/CommandLineTools/Library/Developer
-  swift test --build-system native \
+  swift test --build-system native --no-parallel \
     -Xswiftc -F -Xswiftc $CLT/Frameworks \
     -Xlinker -F -Xlinker $CLT/Frameworks \
     -Xlinker -rpath -Xlinker $CLT/Frameworks \

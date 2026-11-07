@@ -32,8 +32,10 @@ jobs:
 
       # A normal run takes a few minutes. If it stalls, print stack samples of the test processes so the
       # cause can be found, instead of letting the job time out with no evidence.
+      # Tests run one at a time: the editor tests open real AppKit windows on the one main thread, so on a
+      # 3-core runner running them together queues their timed waits behind each other until they expire.
       - name: Test
-        run: Scripts/run_with_hang_sampler.sh --minutes 12 -- swift test
+        run: Scripts/run_with_hang_sampler.sh --minutes 12 -- swift test --no-parallel
 
       - name: Test the product site
         run: node --test .github/scripts/site.test.cjs
