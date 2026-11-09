@@ -223,6 +223,26 @@ After `make test` and `make app`, check the same selection through area, area-to
 
 Profile both the first overlay and a warm overlay with snapping off/on. Record candidate preparation separately from input handling and drawing; synthetic geometry timings alone cannot establish that first-load lag ([#42](https://github.com/MrAshRhodes/glint/issues/42)) is unchanged. Do not enumerate windows, capture pixels or run a detector per pointer event.
 
+## Capture focus and self-capture checks
+
+After changing screenshot acquisition or selection, run the focused capture and pipeline tests with
+`Scripts/swiftw.sh test --no-parallel --filter 'WindowEnumeratorTests|ImageGrabberTests|SelectionOverlayTests|SelectionSessionTests|CaptureGeometryTests|ScreenCapturerTests|CaptureWindowLifecycleTests|CapturePipelineTests'`
+and `make build`. Build the native app with `make app CONFIG=debug` for the checks below. Synthetic
+image tests establish pixel routing and lifecycle behavior, not another app's actual focus behavior.
+
+| Target | Native checks |
+| --- | --- |
+| Glint editor | Leave an unsaved annotation visible. With **Hide Glint windows while capturing** off, capture it by area, window, full screen and repeat-last. With the default on, confirm exclusion. Cancel with Esc/right-click and verify the same editor, annotations and undo history remain. |
+| Raycast, Spotlight, menu-bar menu, context menu, popover | Start with each open, use capture hotkeys, and inspect actual area/window/full-screen/repeat output and OCR content. Verify floating panels, not just popup-menu-level windows. Use synthetic content without personal data. |
+| Ordinary windows | Check independent-window capture, transparency, the shadow option, cursor setting, clipboard-only output and editor output. |
+| Timer and entry points | Select an area, reopen a popup during the countdown, and confirm the final image uses the new state. Clicking the menu bar or confirming a URL can dismiss popups before capture starts; preserve URL consent and document this limitation. |
+| Displays and cleanup | Exercise negative display origins, mixed 1x/2x scales, secondary-display selection, Space/Return/Esc, modifiers and snapping. Repeat success, cancellation, denied permission and capture errors; ensure no late panels or retained snapshot buffers. |
+
+Use optimized cold/warm runs and the overlay signposts described above to compare snapshot acquisition
+and first-presentation costs separately. Do not treat drawing CPU measurements as end-to-end latency.
+Record unavailable applications or display arrangements as unverified, not passed. Recording and
+scrolling capture must remain live and must not inherit screenshot freezing.
+
 ## Reopen Last Image and Output retention
 
 Keeping copied and dragged images is opt-in ([#52](https://github.com/MrAshRhodes/glint/issues/52)). Unit tests use temporary directories, a controllable clock, an injected trash closure and private `UserDefaults` suites, never your real Output folder or Trash.

@@ -24,49 +24,64 @@ public struct DisplayInfo: Sendable {
 struct SelectionWindowSnapshot {
     var windows: [WindowInfo] = []
     var snapWindows: [SnapWindow] = []
-    /// Other apps' menus, pop-ups and tooltips. They can close as soon as the overlay is clicked.
+    /// Raised panels, menus and tooltips that can close as soon as focus changes.
     var transientWindows: [WindowInfo] = []
 }
 
 public enum WindowEnumerator {
     static let popUpMenuLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
     static let screenSaverLevel = Int(CGWindowLevelForKey(.screenSaverWindow))
+    static let reservedChromeLevels: Set<Int> = [
+        Int(CGWindowLevelForKey(.dockWindow)), Int(CGWindowLevelForKey(.mainMenuWindow))
+    ]
 
-    /// On-screen windows that can be picked (normal-layer windows and other apps' open menus),
-    /// ordered front to back, excluding this process.
-    public static func onScreenWindows(excludingOwnProcess: Bool = true, minSize: CGFloat = 24) -> [WindowInfo] {
-        selectionSnapshot(excludingOwnProcess: excludingOwnProcess, minSize: minSize).windows
+    /// Pickable app windows and transient surfaces, ordered front to back.
+    public static func onScreenWindows(
+        excludingOwnProcess: Bool = true, excludingWindowIDs: Set<CGWindowID> = [], minSize: CGFloat = 24
+    ) -> [WindowInfo] {
+        selectionSnapshot(excludingOwnProcess: excludingOwnProcess, excludingWindowIDs: excludingWindowIDs,
+                          minSize: minSize).windows
     }
 
     /// One metadata-only snapshot, taken before the overlay appears. Non-target windows still occlude edges.
-    static func selectionSnapshot(excludingOwnProcess: Bool = true, minSize: CGFloat = 24) -> SelectionWindowSnapshot {
+    static func selectionSnapshot(
+        excludingOwnProcess: Bool = true, excludingWindowIDs: Set<CGWindowID> = [], minSize: CGFloat = 24
+    ) -> SelectionWindowSnapshot {
         let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
             return SelectionWindowSnapshot()
         }
         return selectionSnapshot(from: list, ownPID: ProcessInfo.processInfo.processIdentifier,
-                                 excludingOwnProcess: excludingOwnProcess, minSize: minSize)
+                                 excludingOwnProcess: excludingOwnProcess, excludingWindowIDs: excludingWindowIDs,
+                                 minSize: minSize)
     }
 
-    /// Parses CGWindowList dictionaries (front to back). Targets are normal-layer windows plus other apps'
-    /// pop-up menus; transient windows are other apps' windows between the pop-up menu and screen saver levels.
+    /// Parses front-to-back metadata without relying on app names. Non-target surfaces still occlude snapping.
     static func selectionSnapshot(
-        from list: [[String: Any]], ownPID: pid_t, excludingOwnProcess: Bool = true, minSize: CGFloat = 24,
-        transientMinSize: CGFloat = 4, popUpMenuLevel: Int = WindowEnumerator.popUpMenuLevel,
+        from list: [[String: Any]], ownPID: pid_t, excludingOwnProcess: Bool = true,
+        excludingWindowIDs: Set<CGWindowID> = [], minSize: CGFloat = 24, transientMinSize: CGFloat = 4,
         screenSaverLevel: Int = WindowEnumerator.screenSaverLevel
     ) -> SelectionWindowSnapshot {
         var snapshot = SelectionWindowSnapshot()
+        var options = CaptureOptions()
+        options.excludeOwnWindows = excludingOwnProcess
+        options.excludedWindowIDs = excludingWindowIDs
         for d in list {
             guard let num = d[kCGWindowNumber as String] as? UInt32,
                   let pid = d[kCGWindowOwnerPID as String] as? Int32,
                   let bd = d[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: bd),
                   let layer = d[kCGWindowLayer as String] as? Int else { continue }
-            if (d[kCGWindowAlpha as String] as? Double ?? 1) < 0.05 { continue }
-            let own = pid == ownPID
-            let isTarget = ((layer == 0 && !(excludingOwnProcess && own)) || (layer == popUpMenuLevel && !own))
-                && frame.width >= minSize && frame.height >= minSize
-            let isTransient = !own && layer >= popUpMenuLevel && layer < screenSaverLevel
+            guard num != kCGNullWindowID, !excludingWindowIDs.contains(num),
+                  [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height].allSatisfy(\.isFinite),
+                  frame.size.width > 0, frame.size.height > 0,
+                  (d[kCGWindowIsOnscreen as String] as? Bool ?? true) else { continue }
+            let alpha = d[kCGWindowAlpha as String] as? Double ?? 1
+            guard alpha.isFinite, alpha >= 0.05 else { continue }
+            let isEligible = layer >= 0 && layer < screenSaverLevel && !reservedChromeLevels.contains(layer)
+                && !options.excludesWindow(num, pid: pid, ownPID: ownPID)
+            let isTarget = isEligible && frame.width >= minSize && frame.height >= minSize
+            let isTransient = isEligible && layer > 0
                 && frame.width >= transientMinSize && frame.height >= transientMinSize
             snapshot.snapWindows.append(SnapWindow(frame: frame, isTarget: isTarget))
             guard isTarget || isTransient else { continue }

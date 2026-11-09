@@ -36,6 +36,24 @@ final class CapturePipeline {
             $0.showEditor()
         }
         var screenScale: @MainActor () -> CGFloat = { NSScreen.main?.backingScaleFactor ?? 2 }
+        var captureWindows: @MainActor () -> [NSWindow] = { NSApp.orderedWindows }
+        var capture: @MainActor (ScreenCapturer, Mode, @escaping (Int) -> Void) async throws -> CaptureResult = {
+            capturer, mode, onTick in
+            switch mode {
+            case .area, .areaToClipboard: return try await capturer.captureArea()
+            case .window: return try await capturer.captureWindow()
+            case .fullscreen: return try await capturer.captureFullscreen()
+            case .repeatLast: return try await capturer.captureLastArea()
+            case .timer(let seconds):
+                return try await capturer.captureWithTimer(seconds: seconds, mode: .area, onTick: onTick)
+            case .text, .scrolling:
+                throw CaptureError.failed("This capture mode requires its dedicated capture operation.")
+            }
+        }
+        var captureText: @MainActor (ScreenCapturer) async throws -> CGImage = {
+            try await $0.captureTextOnly()
+        }
+        var permissionDenied: @MainActor () -> Void = { PermissionsWindow.shared.show() }
         var makeScrollingCapture: @MainActor () -> any ScrollingCapture = { ScreenCapturer.shared.scrollingSession() }
         var readProject: @Sendable (URL) throws -> GlintProject = { try ProjectStore.read(from: $0) }
         var presentRecordingEditor: @MainActor (RecordingEditorWindowController) -> Void = {
@@ -92,59 +110,66 @@ final class CapturePipeline {
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
         capturer.options.snapToEdges = prefs.snapToEdges
+        let windows = services.captureWindows()
+        capturer.options.excludeOwnWindows = prefs.hideWindowsDuringCapture
+        capturer.options.excludedWindowIDs = Set(windows.compactMap {
+            $0.identifier == QuickAccessPanel.windowIdentifier ? CGWindowID(exactly: $0.windowNumber) : nil
+        })
         let remember = defaults.object(forKey: ShellKey.rememberArea) as? Bool ?? true
         if !remember { capturer.lastArea = nil }
-        let hidden = prefs.hideWindowsDuringCapture ? hideOwnWindows() : []
+        var hidden = prefs.hideWindowsDuringCapture ? hideOwnWindows(windows) : []
+        func restoreWindows() {
+            for window in hidden.reversed() { window.orderFront(nil) }
+            hidden.removeAll()
+        }
 
         return Task { @MainActor in
             defer {
                 busy = false
                 activeScroll = nil
                 onStatusTitle?(nil)
-                for w in hidden { w.orderFront(nil) }
+                restoreWindows()
             }
             do {
+                try Task.checkCancellation()
                 switch mode {
                 case .text:
-                    let image = try await capturer.captureTextOnly()
+                    let image = try await services.captureText(capturer)
+                    try Task.checkCancellation()
+                    restoreWindows()
                     await recognizeText(in: image)
                 case .scrolling:
                     let session = services.makeScrollingCapture()
                     activeScroll = session
                     let result = try await session.run()
                     activeScroll = nil
-                    for w in hidden { w.orderFront(nil) }
+                    try Task.checkCancellation()
+                    restoreWindows()
                     await handle(result, source: String(describing: result.kind))
                 case .area, .window, .fullscreen, .repeatLast, .areaToClipboard, .timer:
-                    let result: CaptureResult
-                    switch mode {
-                    case .area, .areaToClipboard: result = try await capturer.captureArea()
-                    case .window: result = try await capturer.captureWindow()
-                    case .fullscreen: result = try await capturer.captureFullscreen()
-                    case .repeatLast: result = try await capturer.captureLastArea()
-                    case .timer(let s):
-                        result = try await capturer.captureWithTimer(seconds: s, mode: .area) { [weak self] remaining in
-                            self?.onStatusTitle?(remaining > 0 ? " \(remaining)" : nil)
-                        }
-                    default: return
+                    let result = try await services.capture(capturer, mode) { [weak self] remaining in
+                        self?.onStatusTitle?(remaining > 0 ? " \(remaining)" : nil)
                     }
-                    for w in hidden { w.orderFront(nil) }
+                    try Task.checkCancellation()
+                    restoreWindows()
                     var forceClipboard = false
                     if case .areaToClipboard = mode { forceClipboard = true }
                     await handle(result, source: String(describing: result.kind), clipboardOnly: forceClipboard)
                 }
             } catch CaptureError.cancelled {
                 // user pressed Esc
+            } catch is CancellationError {
+                // The capture task was cancelled before it produced an output.
             } catch CaptureError.permissionDenied {
-                PermissionsWindow.shared.show()
+                services.permissionDenied()
             } catch {
-                Notifier.post(title: "Capture failed", body: error.localizedDescription)
+                services.notify("Capture failed", error.localizedDescription, nil)
             }
         }
     }
 
-    private func hideOwnWindows() -> [NSWindow] {
-        let visible = NSApp.windows.filter { $0.isVisible && $0.level == .normal && !($0 is NSPanel) }
+    private func hideOwnWindows(_ windows: [NSWindow]) -> [NSWindow] {
+        let visible = windows.filter { $0.isVisible && $0.level == .normal && !($0 is NSPanel) }
         visible.forEach { $0.orderOut(nil) }
         return visible
     }
@@ -152,6 +177,7 @@ final class CapturePipeline {
     func recognizeText(in image: CGImage) async {
         do {
             let lines = try await services.recognize(image, TextRecognizer.Options())
+            guard !Task.isCancelled else { return }
             let text = lines.map(\.text).joined(separator: "\n")
             guard !text.isEmpty else {
                 services.notify("No text found", "Nothing was recognised in the selected area.", nil)
@@ -161,6 +187,7 @@ final class CapturePipeline {
             services.sound()
             services.notify("Text copied", "Recognized text copied to clipboard", nil)
         } catch {
+            guard !Task.isCancelled else { return }
             services.notify("Text recognition failed", error.localizedDescription, nil)
         }
     }
@@ -193,9 +220,11 @@ final class CapturePipeline {
             while true {
                 do {
                     let lines = try await services.recognize(image, opts.recognizer)
+                    guard !Task.isCancelled else { return }
                     redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
                     break
                 } catch {
+                    guard !Task.isCancelled else { return }
                     let message = "The image was not exported because text recognition failed: \(error.localizedDescription)"
                     services.notify("Auto-redaction failed", message, nil)
                     guard services.requestRetry("Auto-redaction failed", message) else { return }
@@ -213,6 +242,8 @@ final class CapturePipeline {
                 }
             }
         }
+        // A cancelled capture task must not publish output that finished late.
+        guard !Task.isCancelled else { return }
         if prefs.openEditorAfterCapture && !clipboardOnly {
             openEditor(image: working, scale: scale, rawURL: rawURL, source: source)
         } else {

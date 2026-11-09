@@ -13,6 +13,14 @@ enum OverlayStartMode { case area, window }
 final class SelectionSession {
     enum Mode { case area, window }
 
+    struct Services {
+        var snapshot: @MainActor (Bool, Set<CGWindowID>) -> SelectionWindowSnapshot = {
+            WindowEnumerator.selectionSnapshot(excludingOwnProcess: $0, excludingWindowIDs: $1)
+        }
+        var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
+        var present: @MainActor (SelectionSession) -> Void = { $0.presentOverlay() }
+    }
+
     var mode: Mode
     var selection: CGRect?          // CG coords, in-progress drag rectangle
     var cursor: CGPoint = .zero     // CG coords
@@ -41,60 +49,112 @@ final class SelectionSession {
     private var shift = false
     private var command = false
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
+    private var isRunning = false
+    private var completionError: Error?
     private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
-    private let freeze: (([DisplayInfo]) async -> [FrozenDisplay])?
-    /// Displays grabbed before the overlay appeared because other apps' menus or pop-ups were open.
+    private let freeze: (([DisplayInfo]) async throws -> [FrozenDisplay])?
+    private let excludeOwnWindows: Bool
+    private let excludedWindowIDs: Set<CGWindowID>
+    private let services: Services
+    /// Displays grabbed before any overlay was created or took focus; retained until the result is consumed.
     private(set) var frozen: [FrozenDisplay] = []
 
     init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false,
-         freeze: (([DisplayInfo]) async -> [FrozenDisplay])? = nil) {
+         freeze: (([DisplayInfo]) async throws -> [FrozenDisplay])? = nil,
+         excludeOwnWindows: Bool = true, excludedWindowIDs: Set<CGWindowID> = [],
+         services: Services = Services()) {
         self.mode = mode == .area ? .area : .window
         self.lastArea = lastArea
         self.snapToEdges = snapToEdges
         self.primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         self.freeze = freeze
+        self.excludeOwnWindows = excludeOwnWindows
+        self.excludedWindowIDs = excludedWindowIDs
+        self.services = services
     }
 
     func run() async throws -> SelectionOutcome {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            isRunning = true
+            do {
+                try await prepare()
+                try Task.checkCancellation()
+                if let completionError { throw completionError }
+                let outcome = try await withCheckedThrowingContinuation { cont in
+                    continuation = cont
+                    services.present(self)
+                }
+                try Task.checkCancellation()
+                return outcome
+            } catch {
+                finish(.failure(error))
+                frozen.removeAll()
+                throw error
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.finish(.failure(CancellationError()))
+            }
+        }
+    }
+
+    func takeFrozen() -> [FrozenDisplay] {
+        defer { frozen.removeAll() }
+        return frozen
+    }
+
+    private func prepare() async throws {
         firstDrawInterval = OverlayPerformance.begin("OverlayFirstDraw")
         let setup = OverlayPerformance.begin("OverlaySetup")
-        let snapshot = OverlayPerformance.measure("WindowEnumeration") { WindowEnumerator.selectionSnapshot() }
+        defer { OverlayPerformance.end("OverlaySetup", setup) }
+        let snapshot = OverlayPerformance.measure("WindowEnumeration") {
+            services.snapshot(excludeOwnWindows, excludedWindowIDs)
+        }
         windows = snapshot.windows
-        displays = WindowEnumerator.displays()
+        displays = services.displays()
+        guard !displays.isEmpty else { throw CaptureError.noDisplay }
         targets = Dictionary(uniqueKeysWithValues: displays.map {
             ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
         })
-        if let freeze, !snapshot.transientWindows.isEmpty {
-            // Other apps' menus and pop-ups can still close once the overlay is clicked; keep them as they look now.
+        if let freeze {
             let interval = OverlayPerformance.begin("FreezeCapture")
-            frozen = await freeze(displays)
-            OverlayPerformance.end("FreezeCapture", interval)
+            defer { OverlayPerformance.end("FreezeCapture", interval) }
+            let captured = try await freeze(displays)
+            try Task.checkCancellation()
+            if let completionError { throw completionError }
+            guard captured.count == displays.count, displays.allSatisfy({ display in
+                captured.contains { $0.display.id == display.id && $0.display.frame == display.frame }
+            }) else {
+                throw CaptureError.failed("Could not freeze every display before selection.")
+            }
+            frozen = captured
         }
         shift = NSEvent.modifierFlags.contains(.shift)
         command = NSEvent.modifierFlags.contains(.command)
         cursor = CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: primaryHeight)
-        return try await withCheckedThrowingContinuation { cont in
-            defer { OverlayPerformance.end("OverlaySetup", setup) }
-            continuation = cont
-            let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
-            for screen in NSScreen.screens {
-                let id = WindowEnumerator.displayID(of: screen)
-                let background = frozen.first { $0.display.id == id }?.image
-                let panel = OverlayPerformance.measure("PanelCreation") {
-                    OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight,
-                                 background: background)
-                }
-                panels.append(panel)
-                panel.orderFrontRegardless()
+    }
+
+    private func presentOverlay() {
+        let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
+        for screen in NSScreen.screens {
+            let id = WindowEnumerator.displayID(of: screen)
+            let background = frozen.first { $0.display.id == id }?.image
+            let panel = OverlayPerformance.measure("PanelCreation") {
+                OverlayPanel(screen: screen, session: self, level: level, primaryHeight: primaryHeight,
+                             background: background)
             }
-            if let panel = panels.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? panels.first {
-                OverlayFocus.makeKey(panel)
-            }
-            updateHover()
-            refresh()
-            NSCursor.crosshair.set()
+            panels.append(panel)
+            panel.orderFrontRegardless()
         }
+        guard !panels.isEmpty else { finish(.failure(CaptureError.noDisplay)); return }
+        if let panel = panels.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? panels.first {
+            OverlayFocus.makeKey(panel)
+        }
+        updateHover()
+        refresh()
+        NSCursor.crosshair.set()
     }
 
     func refresh() { panels.forEach { ($0.contentView as? OverlayView)?.refresh() } }
@@ -192,8 +252,14 @@ final class SelectionSession {
     }
 
     private func finish(_ result: Result<SelectionOutcome, Error>) {
-        guard let c = continuation else { return }
+        guard isRunning else { return }
+        isRunning = false
+        let c = continuation
         continuation = nil
+        if case .failure(let error) = result {
+            completionError = error
+            frozen.removeAll()
+        }
         OverlayPerformance.end("OverlayFirstDraw", firstDrawInterval, cancelled: true)
         firstDrawInterval = nil
         panels.forEach {
@@ -202,8 +268,12 @@ final class SelectionSession {
             $0.close()
         }
         panels.removeAll()
+        windows.removeAll()
+        displays.removeAll()
+        targets.removeAll()
+        drag = nil
         NSCursor.arrow.set()
-        c.resume(with: result)
+        c?.resume(with: result)
     }
 }
 
