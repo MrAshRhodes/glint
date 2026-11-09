@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-09
+
 ### Fixed
 
 - Screenshot capture now honors **Hide Glint windows while capturing** throughout image acquisition and window selection: turn it off to capture the editor without losing the existing editing session. Immediate selections preserve the desktop before taking focus, and window picking supports floating panels as well as menus. Snapshot failures are reported instead of silently capturing a later image with missing content. Timers remain live, and the hide preference remains enabled by default. ([#88])
@@ -243,7 +245,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MrAshRhodes/glint/compare/v1.5.5...v1.6.0
