@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Fixed
+
+- Screenshot capture now honors **Hide Glint windows while capturing** throughout image acquisition and window selection: turn it off to capture the editor without losing the existing editing session. Immediate selections preserve the desktop before taking focus, and window picking supports floating panels as well as menus. Snapshot failures are reported instead of silently capturing a later image with missing content. Timers remain live, and the hide preference remains enabled by default. ([#88])
+
 ## [1.8.0] - 2026-11-07
 
 ### Added
@@ -291,3 +295,4 @@ First public release.
 [#79]: https://github.com/MrAshRhodes/glint/issues/79
 [#80]: https://github.com/MrAshRhodes/glint/issues/80
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
+[#88]: https://github.com/MrAshRhodes/glint/issues/88

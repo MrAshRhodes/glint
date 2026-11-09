@@ -117,6 +117,8 @@ struct CaptureGeometryTests {
         #expect(top.rect == CGRect(x: -100, y: -20, width: 30, height: 20))
         #expect(top.grab.scale == 2)
         #expect(top.grab.image.width == 60 && top.grab.image.height == 40)
+        // The crop owns its pixels rather than sharing the full display buffer's 200-pixel rows.
+        #expect(top.grab.image.bytesPerRow < 200 * 4)
         #expect(try firstPixel(top.grab.image) == [255, 0, 0, 255])
         let bottom = try #require(frozen.crop(CGRect(x: -50, y: 30, width: 20, height: 20)))
         #expect(bottom.grab.image.width == 40 && bottom.grab.image.height == 40)

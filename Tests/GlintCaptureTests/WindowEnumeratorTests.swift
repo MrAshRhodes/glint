@@ -19,9 +19,11 @@ struct WindowEnumeratorTests {
          kCGWindowOwnerName as String: "App \(pid)"]
     }
 
-    private func snapshot(_ list: [[String: Any]], excludingOwnProcess: Bool = true) -> SelectionWindowSnapshot {
+    private func snapshot(
+        _ list: [[String: Any]], excludingOwnProcess: Bool = true, excludingWindowIDs: Set<CGWindowID> = []
+    ) -> SelectionWindowSnapshot {
         WindowEnumerator.selectionSnapshot(from: list, ownPID: me, excludingOwnProcess: excludingOwnProcess,
-                                           popUpMenuLevel: menuLevel, screenSaverLevel: screenSaverLevel)
+                                           excludingWindowIDs: excludingWindowIDs, screenSaverLevel: screenSaverLevel)
     }
 
     @Test func otherAppsMenusArePickableAndTransient() {
@@ -51,7 +53,7 @@ struct WindowEnumeratorTests {
         #expect(WindowEnumerator.window(at: CGPoint(x: 600, y: 400), in: result.windows)?.id == 9)
     }
 
-    @Test func normalLayerTargetsAreUnchanged() {
+    @Test func floatingAndStatusSurfacesAreTargetsAlongsideNormalWindows() {
         let list = [
             entry(1, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: 300, height: 300)),
             entry(2, pid: me, layer: 0, frame: CGRect(x: 0, y: 0, width: 300, height: 300)),
@@ -61,17 +63,92 @@ struct WindowEnumeratorTests {
             entry(6, pid: other, layer: 25, frame: CGRect(x: 900, y: 0, width: 40, height: 30))
         ]
         let result = snapshot(list)
-        #expect(result.windows.map(\.id) == [4])
-        #expect(result.transientWindows.isEmpty)
-        #expect(snapshot(list, excludingOwnProcess: false).windows.map(\.id) == [2, 4])
+        #expect(result.windows.map(\.id) == [1, 4, 6])
+        #expect(result.transientWindows.map(\.id) == [1, 6])
+        #expect(snapshot(list, excludingOwnProcess: false).windows.map(\.id) == [1, 2, 4, 6])
     }
 
-    @Test func ownMenusAreNeverTargetsOrTransientEvenWhenIncludingOwnWindows() {
+    @Test func ownEditorAndPopoversFollowOwnWindowOption() {
         let list = [entry(1, pid: me, layer: menuLevel, frame: CGRect(x: 0, y: 0, width: 200, height: 200)),
-                    entry(2, pid: me, layer: 200, frame: CGRect(x: 0, y: 0, width: 200, height: 200))]
+                    entry(2, pid: me, layer: 200, frame: CGRect(x: 0, y: 0, width: 200, height: 200)),
+                    entry(3, pid: me, layer: 3, frame: CGRect(x: 0, y: 0, width: 200, height: 200)),
+                    entry(4, pid: me, layer: 0, frame: CGRect(x: 0, y: 0, width: 200, height: 200))]
+        let excluded = snapshot(list)
+        #expect(excluded.windows.isEmpty)
+        #expect(excluded.transientWindows.isEmpty)
+        let included = snapshot(list, excludingOwnProcess: false)
+        #expect(included.windows.map(\.id) == [1, 2, 3, 4])
+        #expect(included.transientWindows.map(\.id) == [1, 2, 3])
+        #expect(included.snapWindows.allSatisfy { $0.isTarget })
+    }
+
+    @Test func explicitHelperIdentitiesAreExcludedEvenDuringSelfCapture() {
+        let frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        let list = [entry(1, pid: me, layer: 3, frame: frame),
+                    entry(2, pid: other, layer: 0, frame: frame),
+                    entry(3, pid: me, layer: menuLevel, frame: frame),
+                    entry(4, pid: me, layer: 0, frame: frame)]
+        let included = snapshot(list, excludingOwnProcess: false, excludingWindowIDs: [1, 2])
+        #expect(included.windows.map(\.id) == [3, 4])
+        #expect(included.transientWindows.map(\.id) == [3])
+        #expect(included.snapWindows.count == 2)
+        let excluded = snapshot(list, excludingWindowIDs: [1, 2])
+        #expect(excluded.windows.isEmpty && excluded.transientWindows.isEmpty)
+    }
+
+    @Test func lowerTransientLevelsArePreservedInFrontToBackOrder() {
+        let levels: [CGWindowLevelKey] = [
+            .helpWindow, .popUpMenuWindow, .statusWindow, .utilityWindow, .modalPanelWindow, .floatingWindow
+        ]
+        let list = levels.enumerated().map { index, level in
+            entry(UInt32(index + 1), pid: other, layer: Int(CGWindowLevelForKey(level)),
+                  frame: CGRect(x: CGFloat(index * 10), y: CGFloat(index * 10), width: 200, height: 200))
+        }
+        let result = snapshot(list)
+        #expect(result.windows.map(\.id) == [1, 2, 3, 4, 5, 6])
+        #expect(result.transientWindows.map(\.id) == [1, 2, 3, 4, 5, 6])
+        #expect(result.snapWindows.allSatisfy { $0.isTarget })
+        #expect(WindowEnumerator.window(at: CGPoint(x: 100, y: 100), in: result.windows)?.id == 1)
+    }
+
+    @Test func chromeAndAboveScreenSaverSurfacesOnlyOccludeSnapping() {
+        let levels: [CGWindowLevelKey] = [.screenSaverWindow, .mainMenuWindow, .dockWindow,
+                                         .desktopIconWindow, .desktopWindow]
+        var list = levels.enumerated().map { index, level in
+            entry(UInt32(index + 1), pid: other, layer: Int(CGWindowLevelForKey(level)),
+                  frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        }
+        list.append(entry(6, pid: me, layer: screenSaverLevel + 1,
+                          frame: CGRect(x: 0, y: 0, width: 200, height: 200)))
         let result = snapshot(list, excludingOwnProcess: false)
-        #expect(result.windows.isEmpty)
-        #expect(result.transientWindows.isEmpty)
+        #expect(result.windows.isEmpty && result.transientWindows.isEmpty)
+        #expect(result.snapWindows.count == list.count)
+        #expect(result.snapWindows.allSatisfy { !$0.isTarget })
+    }
+
+    @Test func targetingDoesNotDependOnOwnerOrWindowNames() {
+        let frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        var unnamed = entry(1, pid: other, layer: 3, frame: frame)
+        unnamed[kCGWindowOwnerName as String] = nil
+        var systemOwned = entry(2, pid: other, layer: 8, frame: frame)
+        systemOwned[kCGWindowOwnerName as String] = "SystemUIServer"
+        systemOwned[kCGWindowName as String] = ""
+        let result = snapshot([unnamed, systemOwned])
+        #expect(result.windows.map(\.id) == [1, 2])
+        #expect(result.transientWindows.map(\.id) == [1, 2])
+    }
+
+    @Test func tinySurfacesOccludeButOnlyVisibleSizedTransientsAreRetained() {
+        let list = [
+            entry(1, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: 3, height: 3)),
+            entry(2, pid: other, layer: 8, frame: CGRect(x: 0, y: 0, width: 4, height: 4)),
+            entry(3, pid: other, layer: 19, frame: CGRect(x: 0, y: 0, width: 24, height: 24), alpha: 0.05),
+            entry(4, pid: other, layer: 25, frame: CGRect(x: 0, y: 0, width: 200, height: 200), alpha: 0.049)
+        ]
+        let result = snapshot(list)
+        #expect(result.windows.map(\.id) == [3])
+        #expect(result.transientWindows.map(\.id) == [2, 3])
+        #expect(result.snapWindows.map(\.isTarget) == [false, false, true])
     }
 
     @Test func malformedEntriesAreIgnored() {
@@ -79,16 +156,31 @@ struct WindowEnumeratorTests {
         missingBounds[kCGWindowBounds as String] = nil
         var missingLayer = entry(2, pid: other, layer: 0, frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         missingLayer[kCGWindowLayer as String] = nil
-        let result = snapshot([missingBounds, missingLayer])
+        var offscreen = entry(3, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        offscreen[kCGWindowIsOnscreen as String] = false
+        let result = snapshot([
+            missingBounds, missingLayer, offscreen,
+            entry(0, pid: other, layer: 0, frame: CGRect(x: 0, y: 0, width: 200, height: 200)),
+            entry(4, pid: other, layer: 8, frame: CGRect(x: CGFloat.nan, y: 0, width: 200, height: 200)),
+            entry(5, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 200)),
+            entry(6, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: 0, height: 200)),
+            entry(7, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: -5, height: 200)),
+            entry(8, pid: other, layer: 3, frame: CGRect(x: 0, y: 0, width: 200, height: 200), alpha: .nan)
+        ])
         #expect(result.windows.isEmpty && result.transientWindows.isEmpty && result.snapWindows.isEmpty)
     }
 
-    @Test func defaultLevelsCoverMenusAndTooltipsButNotTheOverlay() {
+    @Test func defaultLevelsExcludeChromeWithoutExcludingPanels() {
         #expect(WindowEnumerator.popUpMenuLevel == Int(CGWindowLevelForKey(.popUpMenuWindow)))
         #expect(WindowEnumerator.screenSaverLevel == Int(CGWindowLevelForKey(.screenSaverWindow)))
-        let transient = WindowEnumerator.popUpMenuLevel..<WindowEnumerator.screenSaverLevel
-        #expect(transient.contains(Int(CGWindowLevelForKey(.helpWindow))))
-        #expect(!transient.contains(Int(CGWindowLevelForKey(.mainMenuWindow))))
-        #expect(!transient.contains(WindowEnumerator.screenSaverLevel + 1))
+        #expect(WindowEnumerator.reservedChromeLevels.contains(Int(CGWindowLevelForKey(.mainMenuWindow))))
+        #expect(WindowEnumerator.reservedChromeLevels.contains(Int(CGWindowLevelForKey(.dockWindow))))
+        let levels: [CGWindowLevelKey] = [.floatingWindow, .modalPanelWindow, .utilityWindow, .statusWindow,
+                                        .popUpMenuWindow, .helpWindow]
+        for key in levels {
+            let level = Int(CGWindowLevelForKey(key))
+            #expect(level > 0 && level < WindowEnumerator.screenSaverLevel)
+            #expect(!WindowEnumerator.reservedChromeLevels.contains(level))
+        }
     }
 }

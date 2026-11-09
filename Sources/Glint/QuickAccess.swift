@@ -5,6 +5,7 @@ import GlintEditor
 /// Small floating thumbnail at the screen corner: click to edit, drag out to drop the file, auto-dismisses.
 @MainActor
 final class QuickAccessPanel {
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("GlintQuickAccess")
     private var panel: NSPanel?
     private var timer: Timer?
 
@@ -32,6 +33,7 @@ final class QuickAccessPanel {
         let frame = NSRect(x: screen.visibleFrame.maxX - panelSize.width - margin, y: screen.visibleFrame.minY + margin,
                            width: panelSize.width, height: panelSize.height)
         let p = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.identifier = Self.windowIdentifier
         p.level = .statusBar
         p.isOpaque = false
         p.backgroundColor = .clear

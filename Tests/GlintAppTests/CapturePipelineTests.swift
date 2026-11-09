@@ -1,6 +1,7 @@
 import AppKit
 import GlintCapture
 @testable import GlintCore
+@testable import GlintEditor
 import Testing
 @testable import Glint
 
@@ -59,7 +60,7 @@ private final class CaptureFixture {
         image = try #require(context.makeImage())
     }
 
-    func pipeline() -> CapturePipeline {
+    func pipeline(configure: (inout CapturePipeline.Services) -> Void = { _ in }) -> CapturePipeline {
         var services = CapturePipeline.Services()
         services.write = { [self] image, url, format, scale, backingScale in
             writes.append((url, format, scale, backingScale))
@@ -93,6 +94,7 @@ private final class CaptureFixture {
         services.addRecent = { [self] in recent.append($0) }
         services.sound = { [self] in sounds += 1 }
         if let scrolling { services.makeScrollingCapture = { scrolling } }
+        configure(&services)
         return CapturePipeline(prefs: preferences, presetStore: presets, services: services)
     }
 
@@ -105,6 +107,195 @@ private final class CaptureFixture {
         retry = { false }
         preferences.defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+@MainActor
+private final class CaptureTestWindow: NSWindow {
+    var restorationCount = 0
+
+    override func orderFront(_ sender: Any?) {
+        restorationCount += 1
+        super.orderFront(sender)
+    }
+}
+
+@Suite("Capture window lifecycle")
+@MainActor
+struct CaptureWindowLifecycleTests {
+    private func window() -> CaptureTestWindow {
+        _ = NSApplication.shared
+        let window = CaptureTestWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                                       styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        window.restorationCount = 0
+        return window
+    }
+
+    @Test(arguments: [true, false])
+    func hidePreferenceControlsCaptureAndCancellationPreservesEditor(hide: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        #expect(f.preferences.hideWindowsDuringCapture)
+        f.preferences.hideWindowsDuringCapture = hide
+        let editor = window(); defer { editor.close() }
+        let content = NSView()
+        editor.contentView = content
+        var observed: CaptureOptions?
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { capturer, mode, _ in
+                observed = capturer.options
+                #expect(mode == .area)
+                #expect(editor.isVisible == !hide)
+                throw CaptureError.cancelled
+            }
+        }
+        try await #require(pipeline.start(.area)).value
+        #expect(observed?.excludeOwnWindows == hide)
+        #expect(editor.isVisible)
+        #expect(editor.contentView === content)
+        #expect(editor.restorationCount == (hide ? 1 : 0))
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.area, .areaToClipboard, .window, .fullscreen, .repeatLast, .timer(3), .text])
+    func allScreenshotModesUseTheInclusionPolicy(mode: CapturePipeline.Mode) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.hideWindowsDuringCapture = false
+        let editor = window(); defer { editor.close() }
+        let utility = window(); defer { utility.close() }
+        utility.identifier = QuickAccessPanel.windowIdentifier
+        var options: CaptureOptions?
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor, utility] }
+            $0.capture = { capturer, selectedMode, _ in
+                #expect(selectedMode == mode)
+                options = capturer.options
+                throw CaptureError.cancelled
+            }
+            $0.captureText = { capturer in
+                options = capturer.options
+                throw CaptureError.cancelled
+            }
+        }
+        try await #require(pipeline.start(mode)).value
+        let received = try #require(options)
+        #expect(!received.excludeOwnWindows)
+        #expect(received.excludedWindowIDs == [CGWindowID(utility.windowNumber)])
+        #expect(editor.isVisible && editor.restorationCount == 0)
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func successAndFailuresRestoreTheExistingWindowExactlyOnce(outcome: Int) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var permissionPrompts = 0
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.permissionDenied = { permissionPrompts += 1 }
+            $0.capture = { _, _, _ in
+                #expect(!editor.isVisible)
+                switch outcome {
+                case 1: throw CaptureError.failed("Synthetic acquisition failure")
+                case 2: throw CaptureError.permissionDenied
+                case 3: throw CancellationError()
+                default:
+                    return CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                         rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                         kind: .area, windowInfo: nil)
+                }
+            }
+        }
+        try await #require(pipeline.start(.areaToClipboard)).value
+        #expect(editor.isVisible && editor.restorationCount == 1)
+        #expect(!pipeline.isBusy)
+        #expect(permissionPrompts == (outcome == 2 ? 1 : 0))
+        #expect(f.copies == (outcome == 0 ? 1 : 0))
+        #expect(f.notifications.filter { $0.title == "Capture failed" }.count == (outcome == 1 ? 1 : 0))
+    }
+
+    @Test func cancelledTaskNeverExportsALateCaptureResult() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var continuation: CheckedContinuation<CaptureResult, Never>?
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { _, _, _ in
+                await withCheckedContinuation { continuation = $0 }
+            }
+        }
+        let task = try #require(pipeline.start(.areaToClipboard))
+        for _ in 0..<100 where continuation == nil { await Task.yield() }
+        let pending = try #require(continuation)
+        task.cancel()
+        pending.resume(returning: CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                               rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                               kind: .area, windowInfo: nil))
+        await task.value
+        #expect(editor.isVisible && editor.restorationCount == 1)
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func cancellingDuringRecognitionNeverPublishesLateOutput(textMode: Bool, recognitionFails: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = !textMode
+        var continuation: CheckedContinuation<Void, Never>?
+        let pipeline = f.pipeline {
+            $0.captureText = { _ in f.image }
+            $0.capture = { _, _, _ in
+                CaptureResult(image: f.image, scale: 1, displayID: 1,
+                              rect: CGRect(x: 0, y: 0, width: 100, height: 40), kind: .area, windowInfo: nil)
+            }
+            $0.recognize = { _, _ in
+                await withCheckedContinuation { continuation = $0 }
+                if recognitionFails { throw CaptureError.invalidRect }
+                return []
+            }
+            $0.requestRetry = { _, _ in Issue.record("Cancelled recognition offered a retry"); return false }
+        }
+        let task = try #require(pipeline.start(textMode ? .text : .areaToClipboard))
+        for _ in 0..<100 where continuation == nil { await Task.yield() }
+        let pending = try #require(continuation)
+        task.cancel()
+        pending.resume()
+        await task.value
+        #expect(f.copies == 0 && f.copiedTexts.isEmpty && f.notifications.isEmpty)
+        #expect(!pipeline.isBusy)
+    }
+
+    @Test(arguments: [true, false])
+    func cancellingKeepsTheActualEditorAnnotationsAndUndoHistory(hide: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.hideWindowsDuringCapture = hide
+        var windows: [NSWindow] = []
+        let pipeline = f.pipeline {
+            $0.captureWindows = { windows }
+            $0.presentEditor = { $0.window?.orderFront(nil) }
+            $0.capture = { _, _, _ in throw CaptureError.cancelled }
+        }
+        let editor = pipeline.openEditor(image: f.image, scale: 1, rawURL: nil, source: "Capture test")
+        let window = try #require(editor.window)
+        defer { window.close() }
+        windows = [window]
+        let annotation = Annotation(z: 0, kind: .redact(CGRect(x: 2, y: 2, width: 20, height: 10)))
+        editor.model.undoManager.groupsByEvent = false
+        editor.model.undoManager.beginUndoGrouping()
+        editor.model.setAnnotations([annotation], actionName: "Redact")
+        editor.model.undoManager.endUndoGrouping()
+
+        try await #require(pipeline.start(.area)).value
+
+        #expect(window.isVisible && editor.window === window)
+        #expect(editor.model.annotations == [annotation])
+        #expect(editor.model.undoManager.canUndo)
+        editor.model.undoManager.undo()
+        #expect(editor.model.annotations.isEmpty)
+        editor.model.undoManager.redo()
+        #expect(editor.model.annotations == [annotation])
     }
 }
 

@@ -35,14 +35,23 @@ public struct CaptureResult {
 
 public struct CaptureOptions: Sendable {
     public var hideCursor: Bool = true
+    /// Hide Glint's windows from both captured pixels and window selection.
+    public var excludeOwnWindows: Bool = true
+    /// Capture utility windows that must stay excluded even when capturing Glint itself.
+    public var excludedWindowIDs: Set<CGWindowID> = []
     /// Snap area-selection edges to visible windows and display bounds. Command temporarily inverts this.
     public var snapToEdges: Bool = false
     /// For window capture: keep the system drop shadow (false = shadow-free, transparent corners).
     public var includeWindowShadow: Bool = false
     /// Seconds to wait after the overlay closes before grabbing pixels.
     public var settleDelay: TimeInterval = 0.12
+    /// Permit a subprocess fallback only when it can honor the exclusions. Frozen snapshots never use it.
     public var allowScreencaptureFallback: Bool = true
     public init() {}
+
+    func excludesWindow(_ id: CGWindowID, pid: pid_t?, ownPID: pid_t) -> Bool {
+        excludedWindowIDs.contains(id) || (excludeOwnWindows && pid == ownPID)
+    }
 }
 
 public enum CaptureError: Error, LocalizedError {

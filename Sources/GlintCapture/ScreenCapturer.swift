@@ -2,23 +2,62 @@ import AppKit
 
 @MainActor
 public final class ScreenCapturer {
+    typealias Selection = (outcome: SelectionOutcome, frozen: [FrozenDisplay]?)
+
+    struct Services {
+        var permission: @MainActor () throws -> Void = { try ScreenCapturer.requirePermission() }
+        var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
+        var select: @MainActor (OverlayStartMode, CGRect?, CaptureOptions, Bool) async throws -> Selection = {
+            mode, lastArea, options, freeze in
+            let session = SelectionSession(
+                mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges,
+                freeze: freeze ? { try await ImageGrabber.freeze($0, options: options) } : nil,
+                excludeOwnWindows: options.excludeOwnWindows, excludedWindowIDs: options.excludedWindowIDs)
+            let outcome = try await session.run()
+            let frozen = session.takeFrozen()
+            try Task.checkCancellation()
+            return (outcome, freeze ? frozen : nil)
+        }
+        var isOnScreen: @MainActor (CGWindowID) -> Bool = { WindowEnumerator.isOnScreen($0) }
+        var grabWindow: @MainActor (WindowInfo, CGFloat, CaptureOptions) async throws -> ImageGrabber.Grab = {
+            try await ImageGrabber.grabWindow($0, scale: $1, options: $2)
+        }
+        var grabRect: @MainActor (CGRect, DisplayInfo, CaptureOptions) async throws -> ImageGrabber.Grab = {
+            try await ImageGrabber.grabRect($0, display: $1, options: $2)
+        }
+        var grabDisplay: @MainActor (DisplayInfo, CaptureOptions) async throws -> ImageGrabber.Grab = {
+            try await ImageGrabber.grabDisplay($0, options: $1)
+        }
+    }
+
     public static let shared = ScreenCapturer()
     public var options = CaptureOptions()
 
     private let lastAreaKey = "glint.lastCaptureArea"
-    public init() {}
+    private let services: Services
+    private let defaults: UserDefaults
+
+    public init() {
+        services = Services()
+        defaults = .standard
+    }
+
+    init(services: Services, defaults: UserDefaults = .standard) {
+        self.services = services
+        self.defaults = defaults
+    }
 
     /// Last area in global (top-left origin) display coordinates.
     public var lastArea: CGRect? {
         get {
-            guard let a = UserDefaults.standard.array(forKey: lastAreaKey) as? [Double], a.count == 4 else { return nil }
+            guard let a = defaults.array(forKey: lastAreaKey) as? [Double], a.count == 4 else { return nil }
             return CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
         }
         set {
             if let r = newValue {
-                UserDefaults.standard.set([r.minX, r.minY, r.width, r.height].map(Double.init), forKey: lastAreaKey)
+                defaults.set([r.minX, r.minY, r.width, r.height].map(Double.init), forKey: lastAreaKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: lastAreaKey)
+                defaults.removeObject(forKey: lastAreaKey)
             }
         }
     }
@@ -36,10 +75,11 @@ public final class ScreenCapturer {
 
     public func captureFullscreen(display: CGDirectDisplayID? = nil) async throws -> CaptureResult {
         try await requirePermission()
-        let all = WindowEnumerator.displays()
+        let all = services.displays()
         let target = display ?? displayUnderMouse(all)?.id ?? CGMainDisplayID()
         guard let d = all.first(where: { $0.id == target }) else { throw CaptureError.noDisplay }
-        let g = try await ImageGrabber.grabDisplay(d, options: options)
+        let g = try await services.grabDisplay(d, options)
+        try Task.checkCancellation()
         return CaptureResult(image: g.image, scale: g.scale, displayID: d.id, rect: d.frame,
                              kind: .fullscreen, windowInfo: nil)
     }
@@ -92,7 +132,8 @@ public final class ScreenCapturer {
     // MARK: Internals
 
     private func requirePermission() async throws {
-        try Self.requirePermission()
+        try services.permission()
+        try Task.checkCancellation()
     }
 
     /// Shared with screen recording, which needs the same Screen Recording grant.
@@ -108,12 +149,10 @@ public final class ScreenCapturer {
     }
 
     private func select(_ mode: OverlayStartMode,
-                        freeze: Bool = true) async throws -> (outcome: SelectionOutcome, frozen: [FrozenDisplay]) {
-        let options = options
-        let session = SelectionSession(mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges,
-                                       freeze: freeze ? { await ImageGrabber.freeze($0, options: options) } : nil)
-        let outcome = try await session.run()
-        return (outcome, session.frozen)
+                        freeze: Bool = true) async throws -> Selection {
+        let selection = try await services.select(mode, lastArea, options, freeze)
+        try Task.checkCancellation()
+        return (selection.outcome, freeze ? selection.frozen ?? [] : nil)
     }
 
     private func interactive(start: OverlayStartMode, kind: CaptureKind) async throws -> CaptureResult {
@@ -122,30 +161,43 @@ public final class ScreenCapturer {
         return try await grab(selection.outcome, kind: kind, frozen: selection.frozen)
     }
 
-    /// `frozen` holds displays grabbed while other apps' menus were open; those may have closed since.
+    /// A non-nil `frozen` requires the pre-focus pixels, including when a requested display is missing.
     private func grab(_ outcome: SelectionOutcome, kind: CaptureKind,
-                      frozen: [FrozenDisplay] = []) async throws -> CaptureResult {
+                      frozen: [FrozenDisplay]? = nil) async throws -> CaptureResult {
+        try Task.checkCancellation()
         switch outcome {
-        case .area(let r, _):
+        case .area(let r, let displayID):
+            if let frozen {
+                let result = try frozenResult(r, kind: kind, frozen: frozen, displayID: displayID)
+                lastArea = r
+                return result
+            }
             lastArea = r
-            if let result = frozenResult(r, kind: kind, frozen: frozen) { return result }
             try await settle()
             return try await grabArea(r, kind: kind)
         case .window(let w):
             let windowKind: CaptureKind = kind == .textOnly ? .textOnly : .window
-            let fallback = frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w)
-            if let fallback, !WindowEnumerator.isOnScreen(w.id) { return fallback }
+            if let frozen, w.layer != 0 || !services.isOnScreen(w.id) {
+                return try frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w)
+            }
             try await settle()
-            let displays = WindowEnumerator.displays()
+            let displays = services.displays()
             let d = CaptureGeometry.index(containing: CGPoint(x: w.frame.midX, y: w.frame.midY),
                                           in: displays.map(\.frame)).map { displays[$0] }
             do {
-                let g = try await ImageGrabber.grabWindow(w, scale: d?.scale ?? 2, options: options)
+                let g = try await services.grabWindow(w, d?.scale ?? 2, options)
+                try Task.checkCancellation()
                 return CaptureResult(image: g.image, scale: g.scale, displayID: d?.id ?? CGMainDisplayID(),
                                      rect: w.frame, kind: windowKind, windowInfo: w)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch CaptureError.cancelled {
+                throw CaptureError.cancelled
             } catch {
-                // A picked menu can still close while the overlay fades out.
-                if let fallback { return fallback }
+                try Task.checkCancellation()
+                if let frozen {
+                    return try frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w)
+                }
                 throw error
             }
         }
@@ -155,20 +207,24 @@ public final class ScreenCapturer {
         try await Task.sleep(nanoseconds: UInt64(options.settleDelay * 1_000_000_000)) // let overlay vanish
     }
 
-    /// `r` cropped from the frozen image of the display containing its centre, chosen as `grabArea` would.
+    /// Uses only the display geometry captured before focus changed, not a fresh display enumeration.
     private func frozenResult(_ r: CGRect, kind: CaptureKind, frozen: [FrozenDisplay],
-                              window: WindowInfo? = nil) -> CaptureResult? {
-        guard !frozen.isEmpty else { return nil }
-        let displays = WindowEnumerator.displays()
-        guard let i = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: displays.map(\.frame)),
-              let display = frozen.first(where: { $0.display.id == displays[i].id }),
-              let crop = display.crop(r) else { return nil }
+                              displayID: CGDirectDisplayID? = nil, window: WindowInfo? = nil) throws -> CaptureResult {
+        let index: Int?
+        if let displayID {
+            index = frozen.firstIndex { $0.display.id == displayID }
+        } else {
+            index = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: frozen.map(\.display.frame))
+        }
+        guard let index else { throw CaptureError.noDisplay }
+        let display = frozen[index]
+        guard let crop = display.crop(r) else { throw CaptureError.invalidRect }
         return CaptureResult(image: crop.grab.image, scale: crop.grab.scale, displayID: display.display.id,
                              rect: crop.rect, kind: kind, windowInfo: window)
     }
 
     private func grabArea(_ r: CGRect, kind: CaptureKind) async throws -> CaptureResult {
-        let displays = WindowEnumerator.displays()
+        let displays = services.displays()
         guard r.width >= 1, r.height >= 1 else { throw CaptureError.invalidRect }
         guard let i = CaptureGeometry.index(containing: CGPoint(x: r.midX, y: r.midY), in: displays.map(\.frame)) else {
             throw CaptureError.noDisplay
@@ -176,7 +232,8 @@ public final class ScreenCapturer {
         let d = displays[i]
         let clipped = r.intersection(d.frame)
         guard !clipped.isNull, clipped.width >= 1, clipped.height >= 1 else { throw CaptureError.invalidRect }
-        let g = try await ImageGrabber.grabRect(clipped, display: d, options: options)
+        let g = try await services.grabRect(clipped, d, options)
+        try Task.checkCancellation()
         return CaptureResult(image: g.image, scale: g.scale, displayID: d.id, rect: clipped, kind: kind, windowInfo: nil)
     }
 
