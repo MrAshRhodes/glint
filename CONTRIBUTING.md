@@ -320,6 +320,90 @@ state, and report sample counts. To check idle work, collect for a few minutes w
 then with the Permissions pane open and then closed or on another tab: `PermissionPoll` should appear only
 while the pane is on screen.
 
+### Timing diagnostics and the performance guard
+
+`Glint --diagnose --timing` times, on the machine it runs on, the stages between a capture starting and its image being
+exported, and prints the result as JSON. It complements the signposts above: those need a person to perform an
+instrumented capture, while this runs from a terminal and gives p50/p95 figures that can be pasted into an issue.
+
+```sh
+Glint.app/Contents/MacOS/Glint --diagnose --timing [--timing-iterations 50] [--timing-cold-runs 20] [--allow-screen-capture]
+```
+
+| Stage (JSON key) | One execution |
+| --- | --- |
+| `shareable_content` | One ScreenCaptureKit shareable-content query, which every capture starts with. Needs Screen Recording permission. |
+| `display_grab` | One `SCScreenshotManager` grab of the main display from that content, as the frozen overlay background is taken. Needs permission **and** `--allow-screen-capture`. |
+| `selection_snapshot` | `WindowEnumerator.selectionSnapshot()`, the metadata-only window list behind snapping. |
+| `render_and_encode` | `Compositor.render` with the default look, then a PNG encode, of the grabbed frame, or of a generated 2880 × 1800 frame when no pixels were grabbed. |
+
+**Cold** is a stage's first execution in a freshly launched Glint process. Each cold run starts the same executable
+with the internal `--timing-probe` option, which runs every stage once, in the order above, and prints one line of
+timings that the parent keeps. The operating system's caches are not reset between runs, and a later stage in a probe
+inherits what an earlier one warmed (the grab follows the content query), so read a cold figure as "first use in a new
+process", not "first use after boot". **Warm** is a repeat in the measuring process after one discarded warm-up.
+`--timing-iterations` sets the warm repeats per stage (20 to 1000, default 50) and `--timing-cold-runs` the fresh
+processes (0 to 100, default 20). A p95 over fewer than 20 samples is only the maximum, so such a summary says
+`"p95_reliable": false`.
+
+The JSON holds `schema_version`, `glint_version`, `macos`, `architecture`, the `options` used, the rendered `frame`
+(`source` is `display` or `synthetic`) and the `definitions` of cold and warm. Under `cold` and `warm`, each stage has
+a `failures` count and a `timing` with `count`, `min_ms`, `p50_ms`, `p95_ms`, `max_ms` and `p95_reliable`. A stage that
+did not run is under `skipped` with its reason: no permission, or no consent.
+
+Plain `--diagnose` stays the aggregate-only report. `--timing` adds durations only. It reads display pixels solely
+because you passed `--allow-screen-capture`; nothing passes that flag on its own, so CI, timers and tests never grab
+the screen, and a cold-run probe grabs only when its parent was given the flag. Errors are counted, never quoted, and
+no window title, display name, identifier or pixel reaches the output. Screen Recording permission is checked for the
+process that runs the command, which macOS may attribute to the terminal app that started it rather than to Glint;
+that attribution has not been verified on hardware.
+
+The **Performance** workflow (`.github/workflows/performance.yml`, job "Performance guard") is a tripwire for gross
+slowdowns, not a latency test and not a required check. It runs every Monday at 04:17 UTC, from **Run workflow** in the
+Actions tab, and on pull requests that change the benchmark or the guard themselves. It needs no permission, never
+captures the screen, and uploads only timing numbers, the revision and the runner's hardware model as the
+`performance-summary` artifact for 30 days. It runs three things:
+
+1. `Scripts/benchmark-overlay.sh current` with `ROUNDS=5`, in `full` mode and again with `DRAW_MODE=damage`: three
+   scenarios, a fresh process per round and 120 warm draws each. These are the synthetic CPU drawing measurements
+   described above.
+2. `ExportTimingTests`. Its `syntheticRetinaExportStaysWithinBudget` test runs only when `GLINT_EXPORT_BENCHMARK=1`:
+   it renders and encodes a synthetic 2880 × 1800 frame at 2× (30 times after a warm-up, set with
+   `GLINT_EXPORT_BENCHMARK_ITERATIONS`), fails by itself when the p95 passes `GLINT_RENDER_ENCODE_BUDGET_MS` (default
+   5000), and writes its samples as JSON to `GLINT_EXPORT_BENCHMARK_OUTPUT`. It also asserts that the PNG's density is
+   72 dpi times the backing scale and that it carries a colour profile. Which profile that is belongs to the export
+   colour policy, not to this test.
+3. `.github/scripts/perf-guard.cjs`, which reads those summaries and never any pixels. It compares them with the
+   limits in the workflow's `env`, writes `guard-summary.json` and a table to the job summary, and exits 1 over a limit.
+   It fails closed on a missing scenario, too few samples, an unknown draw mode or an export that did not use the
+   synthetic frame, so a broken benchmark cannot pass. `node --test .github/scripts/perf-guard.test.cjs` covers it and
+   runs in CI.
+
+| Limit in `performance.yml` | Value | Compared with | Reference |
+| --- | --- | --- | --- |
+| `PERF_OVERLAY_FULL_WARM_P95_MS` | 300 ms | Warm update + draw p95 of each scenario, full redraw | 23 to 33 ms |
+| `PERF_OVERLAY_DAMAGE_WARM_P95_MS` | 60 ms | The same with `DRAW_MODE=damage` | 0.5 to 5.8 ms |
+| `PERF_OVERLAY_FIRST_DRAW_MAX_MS` | 3000 ms | Slowest first draw of each scenario over the 5 fresh processes, view setup included | 155 to 215 ms |
+| `PERF_EXPORT_P95_MS` | 5000 ms | Synthetic render + encode p95 | 320 to 365 ms |
+
+The reference column is one loaded Apple M2 Max (Mac14,6, macOS 26.6) at revision `4c12eb0`, with a debug build for the
+export (`swift test`), not a runner. The limits are about ten times that because a shared runner is noisy and the job
+must catch an order-of-magnitude regression, not drift. Tighten them from the uploaded summaries once enough scheduled
+runs show how much the runner varies.
+
+To rehearse it locally, take the same measurements and point the guard at them:
+
+```sh
+ROUNDS=5 Scripts/benchmark-overlay.sh current                 # prints its .build/benchmark/current-… directory
+ROUNDS=5 DRAW_MODE=damage Scripts/benchmark-overlay.sh current
+GLINT_EXPORT_BENCHMARK=1 GLINT_EXPORT_BENCHMARK_OUTPUT="$PWD/.build/export-summary.json" \
+  Scripts/swiftw.sh test --no-parallel --filter ExportTimingTests
+PERF_OVERLAY_FULL_WARM_P95_MS=300 PERF_OVERLAY_DAMAGE_WARM_P95_MS=60 \
+PERF_OVERLAY_FIRST_DRAW_MAX_MS=3000 PERF_EXPORT_P95_MS=5000 \
+  node .github/scripts/perf-guard.cjs --overlay full=<full summary.json> --overlay damage=<damage summary.json> \
+    --export .build/export-summary.json
+```
+
 ## Command Line Tools only
 
 Glint builds without Xcode, with a few differences:

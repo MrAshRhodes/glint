@@ -1,0 +1,105 @@
+name: Performance
+
+# A tripwire for gross slowdowns, not a latency test. It runs only the two benchmarks that need no screen and no
+# permission: the offscreen overlay drawing benchmark and a render + encode of a synthetic 2880 x 1800 frame.
+# It never captures the screen, and what it keeps is timing numbers, a revision and the runner's hardware model.
+# It runs weekly, on demand, and on pull requests that touch the benchmark or the guard itself. It is not a
+# required check, and it is not part of the CI workflow, so a noisy runner cannot block a merge.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/performance.yml
+      - .github/scripts/perf-guard.cjs
+      - .github/scripts/perf-guard.test.cjs
+      - Scripts/benchmark-overlay.sh
+      - Scripts/OverlayDrawingBenchmark.swift
+      - Sources/GlintCore/ExportTiming.swift
+      - Sources/GlintCore/TimingStatistics.swift
+      - Tests/GlintCoreTests/ExportTimingTests.swift
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: true
+
+# Limits in milliseconds, read by .github/scripts/perf-guard.cjs. They are about ten times what a developer Mac
+# measures (see "Timing diagnostics and the performance guard" in CONTRIBUTING.md), because a shared runner is
+# noisy and this has to catch an order-of-magnitude regression, not drift. Tighten them from the uploaded
+# summaries once enough scheduled runs show how much the runner varies.
+env:
+  PERF_OVERLAY_FULL_WARM_P95_MS: '300'
+  PERF_OVERLAY_DAMAGE_WARM_P95_MS: '60'
+  PERF_OVERLAY_FIRST_DRAW_MAX_MS: '3000'
+  PERF_EXPORT_P95_MS: '5000'
+
+jobs:
+  performance:
+    name: Performance guard
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Show the toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Test the guard
+        run: node --test .github/scripts/perf-guard.test.cjs
+
+      # Each mode draws 3 scenarios for 5 rounds. Every round is a fresh process, so its first draw is a cold one,
+      # followed by 120 warm frames.
+      - name: Measure overlay drawing
+        run: |
+          mkdir -p performance-results
+          for mode in full damage; do
+            rm -rf .build/benchmark
+            ROUNDS=5 DRAW_MODE="$mode" Scripts/benchmark-overlay.sh current
+            run_dirs=(.build/benchmark/current-*)
+            if [[ ${#run_dirs[@]} -ne 1 || ! -f "${run_dirs[0]}/summary.json" ]]; then
+              echo "Expected one benchmark run with a summary.json, found: ${run_dirs[*]}" >&2
+              exit 1
+            fi
+            cp "${run_dirs[0]}/summary.json" "performance-results/overlay-$mode-summary.json"
+            cp "${run_dirs[0]}/manifest.txt" "performance-results/overlay-$mode-manifest.txt"
+          done
+
+      # Renders and encodes a synthetic frame, never screen pixels, then checks the PNG's density and colour profile.
+      - name: Measure render and encode
+        env:
+          GLINT_EXPORT_BENCHMARK: '1'
+          GLINT_EXPORT_BENCHMARK_OUTPUT: ${{ github.workspace }}/performance-results/export-summary.json
+          GLINT_RENDER_ENCODE_BUDGET_MS: ${{ env.PERF_EXPORT_P95_MS }}
+        run: |
+          mkdir -p performance-results
+          swift test --no-parallel --filter ExportTimingTests
+
+      - name: Check the measurements against the limits
+        run: |
+          node .github/scripts/perf-guard.cjs \
+            --overlay full=performance-results/overlay-full-summary.json \
+            --overlay damage=performance-results/overlay-damage-summary.json \
+            --export performance-results/export-summary.json \
+            --output performance-results/guard-summary.json \
+            --markdown "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the summaries
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-summary
+          path: performance-results
+          retention-days: 30
+          if-no-files-found: warn

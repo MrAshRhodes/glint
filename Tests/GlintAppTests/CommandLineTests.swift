@@ -15,6 +15,25 @@ struct CommandLineTests {
         ))
     }
 
+    @Test func helpDescribesTimingAndItsConsent() {
+        #expect(CommandLine_.usage.contains(
+            "--diagnose --timing [--timing-iterations N] [--timing-cold-runs N] [--allow-screen-capture]"
+        ))
+        #expect(CommandLine_.usage.contains("Display pixels are only grabbed with --allow-screen-capture"))
+    }
+
+    @Test(arguments: [
+        ["--timing"],
+        ["--diagnose", "--timing", "--timing-iterations", "5"],
+        ["--diagnose", "--timing", "--timing-cold-runs", "many"],
+        ["--diagnose", "--timing", "--timing-cold-runz", "3"],
+        ["--diagnose", "--allow-screen-capture"],
+        ["--allow-screen-capture"],
+    ])
+    func invalidTimingArgumentsAreAnArgumentErrorBeforeAnythingIsMeasured(_ arguments: [String]) {
+        #expect(CommandLine_.run(["Glint"] + arguments) == 2)
+    }
+
     @Test func noOptionsStartsGUI() {
         #expect(CommandLine_.run(["Glint"]) == nil)
     }

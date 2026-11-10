@@ -161,6 +161,31 @@ struct ExportAndPrefsTests {
         #expect(pasted.width == 12 && pasted.height == 9 && abs(pasted.dpiX - 72) < 0.1)
     }
 
+    /// Pasted pixels keep their colour meaning only with the profile of the saved file. Which profile that is belongs
+    /// to the export colour policy; this guards that the clipboard copy neither drops it nor differs from the file.
+    @Test(arguments: [1, 2] as [CGFloat])
+    func clipboardImagesCarryTheSavedFilesColourProfile(backingScale: CGFloat) throws {
+        let image = TestImages.framed(width: 120, height: 60, margins: EdgeMargins(top: 4, left: 4, bottom: 4, right: 4))
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
+        defer { pb.releaseGlobally() }
+        #expect(Exporter.copyToClipboard(image, backingScale: backingScale, pasteboard: pb))
+        let savedPNG = try Exporter.write(image, to: dir.appendingPathComponent("saved.png"), backingScale: backingScale)
+        let savedTIFF = try Exporter.write(image, to: dir.appendingPathComponent("saved.tiff"), format: .tiff,
+                                           backingScale: backingScale)
+
+        func profileName(of data: Data) throws -> String? {
+            let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+            let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            return props[kCGImagePropertyProfileName] as? String
+        }
+        for (type, file) in [(NSPasteboard.PasteboardType.png, savedPNG), (.tiff, savedTIFF)] {
+            let pasted = try profileName(of: #require(pb.data(forType: type)))
+            #expect(pasted?.isEmpty == false, "\(type.rawValue) has no colour profile")
+            #expect(pasted == (try profileName(of: Data(contentsOf: file))), "\(type.rawValue) vs file profile")
+        }
+    }
+
     @Test func preferencesDefaultsAndRoundTrip() throws {
         let suite = "glint.test.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
