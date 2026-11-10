@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import GlintCore
 import SwiftUI
 
 /// Modifier mask using Carbon values (usable directly with RegisterEventHotKey).
@@ -28,6 +29,10 @@ public struct RecordedKeyCombo: Hashable, Codable, Sendable {
     public init(keyCode: UInt32, modifiers: HotkeyModifiers) {
         self.keyCode = keyCode
         self.modifiers = modifiers
+    }
+    /// The stored preference form of a shortcut, in the modifier values Carbon registers with.
+    public init(_ combo: KeyCombo) {
+        self.init(keyCode: combo.keyCode, modifiers: HotkeyModifiers(rawValue: combo.carbonModifiers))
     }
     public var displayString: String { KeyGlyphs.string(keyCode: keyCode, modifiers: modifiers) }
 }
@@ -68,59 +73,51 @@ public enum KeyGlyphs {
 
 public enum HotkeyError: Error, LocalizedError {
     case registrationFailed(OSStatus)
+
+    /// The `OSStatus` macOS refused the registration with.
+    public var status: OSStatus {
+        switch self { case .registrationFailed(let status): return status }
+    }
+
+    /// True when macOS reports the combination as already claimed, by another app or by the system.
+    public var isAlreadyRegistered: Bool { status == OSStatus(eventHotKeyExistsErr) }
+
     public var errorDescription: String? {
         switch self { case .registrationFailed(let s): return "Hotkey registration failed (OSStatus \(s)); it may be in use." }
     }
 }
 
-/// Global hotkeys via Carbon RegisterEventHotKey (no Accessibility permission required).
+/// The two system calls behind `HotkeyCenter`, kept behind a seam so tests can simulate a combination macOS refuses.
 @MainActor
-public final class HotkeyCenter {
-    public static let shared = HotkeyCenter()
+protocol HotkeyBackend: AnyObject {
+    /// Claims `keyCode` + `modifiers` system-wide under `numericID`; `noErr` on success.
+    func register(keyCode: UInt32, modifiers: UInt32, numericID: UInt32) -> OSStatus
+    func unregister(numericID: UInt32)
+}
 
-    private struct Entry { let ref: EventHotKeyRef; let handler: () -> Void; let numericID: UInt32 }
-    private var entries: [String: Entry] = [:]
-    private var byNumeric: [UInt32: String] = [:]
-    private var nextID: UInt32 = 1
+/// Carbon `RegisterEventHotKey`, which needs no Accessibility permission. Only `HotkeyCenter.shared` uses it: key
+/// presses are routed back to that instance.
+@MainActor
+final class CarbonHotkeyBackend: HotkeyBackend {
+    fileprivate static let signature: OSType = 0x474C4E54 // 'GLNT'
+
+    private var refs: [UInt32: EventHotKeyRef] = [:]
     private var handlerRef: EventHandlerRef?
-    private static let signature: OSType = 0x474C4E54 // 'GLNT'
 
-    private init() {}
-
-    /// Registers (replacing any existing hotkey with the same id).
-    public func register(id: String, keyCode: UInt32, modifiers: HotkeyModifiers,
-                         handler: @escaping () -> Void) throws {
-        unregister(id: id)
+    func register(keyCode: UInt32, modifiers: UInt32, numericID: UInt32) -> OSStatus {
         installHandlerIfNeeded()
-        let numeric = nextID
-        nextID += 1
         var ref: EventHotKeyRef?
-        let hkID = EventHotKeyID(signature: Self.signature, id: numeric)
-        let status = RegisterEventHotKey(keyCode, modifiers.rawValue, hkID, GetApplicationEventTarget(), 0, &ref)
-        guard status == noErr, let ref else { throw HotkeyError.registrationFailed(status) }
-        entries[id] = Entry(ref: ref, handler: handler, numericID: numeric)
-        byNumeric[numeric] = id
+        let hkID = EventHotKeyID(signature: Self.signature, id: numericID)
+        let status = RegisterEventHotKey(keyCode, modifiers, hkID, GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr else { return status }
+        guard let ref else { return OSStatus(paramErr) }
+        refs[numericID] = ref
+        return noErr
     }
 
-    public func register(id: String, combo: RecordedKeyCombo, handler: @escaping () -> Void) throws {
-        try register(id: id, keyCode: combo.keyCode, modifiers: combo.modifiers, handler: handler)
-    }
-
-    public func unregister(id: String) {
-        guard let e = entries.removeValue(forKey: id) else { return }
-        UnregisterEventHotKey(e.ref)
-        byNumeric[e.numericID] = nil
-    }
-
-    public func unregisterAll() {
-        for id in Array(entries.keys) { unregister(id: id) }
-    }
-
-    public var registeredIDs: [String] { Array(entries.keys) }
-
-    fileprivate func fire(numeric: UInt32) {
-        guard let id = byNumeric[numeric], let e = entries[id] else { return }
-        e.handler()
+    func unregister(numericID: UInt32) {
+        guard let ref = refs.removeValue(forKey: numericID) else { return }
+        UnregisterEventHotKey(ref)
     }
 
     private func installHandlerIfNeeded() {
@@ -130,12 +127,80 @@ public final class HotkeyCenter {
             var hk = EventHotKeyID()
             let st = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                                        nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
-            if st == noErr, hk.signature == HotkeyCenter.signature {
+            if st == noErr, hk.signature == CarbonHotkeyBackend.signature {
                 let n = hk.id
                 DispatchQueue.main.async { MainActor.assumeIsolated { HotkeyCenter.shared.fire(numeric: n) } }
             }
             return noErr
         }, 1, &spec, nil, &handlerRef)
+    }
+}
+
+/// Global hotkeys via Carbon RegisterEventHotKey (no Accessibility permission required).
+@MainActor
+public final class HotkeyCenter {
+    public static let shared = HotkeyCenter(backend: CarbonHotkeyBackend())
+
+    private struct Entry {
+        let keyCode: UInt32
+        let modifiers: HotkeyModifiers
+        var handler: () -> Void
+        let numericID: UInt32
+    }
+
+    private let backend: HotkeyBackend
+    private var entries: [String: Entry] = [:]
+    private var byNumeric: [UInt32: String] = [:]
+    private var nextID: UInt32 = 1
+
+    init(backend: HotkeyBackend) { self.backend = backend }
+
+    /// Registers `handler` for a combination under `id`, replacing the one `id` already has.
+    ///
+    /// Replacing is all or nothing: the new combination is claimed first and the old one released only once that
+    /// worked, so a combination macOS refuses leaves the existing shortcut working. Throws `HotkeyError` with the
+    /// system's status when it is refused.
+    public func register(id: String, keyCode: UInt32, modifiers: HotkeyModifiers,
+                         handler: @escaping () -> Void) throws {
+        if var current = entries[id], current.keyCode == keyCode, current.modifiers == modifiers {
+            // The system would refuse the same combination twice; only the action it runs can differ.
+            current.handler = handler
+            entries[id] = current
+            return
+        }
+        let numeric = nextID
+        nextID += 1
+        let status = backend.register(keyCode: keyCode, modifiers: modifiers.rawValue, numericID: numeric)
+        guard status == noErr else { throw HotkeyError.registrationFailed(status) }
+        unregister(id: id)
+        entries[id] = Entry(keyCode: keyCode, modifiers: modifiers, handler: handler, numericID: numeric)
+        byNumeric[numeric] = id
+    }
+
+    public func register(id: String, combo: RecordedKeyCombo, handler: @escaping () -> Void) throws {
+        try register(id: id, keyCode: combo.keyCode, modifiers: combo.modifiers, handler: handler)
+    }
+
+    public func unregister(id: String) {
+        guard let e = entries.removeValue(forKey: id) else { return }
+        backend.unregister(numericID: e.numericID)
+        byNumeric[e.numericID] = nil
+    }
+
+    public func unregisterAll() {
+        for id in Array(entries.keys) { unregister(id: id) }
+    }
+
+    public var registeredIDs: [String] { Array(entries.keys) }
+
+    /// The combination currently active under `id`, if any.
+    public func registeredCombo(for id: String) -> RecordedKeyCombo? {
+        entries[id].map { RecordedKeyCombo(keyCode: $0.keyCode, modifiers: $0.modifiers) }
+    }
+
+    func fire(numeric: UInt32) {
+        guard let id = byNumeric[numeric], let e = entries[id] else { return }
+        e.handler()
     }
 }
 

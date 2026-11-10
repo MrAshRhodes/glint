@@ -14,8 +14,16 @@ final class PrefsModel: ObservableObject {
 
     let prefs: AppPreferences
     let store: PresetStore
+    let hotkeys: HotkeyController
+    private var hotkeyChanges: AnyCancellable?
     private var presetEditors: [UUID: EditorWindowController] = [:]
-    init(prefs: AppPreferences, store: PresetStore) { self.prefs = prefs; self.store = store }
+    init(prefs: AppPreferences, store: PresetStore, hotkeys: HotkeyController) {
+        self.prefs = prefs
+        self.store = store
+        self.hotkeys = hotkeys
+        // The shortcut rows show which shortcuts aren't active, so they follow the controller.
+        hotkeyChanges = hotkeys.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
 
     func bind<T>(_ kp: ReferenceWritableKeyPath<AppPreferences, T>, then: (() -> Void)? = nil) -> Binding<T> {
         Binding(get: { self.prefs[keyPath: kp] },
@@ -46,8 +54,8 @@ final class PrefsModel: ObservableObject {
 final class PreferencesWindowController: NSWindowController {
     static var shared: PreferencesWindowController!
 
-    convenience init(prefs: AppPreferences, store: PresetStore) {
-        let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store))
+    convenience init(prefs: AppPreferences, store: PresetStore, hotkeys: HotkeyController) {
+        let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store, hotkeys: hotkeys))
         let window = NSWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.toolbarStyle = .preference
@@ -62,6 +70,18 @@ final class PreferencesWindowController: NSWindowController {
         if window?.isVisible != true { window?.center() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Opens Settings on the global shortcuts, where a shortcut that can't be used is flagged.
+    func presentShortcuts() {
+        revealShortcuts()
+        present()
+    }
+
+    /// Selects the Capture pane with its global shortcuts expanded.
+    func revealShortcuts() {
+        UserDefaults.standard.set(true, forKey: CollapsibleSection<EmptyView>.storageKey("shortcuts"))
+        (contentViewController as? PreferencesTabViewController)?.select(.capture)
     }
 }
 
@@ -352,7 +372,8 @@ private struct CaptureTab: View {
                     Text("Record the pointer separately so the editor can enlarge or hide it. Takes effect from the next recording; the pointer is then drawn by Glint rather than macOS.")
                 }
             }
-            CollapsibleSection("Global shortcuts", id: "shortcuts") {
+            CollapsibleSection("Global shortcuts", id: "shortcuts",
+                               summary: model.hotkeys.problems.isEmpty ? nil : "Needs attention") {
                 ForEach(HotkeyAction.allCases, id: \.self) { action in
                     HotkeyRow(model: model, action: action)
                 }
@@ -365,32 +386,47 @@ private struct CaptureTab: View {
 private struct HotkeyRow: View {
     @ObservedObject var model: PrefsModel
     let action: HotkeyAction
+    /// Why the last change to this shortcut was turned down; the shortcut itself stayed as it was.
+    @StateObject private var rejection = Local<HotkeyProblem?>(nil)
 
     var body: some View {
         let current = model.prefs.hotkey(for: action)
-        LabeledContent(action.displayName) {
-            HStack(spacing: 6) {
-                ShortcutField(combo: Self.recorded(current), name: action.displayName) { new in
-                    apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+        let inactive = model.hotkeys.problems[action]
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(action.displayName) {
+                HStack(spacing: 6) {
+                    ShortcutField(combo: RecordedKeyCombo(current), name: action.displayName) { new in
+                        apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+                    }
+                    Button { apply(action.defaultCombo) } label: { Image(systemName: "arrow.counterclockwise") }
+                        .buttonStyle(.borderless)
+                        .disabled(current == action.defaultCombo && inactive == nil)
+                        .help("Restore default")
+                        .accessibilityLabel("Restore default shortcut for \(action.displayName)")
                 }
-                Button { apply(action.defaultCombo) } label: { Image(systemName: "arrow.counterclockwise") }
-                    .buttonStyle(.borderless)
-                    .disabled(current == action.defaultCombo)
-                    .help("Restore default")
-                    .accessibilityLabel("Restore default shortcut for \(action.displayName)")
             }
+            if let refused = rejection.value { Self.warning(refused.rejectedMessage) }
+            if let inactive { Self.warning(inactive.inactiveMessage) }
         }
+        .onDisappear { rejection.value = nil }
+    }
+
+    private static func warning(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.red)
     }
 
     private func apply(_ c: KeyCombo) {
-        guard model.prefs.hotkey(for: action) != c else { return }
-        model.prefs.setHotkey(c, for: action)
+        guard model.prefs.hotkey(for: action) != c || model.hotkeys.problems[action] != nil else { return }
+        if let problem = model.hotkeys.change(action, to: c) {
+            rejection.value = problem
+            AccessibilityNotification.Announcement(problem.rejectedMessage).post()
+            return
+        }
+        rejection.value = nil
         model.objectWillChange.send()
         model.changed()
-    }
-
-    static func recorded(_ c: KeyCombo) -> RecordedKeyCombo {
-        RecordedKeyCombo(keyCode: c.keyCode, modifiers: HotkeyModifiers(rawValue: c.carbonModifiers))
     }
 
     static func modifiers(_ m: HotkeyModifiers) -> KeyModifiers {
@@ -1477,7 +1513,7 @@ final class PermissionsWindow {
                         HStack {
                             Text(title)
                             Spacer()
-                            Text(HotkeyRow.recorded(AppPreferences.shared.hotkey(for: action)).displayString)
+                            Text(RecordedKeyCombo(AppPreferences.shared.hotkey(for: action)).displayString)
                                 .font(.body.monospaced())
                                 .foregroundStyle(.secondary)
                         }

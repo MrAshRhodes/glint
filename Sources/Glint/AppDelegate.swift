@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let pipeline = pipeline
         return OutputCleanupScheduler(run: { await pipeline.runOutputCleanup() })
     }()
+    lazy var hotkeys = HotkeyController(prefs: prefs) { [weak self] in self?.perform($0) }
     /// How long quitting waits for kept screenshots that are still being written.
     var terminationGrace: Duration = .seconds(3)
     var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
@@ -68,17 +69,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         Task.detached(priority: .utility) { ProjectStore.removeAllSnapshots() }
         // Starts a schedule the user chose; with the default (never) nothing is requested.
         _ = UpdateController.shared
-        PreferencesWindowController.shared = PreferencesWindowController(prefs: prefs, store: presetStore)
+        PreferencesWindowController.shared = PreferencesWindowController(prefs: prefs, store: presetStore, hotkeys: hotkeys)
         pipeline.onStatusTitle = { [weak self] title in self?.statusItem?.button?.title = title ?? "" }
         pipeline.isRecordingActive = { [weak self] in self?.recorder.isActive ?? false }
         recorder.onStatusTitle = { [weak self] title in self?.statusItem?.button?.title = title ?? "" }
         menu.delegate = self
         updateStatusItem()
-        registerHotkeys()
+        hotkeys.report = { problems in
+            let note = HotkeyController.notification(for: problems)
+            Notifier.post(title: note.title, body: note.body)
+        }
+        hotkeys.sync()
         startOutputCleanup()
         NotificationCenter.default.addObserver(forName: .glintPreferencesChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.registerHotkeys()
+                self?.hotkeys.sync()
                 self?.updateStatusItem()
                 let cursor = UserDefaults.standard.object(forKey: ShellKey.hideCursor) as? Bool ?? true
                 ScreenCapturer.shared.options.hideCursor = cursor
@@ -176,17 +181,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     // MARK: hotkeys
 
-    private func registerHotkeys() {
-        let center = HotkeyCenter.shared
-        for action in HotkeyAction.allCases {
-            let combo = prefs.hotkey(for: action)
-            let modifiers = HotkeyModifiers(rawValue: combo.carbonModifiers)
-            try? center.register(id: action.rawValue, keyCode: combo.keyCode, modifiers: modifiers) { [weak self] in
-                self?.perform(action)
-            }
-        }
-    }
-
     private func perform(_ action: HotkeyAction) {
         switch action {
         case .captureArea: pipeline.start(.area)
@@ -222,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         Task { await pipeline.refreshReopenAvailability() }
         guard menu === self.menu else { return }
         menu.removeAllItems()
+        addShortcutProblemItem(to: menu)
         add(menu, "Capture Area", #selector(captureArea), hotkey: .captureArea)
         add(menu, "Capture Window", #selector(captureWindow), hotkey: .captureWindow)
         add(menu, "Capture Fullscreen", #selector(captureFullscreen), hotkey: .captureFullscreen)
@@ -272,6 +267,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         add(menu, "About Glint", #selector(showAbout))
         menu.addItem(.separator())
         add(menu, "Quit Glint", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
+    }
+
+    /// A shortcut that can't be used is flagged first in the menu, with a way to choose another.
+    private func addShortcutProblemItem(to menu: NSMenu) {
+        let count = hotkeys.problems.count
+        guard count > 0 else { return }
+        let item = add(menu, count == 1 ? "Shortcut Problem…" : "Shortcut Problems…", #selector(showShortcutProblems))
+        item.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
+        menu.addItem(.separator())
     }
 
     @discardableResult
@@ -340,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
 
     @objc private func showPreferences() { PreferencesWindowController.shared.present() }
+    @objc private func showShortcutProblems() { PreferencesWindowController.shared.presentShortcuts() }
 
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)

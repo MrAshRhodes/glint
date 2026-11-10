@@ -11,6 +11,7 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
+- A global shortcut you change no longer stops working when the new combination can't be used. Preferences now registers the new combination first, saves it only when that works, and otherwise keeps the old shortcut and says why under the row (already used by another Glint shortcut, or by another app or macOS). Previously the old shortcut was released first and the failure was silent, so Preferences could show a shortcut that did nothing, including after a relaunch. A saved shortcut that can't be registered when Glint starts is flagged in a notification (if notifications are on), in a **Shortcut Problem…** item at the top of the menu bar menu, and in its Preferences row. Changing an unrelated preference no longer re-registers every shortcut. ([#103])
 
 ## [1.8.2] - 2026-11-10
 
@@ -311,4 +312,5 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#103]: https://github.com/MrAshRhodes/glint/issues/103
 [#108]: https://github.com/MrAshRhodes/glint/issues/108

@@ -187,7 +187,8 @@ struct OutputRetentionPreferencesTests {
             defaults = UserDefaults(suiteName: suite)!
             prefs = AppPreferences(defaults: defaults)
             // /dev/null is not a directory, so the preset store can neither load from nor save to this path.
-            model = PrefsModel(prefs: prefs, store: PresetStore(url: URL(fileURLWithPath: "/dev/null/presets.json")))
+            model = PrefsModel(prefs: prefs, store: PresetStore(url: URL(fileURLWithPath: "/dev/null/presets.json")),
+                               hotkeys: HotkeyController(prefs: prefs) { _ in })
         }
 
         /// A new instance over the same suite, as after a restart.

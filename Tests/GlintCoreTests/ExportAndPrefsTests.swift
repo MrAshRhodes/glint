@@ -296,4 +296,23 @@ struct ExportAndPrefsTests {
         #expect(custom.displayString == "⇧⌘A")
         #expect(AppPreferences(defaults: defaults).hotkey(for: .repeatLast) == HotkeyAction.repeatLast.defaultCombo)
     }
+
+    @Test func hotkeyConflictNamesTheOtherActionUsingACombo() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let p = AppPreferences(defaults: defaults)
+        // Another action's default counts as taken.
+        let clipboard = HotkeyAction.captureAreaToClipboard.defaultCombo
+        #expect(p.hotkeyConflict(for: clipboard, assigning: .captureArea) == .captureAreaToClipboard)
+        // An action never conflicts with its own shortcut.
+        #expect(p.hotkeyConflict(for: HotkeyAction.captureArea.defaultCombo, assigning: .captureArea) == nil)
+        // A stored override counts, and the default it replaced is free again.
+        let custom = KeyCombo(keyCode: 0, modifiers: [.command, .shift])
+        p.setHotkey(custom, for: .captureWindow)
+        #expect(p.hotkeyConflict(for: custom, assigning: .captureArea) == .captureWindow)
+        #expect(p.hotkeyConflict(for: HotkeyAction.captureWindow.defaultCombo, assigning: .captureArea) == nil)
+        // Modifiers are part of the shortcut.
+        #expect(p.hotkeyConflict(for: KeyCombo(keyCode: 0, modifiers: [.command]), assigning: .captureArea) == nil)
+    }
 }

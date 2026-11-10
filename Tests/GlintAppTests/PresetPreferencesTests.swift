@@ -138,7 +138,7 @@ struct PresetPreferencesTests {
     @Test func rememberSettingsCheckboxPersistsAndItsTooltipSuggestsAPreset() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        let model = PrefsModel(prefs: fixture.prefs, store: fixture.store)
+        let model = PrefsModel(prefs: fixture.prefs, store: fixture.store, hotkeys: HotkeyController(prefs: fixture.prefs) { _ in })
         let remember = model.bind(\.rememberSettings)
         #expect(remember.wrappedValue)
 
