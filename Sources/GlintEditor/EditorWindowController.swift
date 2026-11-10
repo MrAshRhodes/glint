@@ -363,9 +363,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             recording.copy()
             return false // A recording export is asynchronous; never report a synchronous still-image success.
         }
+        let signpost = CaptureSignposts.begin("export.copy")
+        var copied = false
+        defer { CaptureSignposts.end(signpost, copied ? .completed : .failed) }
         let retry: (EditorWindowController) -> Void = { _ = $0.copyToClipboard(closeAfterSuccess: closeAfterSuccess) }
         guard let image = renderForExport(failure: "Copy failed", retry: retry) else { return false }
         if exportServices.copy(image, model.preferences.exportScale, model.backingScale) {
+            copied = true
             clearRetry()
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
@@ -559,6 +563,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             playback?.pause()
             return recording.prepareFile()
         }
+        let signpost = CaptureSignposts.begin("export.drag")
+        var prepared = false
+        defer { CaptureSignposts.end(signpost, prepared ? .completed : .failed) }
         let dir = exportServices.dragDirectory
         let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
         let retry: (EditorWindowController) -> Void = { controller in
@@ -571,6 +578,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         do {
             _ = try exportServices.write(image, url, .plainPNG, model.preferences.exportScale, model.backingScale)
             dragFiles.insert(url)
+            prepared = true
             clearRetry()
             model.statusMessage = "Dragging image to share"
             onImageShared?(image, .dragged, model.backingScale)
