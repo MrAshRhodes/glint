@@ -120,14 +120,20 @@ enum ImageGrabber {
     ) async throws -> [FrozenDisplay] {
         try Task.checkCancellation()
         guard !displays.isEmpty else { throw CaptureError.noDisplay }
-        let snapshot = try await content()
+        let snapshot: Snapshot
+        do {
+            snapshot = try await content()
+        } catch {
+            try Task.checkCancellation()
+            throw permissionDenial(error) ?? error
+        }
         return try await freeze(displays, options: options) { display, options in
             do {
                 return try await capture(display, options, snapshot)
             } catch {
                 // As in captureWithFallback, a cancelled freeze reports cancellation rather than the failed grab.
                 try Task.checkCancellation()
-                throw error
+                throw permissionDenial(error) ?? error
             }
         }
     }
@@ -244,11 +250,20 @@ enum ImageGrabber {
         } catch {
             try Task.checkCancellation()
             if isCancellation(error) { throw error }
+            // A refusal is not something the screencapture subprocess can repair, and it must open the permissions window.
+            if let denial = permissionDenial(error) { throw denial }
             guard allowed else { throw error }
             let grab = try await fallback()
             try Task.checkCancellation()
             return grab
         }
+    }
+
+    /// ScreenCaptureKit reports a declined Screen Recording grant as an ordinary error; map it to
+    /// `.permissionDenied` (as recording and scroll capture do) and leave every other error untouched.
+    static func permissionDenial(_ error: Error) -> CaptureError? {
+        guard case .permissionDenied = ScreenRecorder.captureError(from: error) else { return nil }
+        return .permissionDenied
     }
 
     private static func runScreencapture(_ args: [String]) async throws -> CGImage {

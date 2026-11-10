@@ -26,6 +26,7 @@ final class CaptureFixture {
     let image: CGImage
     var writes: [(url: URL, format: ExportFormat, scale: ExportScale, backingScale: CGFloat)] = []
     var notifications: [(title: String, body: String, url: URL?)] = []
+    var rejections = 0
     var recent: [URL] = []
     var copies = 0
     var copiedImage: CGImage?
@@ -103,12 +104,15 @@ final class CaptureFixture {
             return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
+        services.fail = { [self] in notifications.append(($0, $1, $2)) }
+        services.reject = { [self] in rejections += 1 }
         services.requestRetry = { [self] title, message in
             retryRequests.append((title, message))
             return retry()
         }
         services.addRecent = { [self] in recent.append($0) }
         services.sound = { [self] in sounds += 1 }
+        services.captureWindows = { [] }
         if let scrolling { services.makeScrollingCapture = { scrolling } }
         configure(&services)
         return CapturePipeline(prefs: preferences, presetStore: presets, services: services)

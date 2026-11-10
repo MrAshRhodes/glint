@@ -29,6 +29,8 @@ final class RecordingCoordinator {
             Services.openEditor(video, preferences: AppPreferences(), presetStore: PresetStore(), onClose: onClose)
         }
         var notify: @MainActor (String, String) -> Void = { Notifier.post(title: $0, body: $1) }
+        /// A failure the user must not miss, even with notifications off: see `FailureFeedback`.
+        var fail: @MainActor (String, String) -> Void = { Notifier.postFailure(title: $0, body: $1) }
         var showPermissions: @MainActor () -> Void = { PermissionsWindow.shared.show() }
         var beep: @MainActor () -> Void = { NSSound.beep() }
 
@@ -96,7 +98,7 @@ final class RecordingCoordinator {
         if let session {
             switch phase {
             case .recording: session.stop()
-            case .finishing: break
+            case .finishing: services.beep()
             case .idle, .selecting, .ready, .countdown: session.cancel()
             }
         } else {
@@ -129,7 +131,7 @@ final class RecordingCoordinator {
                 services.showPermissions()
             } catch {
                 finish(session)
-                services.notify("Recording failed", error.localizedDescription)
+                services.fail("Recording failed", error.localizedDescription)
             }
         }
     }
