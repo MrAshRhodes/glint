@@ -60,11 +60,16 @@ extension RenderSettings {
 
 /// UI-free rendering with the same settings resolution the editor uses.
 public enum EditorHeadless {
-    /// Settings the editor would start with: the last-used settings when `rememberSettings` is on,
-    /// otherwise (or when nothing has been used yet) the default preset.
-    public static func initialSettings(preferences: AppPreferences, presetStore: PresetStore? = nil) -> RenderSettings {
+    /// Settings the editor would start with, and the ones an automatic export uses: a preset requested by name
+    /// when it exists, otherwise the last-used settings when `rememberSettings` is on, otherwise (or when
+    /// nothing has been used yet) the named default preset, then the store's default preset, then
+    /// `RenderSettings.default`. Auto-balance always follows `preferences.autoBalance`.
+    public static func initialSettings(preferences: AppPreferences, presetStore: PresetStore? = nil,
+                                       presetName: String? = nil) -> RenderSettings {
         var settings: RenderSettings
-        if preferences.rememberSettings, let last = preferences.lastRenderSettings {
+        if let store = presetStore, let name = presetName, let preset = store.preset(named: name) {
+            settings = preset.settings
+        } else if preferences.rememberSettings, let last = preferences.lastRenderSettings {
             settings = last
         } else if let store = presetStore, let name = preferences.defaultPresetName, let preset = store.preset(named: name) {
             settings = preset.settings

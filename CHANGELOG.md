@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Fixed
+
+- Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
+
 ## [1.8.2] - 2026-11-10
 
 ### Fixed
@@ -307,3 +311,4 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#108]: https://github.com/MrAshRhodes/glint/issues/108
