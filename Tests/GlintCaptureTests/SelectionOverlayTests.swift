@@ -98,6 +98,65 @@ struct SelectionOverlayTests {
                 sourceLocation: sourceLocation)
     }
 
+    @Test func dirtyRegionDistinguishesCrosshairCoverageFromItsBoundingBox() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let region = OverlayPerformance.DirtyRegion(
+            rects: [CGRect(x: 20, y: 0, width: 1, height: 100),
+                    CGRect(x: 0, y: 30, width: 100, height: 1)],
+            bounds: bounds, fromAppKit: true)
+        #expect(region.rectCount == 2 && region.fromAppKit)
+        #expect(abs(region.coveredFraction - 0.0199) < 0.000001)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func dirtyRegionClipsAndCountsOverlapsOnlyOnce() {
+        let bounds = CGRect(x: -50, y: 20, width: 100, height: 100)
+        let left = CGRect(x: -100, y: 0, width: 100, height: 200)
+        let top = CGRect(x: -100, y: 70, width: 200, height: 100)
+        let region = OverlayPerformance.DirtyRegion(rects: [left, top, left, .zero, .null],
+                                                   bounds: bounds, fromAppKit: true)
+        #expect(region.rectCount == 3)
+        #expect(region.coveredFraction == 0.75)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func dirtyRegionMergesNestedAndSeparatedSpans() {
+        let region = OverlayPerformance.DirtyRegion(
+            rects: [CGRect(x: 0, y: 0, width: 10, height: 5),
+                    CGRect(x: 0, y: 1, width: 10, height: 1),
+                    CGRect(x: 0, y: 8, width: 10, height: 2)],
+            bounds: CGRect(x: 0, y: 0, width: 10, height: 10), fromAppKit: true)
+        #expect(region.coveredFraction == 0.7)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func emptyDirtyRegionsHaveZeroCoverage() {
+        for bounds in [CGRect.zero, CGRect(x: 0, y: 0, width: 100, height: 100)] {
+            let region = OverlayPerformance.DirtyRegion(
+                rects: [CGRect(x: 200, y: 200, width: 10, height: 10)], bounds: bounds, fromAppKit: true)
+            #expect(region.rectCount == 0)
+            #expect(region.coveredFraction == 0 && region.boundingFraction == 0)
+        }
+    }
+
+    @Test func directDrawMarksTheDirtyRectFallbackRatherThanClaimingAnAppKitRegion() throws {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let overlay = view(session)
+        let bitmap = try Bitmap(size: size, scale: 1)
+        var observed: [OverlayPerformance.DirtyRegion] = []
+        overlay.onDirtyRegion = { observed.append($0) }
+        bitmap.paint(overlay, damage: [NSRect(x: 0, y: 0, width: size.width / 2, height: size.height)])
+        let region = try #require(observed.first)
+        #expect(observed.count == 1)
+        #expect(!region.fromAppKit && region.rectCount == 1)
+        #expect(region.coveredFraction == 0.5 && region.boundingFraction == 0.5)
+        // Observing a draw does not change the pixels.
+        overlay.onDirtyRegion = nil
+        let reference = try Bitmap(size: size, scale: 1)
+        reference.paint(overlay, damage: [NSRect(x: 0, y: 0, width: size.width / 2, height: size.height)])
+        #expect(reference.pixels == bitmap.pixels)
+    }
+
     @Test func movementOnlyInvalidatesTheAffectedDisplayAndChangedAxes() {
         let session = SelectionSession(mode: .area, lastArea: nil)
         session.cursor = CGPoint(x: 100, y: 100)

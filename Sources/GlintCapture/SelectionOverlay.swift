@@ -423,6 +423,7 @@ final class OverlayView: NSView {
     private var detailLayout: TextLayout?
     private var pendingDrawInterval: OSSignpostIntervalState?
     private var hasDrawn = false
+    var onDirtyRegion: ((OverlayPerformance.DirtyRegion) -> Void)?
 
     private static let detailAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
@@ -655,8 +656,8 @@ final class OverlayView: NSView {
         return Label(layout: layout, origin: origin, scale: scale)
     }
 
-    /// Keep damage as separate rectangles: unioning crosshair strips would dirty the entire display.
-    /// AppKit accumulates these regions when several input events arrive before the next draw.
+    /// Submit separate damage rectangles; AppKit can still coalesce them into a larger drawing region.
+    /// Draw signposts report that effective region rather than assuming it matches these requests.
     @discardableResult
     func refresh() -> [NSRect] {
         let next = makeSnapshot()
@@ -754,7 +755,19 @@ final class OverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let name: StaticString = hasDrawn ? "Draw" : "FirstDraw"
-        let interval = OverlayPerformance.begin(name)
+        var region: OverlayPerformance.DirtyRegion?
+        if OverlayPerformance.signposter.isEnabled || onDirtyRegion != nil {
+            var rects: UnsafePointer<NSRect>?
+            var count = 0
+            getRectsBeingDrawn(&rects, count: &count)
+            let fromAppKit = rects != nil && count > 0
+            let drawingRects = fromAppKit
+                ? Array(UnsafeBufferPointer(start: rects, count: count)) : [dirtyRect]
+            let measured = OverlayPerformance.DirtyRegion(rects: drawingRects, bounds: bounds, fromAppKit: fromAppKit)
+            region = measured
+            onDirtyRegion?(measured)
+        }
+        let interval = OverlayPerformance.beginDraw(name, region: region)
         defer {
             OverlayPerformance.end(name, interval)
             OverlayPerformance.end("InvalidationToDraw", pendingDrawInterval)

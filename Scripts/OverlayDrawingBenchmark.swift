@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+// The standalone harness never freezes or crops a display; keep acquisition dependencies out of its build.
+struct FrozenDisplay {
+    let display: DisplayInfo
+    let image: CGImage
+}
+
 private struct Sample: Codable {
     let scenario: String
     let round: Int
@@ -12,6 +18,8 @@ private struct Sample: Codable {
     let drawMS: Double
     let elapsedMS: Double
     let dirtyRectCount: Int
+    let dirtyAreaFraction: Double?
+    let dirtyBoundingFraction: Double?
 
     var updateAndDrawMS: Double { updateMS + drawMS }
 }
@@ -31,7 +39,7 @@ private enum OverlayDrawingBenchmark {
         guard args.count == 4, ["area-cursor", "area-selection", "window-hover"].contains(args[0]),
               let frames = Int(args[1]), (1...1000).contains(frames),
               let round = Int(args[2]), (1...30).contains(round),
-              ["full", "damage"].contains(args[3]) else {
+              ["full", "damage", "bounding"].contains(args[3]) else {
             throw NSError(domain: "OverlayDrawingBenchmark", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Expected scenario, warm frame count, round and draw mode."])
         }
@@ -67,12 +75,15 @@ private enum OverlayDrawingBenchmark {
                 damage = view.refresh()
                 #endif
                 let updateMS = milliseconds(since: updateStart)
-                let regions = drawMode == "full" || frame == 0 ? [bounds] : damage
+                var regions = drawMode == "full" || frame == 0 ? [bounds] : damage
+                if drawMode == "bounding", !regions.isEmpty {
+                    regions = [regions.reduce(CGRect.null) { $0.union($1) }]
+                }
                 let drawStart = now()
                 if !regions.isEmpty {
                     let dirtyBounds = regions.reduce(CGRect.null) { $0.union($1) }
                     context.cgContext.saveGState()
-                    // Model one AppKit draw with a disjoint clip, not one draw per overlapping strip.
+                    // Model one draw with the selected clip, not one draw per overlapping strip.
                     context.cgContext.clip(to: regions)
                     // Direct draw does not get AppKit's backing-store clearing.
                     context.cgContext.clear(dirtyBounds)
@@ -81,11 +92,16 @@ private enum OverlayDrawingBenchmark {
                 }
                 context.cgContext.flush()
                 let drawMS = milliseconds(since: drawStart)
+                let elapsedMS = milliseconds(since: started)
+                let bounding = regions.reduce(CGRect.null) { $0.union($1) }.intersection(bounds)
                 samples.append(Sample(scenario: scenario, round: round,
                                       phase: frame == 0 ? "fresh-process-first-draw" : "warm-draw",
                                       frame: frame, drawMode: drawMode, viewSetupMS: viewSetupMS,
-                                      updateMS: updateMS, drawMS: drawMS, elapsedMS: milliseconds(since: started),
-                                      dirtyRectCount: regions.count))
+                                      updateMS: updateMS, drawMS: drawMS, elapsedMS: elapsedMS,
+                                      dirtyRectCount: regions.count,
+                                      dirtyAreaFraction: coveredArea(regions, in: bounds) / Double(bounds.width * bounds.height),
+                                      dirtyBoundingFraction: bounding.isEmpty ? 0
+                                          : Double(bounding.width * bounding.height / (bounds.width * bounds.height))))
             }
         }
         let encoder = JSONEncoder()
@@ -94,6 +110,23 @@ private enum OverlayDrawingBenchmark {
             FileHandle.standardOutput.write(try encoder.encode(sample))
             FileHandle.standardOutput.write(Data([0x0a]))
         }
+    }
+
+    // Standalone so the current harness also compiles against older baseline overlay sources.
+    private static func coveredArea(_ rects: [CGRect], in bounds: CGRect) -> Double {
+        let clipped = rects.map { $0.intersection(bounds) }.filter { !$0.isEmpty }
+        let edges = Array(Set(clipped.flatMap { [$0.minX, $0.maxX] })).sorted()
+        var area: CGFloat = 0
+        for (left, right) in zip(edges, edges.dropFirst()) {
+            var top = -CGFloat.infinity
+            var height: CGFloat = 0
+            for rect in clipped.filter({ $0.minX < right && $0.maxX > left }).sorted(by: { $0.minY < $1.minY }) {
+                height += max(0, rect.maxY - max(top, rect.minY))
+                top = max(top, rect.maxY)
+            }
+            area += (right - left) * height
+        }
+        return Double(area)
     }
 
     @MainActor
@@ -111,10 +144,13 @@ private enum OverlayDrawingBenchmark {
         }
     }
 
-    private static func distribution(_ values: [Double]) -> [String: Any] {
+    private static func distribution(_ values: [Double], timing: Bool = true) -> [String: Any] {
         let sorted = values.sorted()
         func percentile(_ fraction: Double) -> Double {
             sorted[max(0, Int(ceil(Double(sorted.count) * fraction)) - 1)]
+        }
+        if !timing {
+            return ["count": sorted.count, "p50": percentile(0.50), "p95": percentile(0.95), "max": sorted.last!]
         }
         return [
             "count": sorted.count, "p50_ms": percentile(0.50), "p95_ms": percentile(0.95),
@@ -145,6 +181,11 @@ private enum OverlayDrawingBenchmark {
                     "cpu_stalls_over_50ms_within_first_2s":
                         subset.filter { $0.elapsedMS <= 2000 && $0.updateAndDrawMS > 50 }.count
                 ]
+                group["dirty_rect_count"] = distribution(subset.map { Double($0.dirtyRectCount) }, timing: false)
+                let areas = subset.compactMap(\.dirtyAreaFraction)
+                let bounding = subset.compactMap(\.dirtyBoundingFraction)
+                if !areas.isEmpty { group["dirty_area_fraction"] = distribution(areas, timing: false) }
+                if !bounding.isEmpty { group["dirty_bounding_fraction"] = distribution(bounding, timing: false) }
                 if phase == "fresh-process-first-draw" {
                     group["view_setup"] = distribution(subset.map(\.viewSetupMS))
                     group["setup_update_and_draw"] = distribution(subset.map { $0.viewSetupMS + $0.updateAndDrawMS })
@@ -160,6 +201,7 @@ private enum OverlayDrawingBenchmark {
             "canvas_points": [1728, 1117], "scale": 2,
             "percentile_method": "nearest rank; warm samples pooled across fresh processes",
             "budget_note": "8.3/16.7ms counts are CPU reference thresholds, not refresh-budget acceptance",
+            "clip_note": "damage preserves disjoint clips; bounding coalesces them; neither measures AppKit's live clip",
             "groups": groups
         ]
         let data = try JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys])

@@ -59,6 +59,36 @@ seconds. Check the actual display budget (16.7 ms at 60 Hz; 8.3 ms at 120 Hz) wi
 claiming unmeasured refresh rates or hardware. Signposts must not include cursor
 coordinates, window metadata, or captured contents.
 
+`FirstDraw` and `Draw` begin records also report `rects` (the number of nonempty
+rectangles), `covered` (their union area divided by the view area), and `bounding`
+(their bounding-box area divided by the view area). Overlaps are counted once and
+rectangles are clipped to the view bounds. `appkit=1` means these came from
+`getRectsBeingDrawn` during AppKit drawing; `appkit=0` marks the `dirtyRect` fallback
+used by direct/offscreen draws and is **not** an observed AppKit clip. Geometry is
+summarized before the CPU draw interval starts, only while signposts are enabled;
+no coordinates or display/window identifiers are logged. This instrumentation
+has overhead outside `Draw`, so compare equally instrumented runs.
+
+Do not infer full-display repainting from `dirtyRect` alone, or infer a disjoint
+clip from calls to `setNeedsDisplay`. A bounded AppKit probe on macOS 26.6
+(25G5065a), Apple M2 Max, found one full-view effective rectangle for diagonal
+crosshair invalidations in a layer-backed 1000 x 700-point panel: both `covered`
+and `bounding` were 1. Two separated small rectangles were coalesced to their
+bounding box as well. This was an occluded synthetic panel on a 1x display
+reporting a maximum of 50 Hz, **not** the live capture UI, a Retina measurement,
+or a presentation trace. It motivates measuring the effective live clip rather
+than treating the disjoint-clip CPU benchmark below as representative of AppKit.
+
+For redraw acceptance, record display model, resolution, backing scale, configured
+and measured refresh rate, and cold/warm sample counts for diagonal pointer motion,
+selection resizing and window hover. Report `covered` and `bounding` p50/p95
+alongside handler/`Draw` CPU p50/p95, `InvalidationToDraw`, and a separate frame
+trace showing missed presentations. A warm pointer-only CPU p95 below 1 ms is a
+provisional target, not a measured result or a substitute for the display's frame
+budget. Check for trails, flicker and stale labels/selection holes on each display
+and across mixed-scale/refresh boundaries. These live measurements remain
+outstanding; no rendering change is justified solely by the synthetic probe.
+
 Signpost intervals can also be collected without Xcode or changes to system logging
 settings. Start the collector before exercising an instrumented build, and use a
 different output file for each cold/warm run:
@@ -86,6 +116,8 @@ Scripts/benchmark-overlay.sh current        # snapshot of current working source
 # Optional: compare clipped dirty regions instead of identical full-bounds draws.
 DRAW_MODE=damage Scripts/benchmark-overlay.sh baseline HEAD
 DRAW_MODE=damage Scripts/benchmark-overlay.sh current
+# Compare the same damage after coalescing it to its bounding box.
+DRAW_MODE=bounding Scripts/benchmark-overlay.sh current
 ```
 
 The `swiftc -O` harness uses an unshown 1728 × 1117-point bitmap at 2×, three fixed
@@ -99,7 +131,12 @@ These are synchronous CPU drawing measurements, **not** real mouse latency, fram
 presentation, or a substitute for the live cold/warm acceptance trace above. Run
 comparisons sequentially with other builds and heavy background work stopped. Damage
 mode models a single draw with the disjoint dirty-region clip, not separate draws
-for overlapping strips; the input sequence is synthetic and unpaced.
+for overlapping strips. Bounding mode uses one bounding-box clip when damage is
+nonempty, retaining zero-draw samples when nothing changes; full mode redraws the
+entire view on every sample. The summaries include modeled dirty-area/bounding-box
+fractions and rectangle counts. None of these modes observes AppKit's actual clip;
+the input sequence is synthetic and unpaced. Fraction calculations run outside
+the reported update/draw CPU intervals.
 
 Reference CPU comparison for [#42](https://github.com/MrAshRhodes/glint/issues/42):
 Apple M2 Max (Mac14,6), 32 GiB, macOS 26.6 (25G5065a), `swiftc -O`, baseline
