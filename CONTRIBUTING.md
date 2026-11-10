@@ -217,7 +217,7 @@ revisions, displays and input path when comparing.
 | `QueueDelay` | A global hotkey's callback arriving, through the main actor handling it. |
 | `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `scrolling`, `timer`). |
 | `PermissionCheck` | The Screen Recording permission check that starts an area, window or full-screen capture. |
-| `ShareableContent` | One ScreenCaptureKit shareable-content query (the overlay's freeze, a window grab). |
+| `ShareableContent` | One ScreenCaptureKit shareable-content query: Glint's own refill after launch or a change of screens or session, a capture that had no usable kept snapshot (the overlay's freeze, a grab), a window grab. |
 | `SnapTargets` | Building the overlay's edge-snap targets. Emitted through `OverlayPerformance`, which stays free of GlintCore. |
 | `CaptureImage` | One ScreenCaptureKit screenshot call. |
 | `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
@@ -246,6 +246,17 @@ containment only while nothing else ran, and read an `Encode*` interval that is 
 `Pasteboard` or `export.drag` interval as other work (retention, an editor Save). Metadata is limited to the trigger
 and mode on `CaptureTotal` and `eventAgeMs` on `QueueDelay`: never add coordinates, window titles, file paths or image
 content.
+
+Glint keeps ScreenCaptureKit's shareable content (displays, applications and windows: metadata, no pixels) between
+captures, so a hotkey does not wait for the query. It is queried after launch and again once the screens or the session
+have been quiet for a second (display change, wake, screens waking, session becoming active), only when Screen
+Recording is already granted, and never prompts. Three events in the `Capture` category, with `displays=<count>` as
+their only metadata, show how a capture got its content: `ShareableContentKept` (it used the snapshot kept from before
+the hotkey), `ShareableContentQueried` (nothing usable was kept, so it queried for itself: expected for the first
+capture after a change, and for every capture if Glint's own application is missing from the snapshot) and
+`ShareableContentRetried` (a capture failed on a kept snapshot, which was dropped, and ran again on a new query). The
+kept share is `Kept / (Kept + Queried)`. Read the first capture after a launch, wake or display change apart from warm
+ones. Permission checks are not cached; `PermissionCheck` shows whether they need to be.
 
 The two headline numbers come from timestamps across both categories:
 
@@ -394,7 +405,7 @@ The baseline accepts axis-aligned contrast runs of at least 48 sample pixels wit
 
 An optimized local run on 2026-10-22 measured 0.30–0.36 ms for the first detector invocation per fixture and 0.30–0.32 ms warm medians (25 iterations). These timings exclude screen acquisition, downsampling and overlay rendering; they are **not** first-capture or pointer-responsiveness measurements. Aggregate precision is 8/68 (11.8%) and recall 8/16 (50%) on this deliberately mixed set. Real desktop accuracy is unmeasured. Raising confidence from these pixel runs alone cannot distinguish decoration from a meaningful boundary; low-contrast/small targets are missed, and moving content changes candidates between snapshots. **Content detection remains disabled**, with no target-choice UI.
 
-Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences. Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
+Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences (this is about pixels: ScreenCaptureKit's shareable content, which holds only display, application and window metadata, is kept ready ahead of a capture, see the signposts section). Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
 
 ### Interactive release checks
 

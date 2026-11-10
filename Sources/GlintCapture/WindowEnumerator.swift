@@ -109,6 +109,16 @@ public enum WindowEnumerator {
         return nil
     }
 
+    /// The process that owns the window, nil once the window is gone.
+    static func ownerPID(of id: CGWindowID) -> pid_t? {
+        ownerPID(of: id, in: CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]] ?? [])
+    }
+
+    static func ownerPID(of id: CGWindowID, in list: [[String: Any]]) -> pid_t? {
+        list.first { ($0[kCGWindowNumber as String] as? UInt32) == id }
+            .flatMap { $0[kCGWindowOwnerPID as String] as? Int32 }
+    }
+
     @MainActor
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)
