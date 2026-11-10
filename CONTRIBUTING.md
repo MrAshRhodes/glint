@@ -199,6 +199,72 @@ The command was smoke-tested only against unit-test runs, not live captures. Tho
 end records for every interval above except `ShareableContent`, `CaptureImage` and `QuickAccessShown`, which the
 tests stub and which need a live capture. `QueueDelay` came from a unit test, not a real hotkey press.
 
+To measure the delay after idle, sleep and display changes
+([#106](https://github.com/MrAshRhodes/glint/issues/106)), collect both categories into one file for the whole session
+and read it with `Scripts/capture-latency.cjs`. Start the collector before launching Glint, so the first capture is a
+real cold start (`--timeout` takes seconds, or a number with an `m`, `h` or `d` suffix):
+
+```sh
+mkdir -p .build/capture-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 1h \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Capture" OR category == "SelectionOverlay")' \
+  > .build/capture-traces/idle-wake.ndjson
+```
+
+The script takes every hotkey capture (a completed `QueueDelay`; menu and URL captures have none), dates it by its key
+press (the `QueueDelay` begin time minus `eventAgeMs`) and puts it in one scenario:
+
+- `first`: no earlier Glint signpost from that process is in the trace.
+- `idle`: at least 60 s (`--idle-seconds`) after that process's last Glint signpost, so wait a minute after the previous
+  capture finished.
+- `warm`: every other capture. A p95 over fewer than 20 samples is only the maximum, so take 20 or more of any scenario
+  you want one for.
+- A scenario you name, for the first capture after something the log cannot see: a wake from sleep, a display being
+  connected or changed, switching to another user or unlocking the session. Right after the event run
+  `date '+%Y-%m-%d %H:%M:%S%z'`, press the hotkey, and pass that time as `--marker NAME=TIME`, once per event.
+
+```sh
+node Scripts/capture-latency.cjs \
+  --marker 'wake=2026-11-10 18:20:00+0100' --marker 'display=2026-11-10 18:42:10+0100' \
+  .build/capture-traces/idle-wake.ndjson
+```
+
+Several files are merged (`-` reads standard input), `--json` prints JSON and `--help` lists the options. A marker
+that no capture followed is listed in the report, which is also what happens when the stream ended while the Mac slept.
+Whether `log stream` survives sleep was not checked, so confirm the file keeps growing after a wake and start another
+collector file if it does not.
+
+The table has a row per stretch of the path: *key event to hotkey callback* (`eventAgeMs`), *callback to main actor*
+(`QueueDelay`), their sum *key event to main actor* (the hotkey dispatch), *main actor to first overlay frame* (what
+runs in between, such as the permission check, the freeze and the overlay's setup; the stage intervals above show which
+part moved) and *key event to first overlay frame*, the headline number. A p50 more than 20 ms over warm, or a p95
+that much over warm with 20 or more samples on both sides, is marked `(investigate)`. That 20 ms is the issue's initial
+diagnostic threshold (`--penalty-ms`), not a result or a budget. The report holds durations and counts only, so it
+shows how long each stretch took, not why: telling App Nap from a cache rebuild, a power-state change or a display wake
+needs Instruments.
+
+*Key event to hotkey callback* is also the first check of a real hotkey event's timestamp, which the clock check above
+could not make. An age near zero and never negative is what one clock gives. An age that is negative or not a number is
+left out and counted under "invalid event age", and ages of seconds would point to two different clocks.
+
+Idle wake-ups are not in the signposts. Read them on the same host, build and idle period from Activity Monitor's Energy
+tab (*Idle Wake Ups*), or with `top`, which accepts `idlew` on macOS 26.6 although its man page does not list it:
+
+```sh
+top -l 2 -s 60 -pid "$(pgrep -x Glint)" -stats pid,command,idlew
+```
+
+`IDLEW` is a running total (a trailing `+` means it grew since the previous sample), so the second sample minus the
+first is the wake-ups in that minute. A penalty over the threshold is a reason to investigate, not evidence for a
+persistent activity assertion or a recurring timer: either needs these counts from before and after the change. Record
+the host with every figure: model, macOS build, displays (count, resolution, scale, refresh rate), power source, Glint
+revision and the sample count per scenario. A build that caches display or window metadata
+([#102](https://github.com/MrAshRhodes/glint/issues/102)) can pay to rebuild it in the first capture after a display
+change or wake, which this report cannot separate from other startup work, so compare it with a build without the cache.
+
+The script has only been run on synthetic traces and on a trace from unit-test runs, never on a live hotkey session, so
+no idle, wake or display-change figure is recorded here: that needs the live capture UI and a physical key press.
+
 Provisional reference-host budgets (targets, **not** measured native performance): hotkey → first overlay frame
 ≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
 displays is recorded here: that needs the live capture UI and has not been measured yet.
@@ -423,7 +489,7 @@ Every change to `main` needs an issue and a pull request, including documentatio
 1. Create or choose an issue in `MrAshRhodes/glint` that describes the change.
 2. Create a focused branch from `main`, for example `feat/123-short-description`.
 3. Open a pull request to `main` and put `Fixes #123` in its description, outside comments and code blocks. `Closes` and `Resolves` also work, as do same-repository issue URLs. A PR number, nonexistent issue or issue in another repository does not count. Existing closed issues are allowed for follow-up work.
-4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy and `node --test .github/scripts/changelog.test.cjs` when changing the changelog tooling (Node.js 20+).
+4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy, `node --test .github/scripts/changelog.test.cjs` when changing the changelog tooling and `node --test Scripts/capture-latency.test.cjs` when changing the hotkey latency report (Node.js 20+).
 5. Record notable user-visible changes under Unreleased in the [changelog](CHANGELOG.md), grouped as Added, Changed, Deprecated, Removed, Fixed, or Security. Call out breaking changes and any action users need to take. These entries become the release notes, and CI fails if the changelog is malformed, for example when a `[#123]` reference has no link definition at the bottom of the file.
 6. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
 
