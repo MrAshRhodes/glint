@@ -82,12 +82,18 @@ public enum Exporter {
     }
 
     /// Puts a PNG (plus TIFF for legacy apps) on the general pasteboard.
+    ///
+    /// Pass the same `scale` and `backingScale` as the matching `write`: both representations then have the file's
+    /// pixel size and density, so apps that honour image resolution paste it at the saved copy's point size.
     @discardableResult
-    public static func copyToClipboard(_ image: CGImage, pasteboard: NSPasteboard = .general) -> Bool {
-        guard let png = try? data(for: image, format: .plainPNG) else { return false }
+    public static func copyToClipboard(_ image: CGImage, scale: ExportScale = .original, backingScale: CGFloat = 1,
+                                       pasteboard: NSPasteboard = .general) -> Bool {
+        guard let png = try? data(for: image, format: .plainPNG, scale: scale, backingScale: backingScale) else { return false }
         pasteboard.clearContents()
         var ok = pasteboard.setData(png, forType: .png)
-        if let tiff = try? data(for: image, format: .tiff) { ok = pasteboard.setData(tiff, forType: .tiff) && ok }
+        if let tiff = try? data(for: image, format: .tiff, scale: scale, backingScale: backingScale) {
+            ok = pasteboard.setData(tiff, forType: .tiff) && ok
+        }
         return ok
     }
 

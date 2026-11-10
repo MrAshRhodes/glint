@@ -25,6 +25,15 @@ private struct SharedImage {
     let backingScale: CGFloat
 }
 
+/// Pixel size and horizontal density (dpi) ImageIO recorded for the first image in `data`.
+private func pixelSizeAndDensity(of data: Data) throws -> (width: Int, height: Int, dpi: Double) {
+    let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+    let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+    return (try #require(properties[kCGImagePropertyPixelWidth] as? Int),
+            try #require(properties[kCGImagePropertyPixelHeight] as? Int),
+            try #require(properties[kCGImagePropertyDPIWidth] as? Double))
+}
+
 private func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
     NSEvent.keyEvent(
         with: .keyDown,
@@ -48,7 +57,7 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
         var copies = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
 
@@ -61,7 +70,7 @@ struct EditorExportTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
 
@@ -73,7 +82,7 @@ struct EditorExportTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
         let window = try #require(controller.window as? EditorWindow)
@@ -89,7 +98,7 @@ struct EditorExportTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var canCopy = false
-        services.copy = { _ in canCopy }
+        services.copy = { _, _, _ in canCopy }
         var beeps = 0
         services.beep = { beeps += 1 }
         let controller = f.controller(services: services)
@@ -118,7 +127,7 @@ struct EditorExportTests {
         let pasteboard = NSPasteboard(name: .init("glint.editor.tests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         var services = EditorExportServices()
-        services.copy = { Exporter.copyToClipboard($0, pasteboard: pasteboard) }
+        services.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
         let controller = f.controller(services: services)
         var exports: [URL?] = [], closes = 0
         controller.onExported = { exports.append($0) }
@@ -230,7 +239,7 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
         var copies = 0, beeps = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         services.beep = { beeps += 1 }
         let controller = failingController(f, services: services)
         defer { controller.window?.close() }
@@ -302,7 +311,7 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = closeAfterCopy
         var services = EditorExportServices()
         var copies: [CGImage] = [], beeps = 0
-        services.copy = { copies.append($0); return true }
+        services.copy = { image, _, _ in copies.append(image); return true }
         services.beep = { beeps += 1 }
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
@@ -355,7 +364,7 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
         var copies: [CGImage] = []
-        services.copy = { copies.append($0); return true }
+        services.copy = { image, _, _ in copies.append(image); return true }
         services.beep = {}
         let controller = failingController(f, services: services)
         defer { controller.window?.close() }
@@ -517,7 +526,7 @@ struct EditorExportTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         services.beep = {}
         let controller = failingController(f, services: services)
         #expect(!controller.copyToClipboard())
@@ -550,7 +559,7 @@ struct EditorExportTests {
         let pasteboard = NSPasteboard(name: .init("glint.editor.redaction.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         var services = EditorExportServices()
-        services.copy = { Exporter.copyToClipboard($0, pasteboard: pasteboard) }
+        services.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
@@ -585,7 +594,7 @@ struct EditorExportTests {
         defer { pasteboard.releaseGlobally() }
         var shared: CGImage?
         var services = EditorExportServices()
-        services.copy = { Exporter.copyToClipboard($0, pasteboard: pasteboard) }
+        services.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
         services.share = { image, _ in shared = image }
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
         let controller = f.controller(services: services)
@@ -651,7 +660,12 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
         var copies: [CGImage] = []
-        services.copy = { copies.append($0); return true }
+        var densities: [(scale: ExportScale, backingScale: CGFloat)] = []
+        services.copy = { image, scale, backingScale in
+            copies.append(image)
+            densities.append((scale, backingScale))
+            return true
+        }
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
         controller.model.updateLive([redaction])
@@ -661,6 +675,7 @@ struct EditorExportTests {
         #expect(controller.copyToClipboard())
         let event = try #require(shared.first)
         #expect(shared.count == 1 && event.kind == .copied && event.backingScale == 2)
+        #expect(densities.count == 1 && densities[0].scale == f.preferences.exportScale && densities[0].backingScale == 2)
         #expect(copies.count == 1 && event.image === copies[0])
         #expect(event.image.width == 100 && event.image.height == 80)
         try expectRedacted(event.image)
@@ -668,11 +683,62 @@ struct EditorExportTests {
         #expect(try #require(PixelBuffer(event.image)).pixel(75, 60) == (255, 255, 255, 255))
     }
 
+    @Test(arguments: ExportScale.allCases)
+    func copyAndSaveReceiveTheSameScales(scale: ExportScale) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = false
+        f.preferences.exportScale = scale
+        var services = EditorExportServices()
+        var copied: [(scale: ExportScale, backingScale: CGFloat)] = []
+        var written: [(scale: ExportScale, backingScale: CGFloat)] = []
+        services.copy = { _, scale, backingScale in copied.append((scale, backingScale)); return true }
+        services.write = { image, url, format, scale, backingScale in
+            written.append((scale, backingScale))
+            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
+        }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+
+        #expect(controller.copyToClipboard())
+        controller.saveOutput()
+        #expect(copied.count == 1 && written.count == 1)
+        #expect(copied[0].scale == scale && copied[0].backingScale == 2)
+        #expect(copied[0].scale == written[0].scale && copied[0].backingScale == written[0].backingScale)
+    }
+
+    @Test(arguments: ExportScale.allCases)
+    func pastedImageHasTheSizeAndDensityOfTheSavedFile(scale: ExportScale) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.closeAfterCopy = false
+        f.preferences.exportScale = scale
+        let pasteboard = NSPasteboard(name: .init("glint.editor.density.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        var services = EditorExportServices()
+        services.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
+        let controller = f.controller(services: services)
+        defer { controller.window?.close() }
+        var saved: URL?
+        controller.onExported = { if let url = $0 { saved = url } }
+
+        controller.saveOutput()
+        #expect(controller.copyToClipboard())
+        let file = try pixelSizeAndDensity(of: Data(contentsOf: try #require(saved)))
+        let png = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .png)))
+        let tiff = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .tiff)))
+
+        // The fixture is 100×80 pixels on a 2× display: Original and 2× keep that size at 144 dpi, 1× halves it at 72.
+        let expected = scale == .x1 ? (width: 50, height: 40, dpi: 72.0) : (width: 100, height: 80, dpi: 144.0)
+        for output in [file, png, tiff] {
+            #expect(output.width == expected.width && output.height == expected.height)
+            #expect(abs(output.dpi - expected.dpi) < 0.1)
+        }
+    }
+
     @Test func copyAndCloseReportsTheImageBeforeTheWindowCloses() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
-        services.copy = { _ in true }
+        services.copy = { _, _, _ in true }
         let controller = f.controller(services: services)
         var events: [String] = []
         controller.onImageShared = { _, kind, _ in events.append("shared \(kind)") }
@@ -727,7 +793,7 @@ struct EditorExportTests {
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
         var copies = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         services.beep = {}
         let controller = failingController(f, services: services)
         defer { controller.window?.close() }
@@ -756,7 +822,7 @@ struct EditorExportTests {
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
         var canCopy = false
-        services.copy = { _ in canCopy }
+        services.copy = { _, _, _ in canCopy }
         services.beep = {}
         let controller = failingController(f, services: services)
         defer { controller.window?.close() }
@@ -782,7 +848,7 @@ struct EditorExportTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
-        services.copy = { _ in false }
+        services.copy = { _, _, _ in false }
         services.write = { _, _, _, _, _ in throw ExportTestFailure.refused }
         services.beep = {}
         let controller = f.controller(services: services)
