@@ -8,8 +8,10 @@ import GlintEditor
 @MainActor
 final class CapturePipeline {
     struct Services {
-        var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
-            try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
+        /// Runs off the main thread, on the queue that writes screenshots. The name it is given was only checked to be
+        /// unused, so it never replaces a file: it throws `ExportError.fileExists` instead.
+        var write: @Sendable (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
+            try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4, replacing: false)
         }
         /// Copies the finished image with the export scale and backing scale a saved copy would use.
         var copy: (CGImage, ExportScale, CGFloat) -> Bool = {
@@ -19,11 +21,14 @@ final class CapturePipeline {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString($0, forType: .string)
         }
+        /// Changes whenever anything puts something on the clipboard, in this app or another.
+        var clipboardChangeCount: @MainActor () -> Int = { NSPasteboard.general.changeCount }
         var recognize: (CGImage, TextRecognizer.Options) async throws -> [RecognizedLine] = {
             try await TextRecognizer.recognize(in: $0, options: $1)
         }
         var bake: (CGImage, [Annotation]) -> CGImage? = { AnnotationRenderer.bake(source: $0, annotations: $1) }
-        var render: (CGImage, RenderSettings, CGFloat, CGImage?) throws -> CGImage = {
+        /// Runs off the main thread so a large render never stalls the interface.
+        var render: @Sendable (CGImage, RenderSettings, CGFloat, CGImage?) throws -> CGImage = {
             try Compositor.render(image: $0, settings: $1, backingScale: $2, wallpaper: $3)
         }
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
@@ -42,6 +47,7 @@ final class CapturePipeline {
             NSApp.activate(ignoringOtherApps: true)
             $0.showEditor()
         }
+        var makeQuickAccess: @MainActor () -> any QuickAccessPresenting = { QuickAccessPanel() }
         var screenScale: @MainActor () -> CGFloat = { NSScreen.main?.backingScaleFactor ?? 2 }
         var captureWindows: @MainActor () -> [NSWindow] = { NSApp.orderedWindows }
         var capture: @MainActor (ScreenCapturer, Mode, @escaping (Int) -> Void) async throws -> CaptureResult = {
@@ -74,6 +80,10 @@ final class CapturePipeline {
     /// Tracks the screenshots that were copied, dragged or auto-saved, so they can be reopened and expire.
     let retention: OutputRetention
     let retentionQueue = RetentionQueue()
+    /// Writes of the unstyled captures, apart from the outputs so neither waits for the other.
+    let rawQueue = RetentionQueue()
+    /// Writes of the finished outputs. They are what the user is waiting on, so they outrank the upkeep queues.
+    let outputQueue = RetentionQueue(priority: .userInitiated)
     private let services: Services
     private var editors: [EditorWindowController] = []
     private var recordingEditors: [RecordingEditorWindowController] = []
@@ -81,7 +91,7 @@ final class CapturePipeline {
     /// The scrolling capture in progress; pressing its shortcut again finishes it.
     private var activeScroll: (any ScrollingCapture)?
     private var reportedCleanupFailures: Set<String> = []
-    private lazy var quickAccess = QuickAccessPanel()
+    private lazy var quickAccess: any QuickAccessPresenting = services.makeQuickAccess()
     var onStatusTitle: ((String?) -> Void)?
     var onReopenAvailabilityChanged: ((Bool) -> Void)?
     private(set) var canReopenLastImage = false
@@ -246,28 +256,20 @@ final class CapturePipeline {
 
     // MARK: handling
 
-    /// Saves raw, optionally auto-redacts, then opens the editor or exports directly.
+    /// Starts saving the raw capture, optionally auto-redacts, then opens the editor or exports directly.
     func handle(_ result: CaptureResult, source: String, clipboardOnly: Bool = false) async {
         await handle(image: result.image, scale: result.scale, source: source, rawURL: nil,
-                     saveRaw: true, clipboardOnly: clipboardOnly)
+                     saveRaw: true, clipboardOnly: clipboardOnly, displayID: result.displayID)
     }
 
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
-                saveRaw: Bool, clipboardOnly: Bool = false) async {
+                saveRaw: Bool, clipboardOnly: Bool = false, displayID: CGDirectDisplayID? = nil) async {
         let redactionOptions = prefs.autoRedact
             ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, padding: 3)
             : nil
         services.sound()
-        var rawURL = existingRaw
-        if saveRaw, prefs.saveRaw, let url = prefs.outputPaths.rawURL() {
-            do {
-                rawURL = try CaptureSignposts.measure("RawWrite") {
-                    try services.write(image, url, .plainPNG, .original, scale)
-                }
-            } catch {
-                services.fail("Raw screenshot not saved", error.localizedDescription, nil)
-            }
-        }
+        let raw = RawCapture(url: existingRaw)
+        if saveRaw, prefs.saveRaw { saveRawCapture(image, backingScale: scale, as: raw) }
         var working = image
         if let opts = redactionOptions {
             let redactions: [Annotation]
@@ -299,10 +301,29 @@ final class CapturePipeline {
         // A cancelled capture task must not publish output that finished late.
         guard !Task.isCancelled else { return }
         if prefs.openEditorAfterCapture && !clipboardOnly {
-            openEditor(image: working, scale: scale, rawURL: rawURL, source: source)
+            openEditor(image: working, scale: scale, raw: raw, source: source)
         } else {
-            exportDirectly(image: working, scale: scale, rawURL: rawURL, source: source, clipboardOnly: clipboardOnly)
+            await exportDirectly(image: working, scale: scale, raw: raw, source: source, clipboardOnly: clipboardOnly,
+                                 displayID: displayID)
         }
+    }
+
+    /// Queues the write of the unstyled capture. An editor that opened in the meantime gets the file once it exists;
+    /// a failure is reported but changes nothing else.
+    private func saveRawCapture(_ image: CGImage, backingScale: CGFloat, as raw: RawCapture) {
+        let paths = prefs.outputPaths
+        let write = services.write
+        let image = SendableImage(image)
+        rawQueue.enqueue({ () -> Result<URL, Error>? in
+            guard let url = paths.rawURL() else { return nil }
+            return Result { try CaptureSignposts.measure("RawWrite") { try write(image.value, url, .plainPNG, .original, backingScale) } }
+        }, completion: { [weak self] result in
+            switch result {
+            case .success(let url): raw.saved(url)
+            case .failure(let error): self?.services.fail("Raw screenshot not saved", error.localizedDescription, nil)
+            case nil: break
+            }
+        })
     }
 
     /// The look a capture is exported with: the same resolution the editor starts from, so Remember settings and the
@@ -311,8 +332,38 @@ final class CapturePipeline {
         EditorHeadless.initialSettings(preferences: prefs, presetStore: presetStore, presetName: presetName)
     }
 
-    private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool) {
+    /// What a direct export still needs once its file write ended.
+    private struct DirectExport {
+        let id: UUID
+        /// The finished image.
+        let image: CGImage
+        let backingScale: CGFloat
+        let exportScale: ExportScale
+        let copied: Bool
+        let copyFailed: Bool
+        /// The user asked for a file but no copy, so a copy rescues the image when the file cannot be written.
+        let copiesIfNotSaved: Bool
+        /// The clipboard's change count when the export published, to tell whether anything else used it since.
+        let clipboardMark: Int
+        let showsQuickAccess: Bool
+        let wallpaperProblem: String?
+    }
+
+    /// Renders off the main thread, then publishes the clipboard and the thumbnail. The file is written in the
+    /// background: its URL, the Recent list and the notification follow once it exists, so nothing claims a save that
+    /// has not happened. Everything the export depends on is read here, so later preference changes don't alter it.
+    private func exportDirectly(image: CGImage, scale: CGFloat, raw: RawCapture, source: String?, clipboardOnly: Bool,
+                                displayID: CGDirectDisplayID?) async {
+        let release = outputQueue.hold()
+        defer { release() }
         let settings = settings()
+        let exportScale = prefs.exportScale
+        let format = prefs.exportFormat
+        let paths = prefs.outputPaths
+        let wantsSave = prefs.saveOutput && !clipboardOnly
+        let editorOff = prefs.openEditorAfterCapture == false
+        let copiesNow = prefs.copyToClipboardAfterCapture || clipboardOnly || editorOff && !wantsSave
+        let showsQuickAccess = prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true
         var wallpaper: CGImage?
         var wallpaperProblem: String?
         if settings.usesDesktopWallpaper {
@@ -321,39 +372,103 @@ final class CapturePipeline {
             case .failure(let error): wallpaperProblem = error.localizedDescription
             }
         }
+        let render = services.render
         let rendered: CGImage
         while true {
             do {
-                rendered = try CaptureSignposts.measure("Render") {
-                    try services.render(image, settings, scale, wallpaper)
+                rendered = try await BlockingWork.run { [wallpaper] _ in
+                    try CaptureSignposts.measure("Render") { try render(image, settings, scale, wallpaper) }
                 }
                 break
             } catch {
+                // A cancelled capture task must not publish output that finished late.
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
                 services.notify("Screenshot not exported", error.localizedDescription, nil)
                 guard services.requestRetry("Screenshot not exported", error.localizedDescription) else { return }
             }
         }
-        var saved: URL?
-        var failures: [String] = []
-        let exportScale = prefs.exportScale
-        if prefs.saveOutput && !clipboardOnly {
-            let format = prefs.exportFormat
-            let url = prefs.outputPaths.outputURL(format: format) ?? prefs.outputPaths.saveURL(format: format)
-            do {
-                saved = try CaptureSignposts.measure("OutputWrite") {
-                    try services.write(rendered, url, format, exportScale, scale)
-                }
-            } catch {
-                failures.append("Save failed: \(error.localizedDescription)")
-            }
+        guard !Task.isCancelled else { return }
+
+        let id = UUID()
+        var thumbnail: Task<SendableImage, Never>?
+        if showsQuickAccess {
+            let side = quickAccess.thumbnailPixelSide(for: displayID)
+            let full = SendableImage(rendered)
+            thumbnail = Task.detached(priority: .userInitiated) { SendableImage(full.value.glintThumbnail(maxPixelSide: side)) }
         }
         var copied = false
-        if prefs.copyToClipboardAfterCapture || clipboardOnly || prefs.openEditorAfterCapture == false && saved == nil {
+        var copyFailed = false
+        if copiesNow {
             copied = services.copy(rendered, exportScale, scale)
-            if !copied { failures.append("Copy to clipboard failed.") }
+            copyFailed = !copied
         }
-        if let saved { services.addRecent(saved) }
-        keep(rendered, backingScale: scale, savedFile: saved, savedExportScale: exportScale,
+        // The thumbnail is made while the copy runs. Once the clipboard has changed the export is finished; before that
+        // a cancellation that arrives while waiting still stops it.
+        let thumbnailImage = await thumbnail?.value.value
+        guard copied || !Task.isCancelled else { return }
+        if let thumbnailImage {
+            quickAccess.show(QuickAccessItem(id: id, thumbnail: thumbnailImage, image: rendered, displayID: displayID, onEdit: { [weak self] in
+                self?.openEditor(image: image, scale: scale, raw: raw, source: source)
+            }, onDragOut: { [weak self] file in
+                self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: file)
+            }))
+        }
+
+        let export = DirectExport(id: id, image: rendered, backingScale: scale, exportScale: exportScale,
+                                  copied: copied, copyFailed: copyFailed,
+                                  copiesIfNotSaved: !copiesNow && editorOff,
+                                  clipboardMark: services.clipboardChangeCount(),
+                                  showsQuickAccess: showsQuickAccess, wallpaperProblem: wallpaperProblem)
+        let write = services.write
+        let date = Date()
+        let output = SendableImage(rendered)
+        // Every export finishes through this queue, in the order it was captured, even one with no file to write, so a
+        // slow save never lets a newer screenshot be recorded ahead of an older one.
+        outputQueue.enqueue({ () -> Result<URL, Error>? in
+            guard wantsSave else { return nil }
+            // A name is only checked to be unused: another writer can take it before this one is written, in which
+            // case the next unused name is tried.
+            for _ in 0..<5 {
+                let url = paths.outputURL(date: date, format: format) ?? paths.saveURL(date: date, format: format)
+                do {
+                    return .success(try CaptureSignposts.measure("OutputWrite") {
+                        try write(output.value, url, format, exportScale, scale)
+                    })
+                } catch ExportError.fileExists {
+                    continue
+                } catch {
+                    return .failure(error)
+                }
+            }
+            return .failure(ExportError.writeFailed("No unused file name was available."))
+        }, completion: { [weak self] written in
+            self?.finishExport(export, written: written)
+        })
+    }
+
+    /// Records the outcome of a direct export, which is when its file (if any) exists: the Recent list, the
+    /// thumbnail's drag file, the kept copy and the notification. A failed save falls back to the clipboard only when
+    /// no copy was asked for and nothing else has been put on the clipboard since the export published.
+    private func finishExport(_ export: DirectExport, written: Result<URL, Error>?) {
+        var saved: URL?
+        var failures: [String] = []
+        var copied = export.copied
+        var copyFailed = export.copyFailed
+        switch written {
+        case .success(let url): saved = url
+        case .failure(let error): failures.append("Save failed: \(error.localizedDescription)")
+        case nil: break
+        }
+        if saved == nil, export.copiesIfNotSaved, services.clipboardChangeCount() == export.clipboardMark {
+            copied = services.copy(export.image, export.exportScale, export.backingScale)
+            copyFailed = !copied
+        }
+        if copyFailed { failures.append("Copy to clipboard failed.") }
+        if let saved {
+            services.addRecent(saved)
+            if export.showsQuickAccess { quickAccess.fileSaved(saved, for: export.id) }
+        }
+        keep(export.image, backingScale: export.backingScale, savedFile: saved, savedExportScale: export.exportScale,
              sharedAs: copied ? .copied : nil)
         let title: String
         let detail: String
@@ -369,18 +484,11 @@ final class CapturePipeline {
             detail = "The beautified image was not saved or copied."
             failed = true
         }
-        let message = ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n")
+        let message = ([detail] + failures + [export.wallpaperProblem].compactMap { $0 }).joined(separator: "\n")
         if failed {
             services.fail(title, message, saved)
         } else {
             services.notify(title, message, saved)
-        }
-        if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
-            quickAccess.show(image: rendered, fileURL: saved, onEdit: { [weak self] in
-                self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)
-            }, onDragOut: { [weak self] in
-                self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: saved)
-            })
         }
     }
 
@@ -431,12 +539,21 @@ final class CapturePipeline {
         keep(image, backingScale: backingScale, sharedAs: .dragged)
     }
 
-    /// True while kept screenshots are still being written.
-    var isKeepingScreenshots: Bool { !retentionQueue.isIdle }
+    /// True while screenshots are still being exported or kept: raw captures, outputs and kept copies being written.
+    var isKeepingScreenshots: Bool { !(rawQueue.isIdle && outputQueue.isIdle && retentionQueue.isIdle) }
 
-    /// Returns true when every queued retention job finished, false when `timeout` ran out first.
+    /// Returns true when every queued write finished, false when `timeout` ran out first. A finished output queues its
+    /// kept copy, so the queues are visited again until none has work left.
     func waitForRetention(timeout: Duration? = nil) async -> Bool {
-        await retentionQueue.waitUntilIdle(timeout: timeout)
+        let clock = ContinuousClock()
+        let deadline = timeout.map { clock.now.advanced(by: $0) }
+        while isKeepingScreenshots {
+            for queue in [rawQueue, outputQueue, retentionQueue] {
+                let remaining = deadline.map { max(clock.now.duration(to: $0), .zero) }
+                guard await queue.waitUntilIdle(timeout: remaining) else { return false }
+            }
+        }
+        return true
     }
 
     func notifyRetentionPreventedQuit() {
@@ -474,6 +591,12 @@ final class CapturePipeline {
     }
 
     // MARK: editor
+
+    /// Opens the editor for a fresh capture. Its raw file may not be written yet; the editor is told when it is.
+    private func openEditor(image: CGImage, scale: CGFloat, raw: RawCapture, source: String?) {
+        let controller = openEditor(image: image, scale: scale, rawURL: raw.url, source: source)
+        raw.attach(controller)
+    }
 
     @discardableResult
     func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
@@ -650,6 +773,30 @@ private struct SendableImage: @unchecked Sendable {
     let value: CGImage
 
     init(_ value: CGImage) { self.value = value }
+}
+
+/// The unstyled capture of one screenshot. Its file is written in the background, so it is only known once the write
+/// succeeded, which can be after an editor for the capture opened.
+@MainActor
+private final class RawCapture {
+    private(set) var url: URL?
+    private let editors = NSHashTable<EditorWindowController>.weakObjects()
+
+    init(url: URL? = nil) { self.url = url }
+
+    func saved(_ url: URL) {
+        self.url = url
+        for editor in editors.allObjects { editor.rawFileSaved(url) }
+    }
+
+    /// Tells `editor` where the file is, now or as soon as it exists.
+    func attach(_ editor: EditorWindowController) {
+        if let url {
+            editor.rawFileSaved(url)
+        } else {
+            editors.add(editor)
+        }
+    }
 }
 
 /// Most-recently opened/exported files for the Open Recent submenu.

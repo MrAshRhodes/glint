@@ -154,7 +154,9 @@ struct DirectExportCapturePipelineTests {
         var unbalanced = look
         unbalanced.autoBalance = false
 
-        await f.pipeline().handle(image: framed, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        let pipeline = f.pipeline()
+        await pipeline.handle(image: framed, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        await f.settle(pipeline)
 
         let exported = try #require(f.copiedImage)
         try expectIdenticalPixels(exported, rendered(framed, expected))

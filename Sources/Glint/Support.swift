@@ -84,7 +84,7 @@ enum CaptureRecovery {
     }
 }
 
-/// Runs the blocking retention work (hashing, encoding, writing) one job at a time on a utility thread, so a copy
+/// Runs the blocking retention work (hashing, encoding, writing) one job at a time off the main thread, so a copy
 /// or drag never waits for the disk. Jobs finish in the order they were queued.
 @MainActor
 final class RetentionQueue {
@@ -105,18 +105,35 @@ final class RetentionQueue {
     private(set) var pending = 0
     private var tail: Task<Void, Never>?
     private var waiters: [IdleWaiter] = []
+    private let priority: TaskPriority
 
     var isIdle: Bool { pending == 0 }
+
+    /// Background upkeep stays at utility priority; work somebody is waiting on asks for more.
+    init(priority: TaskPriority = .utility) { self.priority = priority }
 
     /// Runs `work` off the main thread after every earlier job, then passes its result to `completion` on the main actor.
     func enqueue<Output: Sendable>(_ work: @escaping @Sendable () -> Output,
                                    completion: @escaping @MainActor (Output) -> Void) {
         pending += 1
         let previous = tail
+        let priority = priority
         tail = Task { @MainActor [weak self] in
             await previous?.value
-            let output = await Task.detached(priority: .utility, operation: work).value
+            let output = await Task.detached(priority: priority, operation: work).value
             completion(output)
+            self?.finishJob()
+        }
+    }
+
+    /// Counts work that isn't a queued job, such as a capture still being rendered, as pending, so waiting for the
+    /// queue waits for it too. Call the returned closure once that work finished or queued its own jobs.
+    func hold() -> @MainActor () -> Void {
+        pending += 1
+        var released = false
+        return { [weak self] in
+            guard !released else { return }
+            released = true
             self?.finishJob()
         }
     }

@@ -17,34 +17,75 @@ private func pixelSizeAndDensity(of data: Data) throws -> (width: Int, height: I
             try #require(properties[kCGImagePropertyDPIWidth] as? Double))
 }
 
+/// A value guarded by a lock, for test doubles the pipeline calls from background threads.
+final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) { stored = value }
+
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+
+    @discardableResult
+    func withValue<Result>(_ body: (inout Value) -> Result) -> Result { lock.withLock { body(&stored) } }
+}
+
+typealias RecordedWrite = (url: URL, format: ExportFormat, scale: ExportScale, backingScale: CGFloat)
+
 @MainActor
 final class CaptureFixture {
+    private struct Failures { var write = false, raw = false, render = false }
+
     let suite = "glint.pipeline.tests.\(UUID().uuidString)"
     let directory: URL
     let preferences: AppPreferences
     let presets: PresetStore
     let image: CGImage
-    var writes: [(url: URL, format: ExportFormat, scale: ExportScale, backingScale: CGFloat)] = []
+    /// Written and rendered on background threads, so they sit behind locks.
+    private let writeLog = LockedValue<[RecordedWrite]>([])
+    private let renderLog = LockedValue<[CGImage]>([])
+    private let failures = LockedValue(Failures())
+    /// Whether each render ran on the main thread.
+    let renderedOnMain = LockedValue<[Bool]>([])
+    /// Runs on the writing thread before each file is written, so a test can hold the disk.
+    let beforeWrite = LockedValue<(@Sendable (URL) -> Void)?>(nil)
+    /// Runs on the rendering thread before each render.
+    let beforeRender = LockedValue<(@Sendable () -> Void)?>(nil)
+    var writes: [RecordedWrite] { writeLog.value }
+    var renderedImages: [CGImage] { renderLog.value }
+    var failWrite: Bool {
+        get { failures.value.write }
+        set { failures.withValue { $0.write = newValue } }
+    }
+    var failRaw: Bool {
+        get { failures.value.raw }
+        set { failures.withValue { $0.raw = newValue } }
+    }
+    var failRender: Bool {
+        get { failures.value.render }
+        set { failures.withValue { $0.render = newValue } }
+    }
     var notifications: [(title: String, body: String, url: URL?)] = []
     var rejections = 0
     var recent: [URL] = []
     var copies = 0
+    /// Counts every change of the clipboard, so a test can also stand in for another app using it.
+    var clipboardChanges = 0
     var copiedImage: CGImage?
     var copiedScales: (scale: ExportScale, backingScale: CGFloat)?
     var copiedTexts: [String] = []
     var sounds = 0
     var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
     var wallpaperReads = 0
-    var failWrite = false
-    var failRaw = false
     var copySucceeds = true
     var failRecognition = false
     var failBake = false
-    var failRender = false
     var lines: [RecognizedLine] = []
     var recognizedImages: [CGImage] = []
     var bakedImages: [CGImage] = []
-    var renderedImages: [CGImage] = []
     var retryRequests: [(title: String, message: String)] = []
     var retry: () -> Bool = { false }
     var scrolling: (any ScrollingCapture)?
@@ -74,20 +115,27 @@ final class CaptureFixture {
 
     func pipeline(configure: (inout CapturePipeline.Services) -> Void = { _ in }) -> CapturePipeline {
         var services = CapturePipeline.Services()
-        services.write = { [self] image, url, format, scale, backingScale in
-            writes.append((url, format, scale, backingScale))
-            if failWrite || failRaw && url.deletingLastPathComponent().lastPathComponent == "Raw" {
+        let writeLog = writeLog, renderLog = renderLog, failures = failures
+        let renderedOnMain = renderedOnMain, beforeWrite = beforeWrite, beforeRender = beforeRender
+        services.write = { image, url, format, scale, backingScale in
+            writeLog.withValue { $0.append((url, format, scale, backingScale)) }
+            beforeWrite.value?(url)
+            let flags = failures.value
+            if flags.write || flags.raw && url.deletingLastPathComponent().lastPathComponent == "Raw" {
                 throw TestFailure.write
             }
-            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
+            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale,
+                                      replacing: false)
         }
         services.copy = { [self] image, scale, backingScale in
             copies += 1
+            clipboardChanges += 1
             copiedImage = image
             copiedScales = (scale, backingScale)
             return copySucceeds
         }
-        services.copyText = { [self] in copiedTexts.append($0) }
+        services.copyText = { [self] in copiedTexts.append($0); clipboardChanges += 1 }
+        services.clipboardChangeCount = { [self] in clipboardChanges }
         services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
         services.recognize = { [self] image, _ in
             recognizedImages.append(image)
@@ -98,9 +146,11 @@ final class CaptureFixture {
             bakedImages.append(image)
             return failBake ? nil : AnnotationRenderer.bake(source: image, annotations: annotations)
         }
-        services.render = { [self] image, settings, backingScale, wallpaper in
-            renderedImages.append(image)
-            if failRender { throw RenderError.annotationsNotApplied }
+        services.render = { image, settings, backingScale, wallpaper in
+            renderLog.withValue { $0.append(image) }
+            renderedOnMain.withValue { $0.append(Thread.isMainThread) }
+            beforeRender.value?()
+            if failures.value.render { throw RenderError.annotationsNotApplied }
             return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
@@ -119,8 +169,16 @@ final class CaptureFixture {
     }
 
     func run(clipboardOnly: Bool = false, saveRaw: Bool = false) async {
-        await pipeline().handle(image: image, scale: 2, source: "test", rawURL: nil,
-                                saveRaw: saveRaw, clipboardOnly: clipboardOnly)
+        let pipeline = pipeline()
+        await pipeline.handle(image: image, scale: 2, source: "test", rawURL: nil,
+                              saveRaw: saveRaw, clipboardOnly: clipboardOnly)
+        await settle(pipeline)
+    }
+
+    /// Waits for the writes a capture queued in the background.
+    func settle(_ pipeline: CapturePipeline) async {
+        let idle = await pipeline.waitForRetention(timeout: .seconds(60))
+        #expect(idle, "Queued writes did not finish")
     }
 
     func cleanUp() {
@@ -698,9 +756,11 @@ struct CapturePipelineTests {
         f.preferences.copyToClipboardAfterCapture = true
         let pasteboard = NSPasteboard(name: .init("glint.pipeline.density.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
-        await f.pipeline {
+        let pipeline = f.pipeline {
             $0.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
-        }.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        await f.settle(pipeline)
 
         let savedURL = try #require(f.recent.first)
         let file = try pixelSizeAndDensity(of: Data(contentsOf: savedURL))
@@ -801,7 +861,8 @@ struct CapturePipelineTests {
         f.failRaw = true
         await f.run(saveRaw: true)
         #expect(f.writes.count == 2 && f.recent.count == 1)
-        #expect(f.notifications.map(\.title) == ["Raw screenshot not saved", "Screenshot saved"])
+        // The raw file and the output are written on separate queues, so their reports can arrive in either order.
+        #expect(f.notifications.map(\.title).sorted() == ["Raw screenshot not saved", "Screenshot saved"])
     }
 
     @Test func disabledHistoryUsesManualDirectoryAndSkipsRawSave() async throws {
@@ -947,7 +1008,8 @@ struct CapturePipelineTests {
         f.failBake = true
         f.failRender = true
         f.retry = {
-            #expect(f.writes.count == 1 && f.copies == 0 && f.sounds == 1)
+            // The raw file is written in the background, so it may not have been recorded yet; it is never repeated.
+            #expect(f.writes.count <= 1 && f.copies == 0 && f.sounds == 1)
             if f.retryRequests.count == 2 { f.failBake = false }
             if f.retryRequests.count == 4 { f.failRender = false }
             return f.retryRequests.count <= 4
@@ -956,8 +1018,9 @@ struct CapturePipelineTests {
         #expect(f.retryRequests.count == 4 && f.sounds == 1)
         #expect(f.recognizedImages.count == 1 && f.bakedImages.count == 3 && f.renderedImages.count == 3)
         #expect(f.writes.count == 2 && f.recent.count == 1)
-        #expect(f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }.count == 1)
-        let rawURL = try #require(f.writes.first?.url)
+        let rawWrites = f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }
+        #expect(rawWrites.count == 1)
+        let rawURL = try #require(rawWrites.first?.url)
         let savedURL = try #require(f.recent.first)
         let raw = try #require(GlintImageIO.load(url: rawURL))
         let saved = try #require(GlintImageIO.load(url: savedURL))
@@ -1033,6 +1096,7 @@ struct ScrollingCapturePipelineTests {
         #expect(pipeline.start(.scrolling) == nil)
         #expect(capture.finishes == 1)
         await task.value
+        await f.settle(pipeline)
 
         #expect(!pipeline.isScrollingCaptureActive && !pipeline.isBusy)
         // Recognition sees the full height, so redaction covers text far below the first screen.

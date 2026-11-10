@@ -10,7 +10,8 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
   `RGBAColor.white/.black/.red/.clear`.
 - `ColorSpaces.sRGB`; `GlintImageIO.load(url:) -> CGImage?` (EXIF-orientation applied), `GlintImageIO.load(data:)`,
   `CGImage.glintSRGB() -> CGImage` (convert), `GlintBitmap.makeContext(width:height:)`,
-  `CGImage.glintCropped(to: CGRect)`.
+  `CGImage.glintCropped(to: CGRect)`, `CGImage.glintThumbnail(maxPixelSide:) -> CGImage` (a downscaled copy with the
+  same aspect ratio and transparency; an image that already fits is returned as is, never enlarged).
 
 ## Models
 - `BackgroundStyle` enum: `.solid(RGBAColor)`, `.linear(LinearGradient)` (`angle` CSS degrees: 0 = to top,
@@ -92,6 +93,14 @@ drag the **Drag to share** tile again to choose a destination. Capture auto-reda
 Retries do not recapture the screen, repeat a raw-history save, or create a raw recovery file. This is
 in-memory recovery, not protection against quitting or a crash. The CLI still exits with an error;
 its input file is unchanged.
+In the editor, Copy (⌘C or the button) and the drag out of the **Drag to share** tile take the image and annotations
+as they are when the action starts (`EditorModel.finalRenderer()`) and render them off the main actor, so the window
+keeps responding and edits made meanwhile do not change the copy. Copy puts the image on the clipboard once the
+render has finished, so a failed render leaves the clipboard as it was and offers **Retry**, and a copy started later,
+in this editor or another, replaces one that is still rendering. A drag starts at once and offers both a file promise
+and the cache file's URL, which are fulfilled when the render and the file write have finished; if they fail, nothing
+is handed to the destination and the editor beeps, shows the failure and offers **Retry**. Save and Share still render
+on the main actor.
 
 ## Annotations
 `Annotation(id,z,kind,style,visibleRange: AnnotationTiming? = nil)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
@@ -196,9 +205,19 @@ Annotation case names and their serialized representations are unchanged.
 ## Export / paths
 - `ExportFormat`: `.png(interlaced:)` (`.plainPNG`), `.jpeg(quality:)`, `.heic(quality:)`, `.tiff`; `.fileExtension`.
   `ExportScale`: `.original, .x1, .x2` (relative to the image's backing scale).
-- `Exporter.data(for:format:scale:backingScale:) throws -> Data`, `Exporter.write(_:to:format:scale:backingScale:)`,
+- `Exporter.data(for:format:scale:backingScale:) throws -> Data`,
+  `Exporter.write(_:to:format:scale:backingScale:replacing:)` (throws `ExportError`: `.encodingFailed`,
+  `.writeFailed(String)`, `.fileExists`; replaces an existing file by default, while `replacing: false` stages the
+  bytes beside `url` and moves them into place, so a file that another writer created at that name meanwhile is left
+  alone and `.fileExists` is thrown for the caller to pick another name),
   `Exporter.copyToClipboard(_:scale:backingScale:pasteboard:)` (PNG + TIFF on `NSPasteboard`; pass the same `scale` and
-  `backingScale` as the matching `write` and the pasted image has the saved file's pixel size and density).
+  `backingScale` as the matching `write` and the pasted image has the saved file's pixel size and density). It
+  returns once the pasteboard holds a promise for the image and encodes nothing itself: `true` means the pasteboard
+  took the promise. The PNG is encoded in the background from then on, so it is normally ready when something pastes;
+  the TIFF, which only legacy apps ask for, is made from that PNG when one asks. `Exporter.data(for:…)` and `write` of
+  a plain PNG of the same image at the same `scale` and `backingScale` reuse the clipboard's PNG, so copying and saving
+  one capture encode it once. `Exporter.flushPendingClipboard()` makes whatever is still only promised real; call it
+  as the app quits (`applicationWillTerminate`) so a copy that nothing has pasted yet outlives the process.
 - `OutputPaths(historyDirectory:, saveDirectory:, fileNameTemplate:)`: `rawURL(date:)`, `outputURL(date:)`,
   `saveURL(date:format:)`, `FileNaming.fileName(template:date:uuid:)` (`{datetime}` = `yyyy-MM-dd-HH.mm.ss`,
   `{uuid}`), `FileNaming.uniqueURL(directory:baseName:ext:)` (collision → `-2`, `-3`…). Default template
@@ -215,8 +234,10 @@ is limited to a trigger, a mode label and durations: never coordinates, window t
   `.failed` when it throws (`Outcome(error:)` tells `CancellationError` from a real failure).
 - `beginCapture(trigger:mode:)` (`CaptureTotal`, with `Trigger` `.hotkey`, `.menu`, `.url`, `.timer`) and
   `beginQueueDelay(eventAgeSeconds:)` (`QueueDelay`) record the only metadata beyond a name.
-- `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` and `Exporter.copyToClipboard`
-  emits `Pasteboard`, so every caller is timed without changing its signature.
+- `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` (not when it reuses the clipboard's
+  PNG) and `Exporter.copyToClipboard` emits `Pasteboard`, which covers publishing the promise only: the PNG's
+  `EncodePNG` runs on a background queue after it, and the TIFF's `EncodeTIFF` only when an app asks for it. Every
+  caller is timed without changing its signature.
 
 ## Timing statistics and the export fixture (`TimingStatistics.swift`, `ExportTiming.swift`)
 What `Glint --diagnose --timing` and the CI performance guard share; CONTRIBUTING.md ("Timing diagnostics and the
@@ -325,7 +346,8 @@ public final class OutputActiveFiles: @unchecked Sendable {
   A missing, corrupt or unknown-version index is treated as empty: it never crashes and never causes a deletion.
 - The editor's drag cache (`Caches/Glint/Drag`, removed when the editor closes) is separate, and a retained Output
   file is never the editor's drag payload. A quick-access thumbnail drag can offer a file that is already in the
-  Output folder, so wrap that drag in `OutputActiveFiles.begin/end` (calls nest) to keep `cleanUp()` from removing
+  Output folder (capture writes it in the background, and a drag that starts before the file exists carries the
+  image itself), so wrap that drag in `OutputActiveFiles.begin/end` (calls nest) to keep `cleanUp()` from removing
   it. `begin` waits briefly if `cleanUp()` is moving that very file to the Trash at that moment, so check that the
   file still exists after calling it.
 

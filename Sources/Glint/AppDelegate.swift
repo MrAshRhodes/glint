@@ -152,6 +152,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         return .terminateLater
     }
 
+    /// A copied image is only promised to the pasteboard until something pastes it, and the promise dies with the
+    /// app, so whatever has not been collected yet is handed over now.
+    func applicationWillTerminate(_ notification: Notification) {
+        Exporter.flushPendingClipboard()
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if url.isFileURL { pipeline.openFile(url) } else if url.scheme == GlintInfo.urlScheme { handle(url: url) }

@@ -367,7 +367,9 @@ struct CaptureFeedbackTests {
         let reports = Reports()
         f.preferences.saveRaw = true
         f.failRaw = true
-        await pipeline(f, reports).handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: true)
+        let capture = pipeline(f, reports)
+        await capture.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: true)
+        await f.settle(capture)
         #expect(reports.failures.map(\.title) == ["Raw screenshot not saved"])
         #expect(reports.infos.map(\.title) == ["Screenshot saved"])
     }
@@ -377,7 +379,9 @@ struct CaptureFeedbackTests {
         let reports = Reports()
         f.failWrite = true
         f.copySucceeds = false
-        await pipeline(f, reports).handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        let capture = pipeline(f, reports)
+        await capture.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await f.settle(capture)
         #expect(reports.failures.map(\.title) == ["Screenshot export failed"])
         #expect(reports.infos.isEmpty)
     }
@@ -387,7 +391,9 @@ struct CaptureFeedbackTests {
         let reports = Reports()
         f.preferences.copyToClipboardAfterCapture = true
         f.copySucceeds = false
-        await pipeline(f, reports).handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        let capture = pipeline(f, reports)
+        await capture.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await f.settle(capture)
         let saved = try #require(f.recent.first)
         #expect(reports.failures.map(\.title) == ["Screenshot saved, but copy failed"])
         #expect(reports.failures.first?.url == saved)
@@ -396,8 +402,9 @@ struct CaptureFeedbackTests {
         let other = try CaptureFixture(); defer { other.cleanUp() }
         let otherReports = Reports()
         other.failWrite = true
-        await pipeline(other, otherReports).handle(image: other.image, scale: 2, source: "test", rawURL: nil,
-                                                   saveRaw: false)
+        let otherCapture = pipeline(other, otherReports)
+        await otherCapture.handle(image: other.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await other.settle(otherCapture)
         #expect(otherReports.failures.map(\.title) == ["Copied to clipboard, but save failed"])
         #expect(otherReports.infos.isEmpty)
     }
@@ -405,7 +412,9 @@ struct CaptureFeedbackTests {
     @Test func aSuccessfulExportIsOnlyAnInformationalNotification() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         let reports = Reports()
-        await pipeline(f, reports).handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        let capture = pipeline(f, reports)
+        await capture.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await f.settle(capture)
         let saved = try #require(f.recent.first)
         #expect(reports.infos.map(\.title) == ["Screenshot saved"] && reports.infos.first?.url == saved)
         #expect(reports.failures.isEmpty)

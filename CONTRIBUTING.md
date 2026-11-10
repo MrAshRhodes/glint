@@ -227,13 +227,13 @@ revisions, displays and input path when comparing.
 | `RawWrite` | Writing the raw screenshot. |
 | `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
 | `OutputWrite` | Saving a direct export, including its encode. |
-| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite`, `Pasteboard` and `export.drag`. |
-| `Pasteboard` | Putting the image on the clipboard, including its PNG and TIFF encodes. |
+| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite` and `export.drag`. The clipboard's PNG encode starts in the background right after `Pasteboard` begins and its TIFF encode runs when an app asks for it, so neither is nested in `Pasteboard`; a save that reuses the clipboard's PNG has no `EncodePNG` of its own. |
+| `Pasteboard` | Putting the image on the clipboard as a promise, which is all it covers: the PNG is encoded afterwards in the background and the TIFF, made from the PNG, only when an app pastes it. |
 | `QuickAccessShown` | Creating the thumbnail panel and putting it on screen. |
 | `editor.open` | An editor model's creation to its first finished preview. Every editor kind (capture, reopened image or project, recording, preset designer) emits it. |
 | `editor.render` | One preview render, off the main thread. |
-| `export.copy` | The editor's Copy action: final render, clipboard write and the follow-up work. |
-| `export.drag` | The editor's drag-out: final render and writing the drag file. |
+| `export.copy` | The editor's Copy action: snapshot, off-main-actor final render, clipboard promise and the follow-up work. |
+| `export.drag` | The editor's drag-out, from the drag starting: off-main-actor final render and writing the drag file. |
 
 `CaptureTotal` includes the time the user spends choosing, so read latency from the stage intervals, not from its
 duration. Its end message says how the capture task ended: `cancelled` for Esc or task cancellation, `failed` for a
@@ -243,10 +243,11 @@ same `CaptureTotal`. Intervals ended by cancellation or an error must be exclude
 overlay.
 
 Only one capture runs at a time, but other work can overlap it: Reopen Last Image retention encodes in the background
-after the previous capture, and an editor that is already open keeps rendering previews. Each interval has its own
-opaque signpost ID and there is no capture identifier, so attribute stage intervals to a `CaptureTotal` by time
-containment only while nothing else ran, and read an `Encode*` interval that is not inside an `OutputWrite`,
-`Pasteboard` or `export.drag` interval as other work (retention, an editor Save). Metadata is limited to the trigger
+after the previous capture, the clipboard's PNG is encoded in the background after `Pasteboard` ends, and an editor that
+is already open keeps rendering previews. Each interval has its own opaque signpost ID and there is no capture
+identifier, so attribute stage intervals to a `CaptureTotal` by time containment only while nothing else ran, and read
+an `Encode*` interval that is not inside an `OutputWrite` or `export.drag` interval as other work (the clipboard's
+background PNG or its TIFF, retention, an editor Save). Metadata is limited to the trigger
 and mode on `CaptureTotal` and `eventAgeMs` on `QueueDelay`: never add coordinates, window titles, file paths or image
 content.
 
@@ -265,7 +266,9 @@ The two headline numbers come from timestamps across both categories:
 
 - Hotkey → first overlay frame: the `QueueDelay` begin time minus its `eventAgeMs`, to the `OverlayFirstDraw` end
   (category `SelectionOverlay`).
-- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end. Mouse-up → thumbnail: the
+- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end, which is when the clipboard
+  holds the image's promise. A paste that comes before the background `EncodePNG` has ended waits for it, so that
+  interval's end is when the PNG itself is there. Mouse-up → thumbnail: the
   same begin to the `QuickAccessShown` end. With **Open editor after capture** on, neither runs: read `editor.open`
   instead, which begins when the editor model is created rather than at mouse-up, and `export.copy`.
 

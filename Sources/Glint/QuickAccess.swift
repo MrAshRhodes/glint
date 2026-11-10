@@ -2,12 +2,45 @@ import AppKit
 import GlintCore
 import GlintEditor
 
+/// One screenshot offered in the quick-access panel.
+struct QuickAccessItem {
+    /// Names this screenshot when its file is written later, so a slow write never lands on a newer thumbnail.
+    let id: UUID
+    /// What the panel draws: already scaled down, so showing it never resamples the full-resolution capture.
+    let thumbnail: CGImage
+    /// The finished image: what a drag carries until the file exists.
+    let image: CGImage
+    /// The display the capture came from, where the panel appears.
+    let displayID: CGDirectDisplayID?
+    let onEdit: () -> Void
+    /// Runs when a drag leaves the thumbnail, with the file being dragged (nil while only the image data leaves).
+    let onDragOut: (URL?) -> Void
+}
+
+@MainActor
+protocol QuickAccessPresenting: AnyObject {
+    /// The longest side, in pixels, a thumbnail needs to look sharp on the display `displayID` names.
+    func thumbnailPixelSide(for displayID: CGDirectDisplayID?) -> Int
+    func show(_ item: QuickAccessItem)
+    /// The file for the screenshot `id` now exists. Drags of it that start from here on carry the file.
+    func fileSaved(_ url: URL, for id: UUID)
+}
+
 /// Small floating thumbnail at the screen corner: click to edit, drag out to drop the file, auto-dismisses.
 @MainActor
-final class QuickAccessPanel {
+final class QuickAccessPanel: QuickAccessPresenting {
     static let windowIdentifier = NSUserInterfaceItemIdentifier("GlintQuickAccess")
     private var panel: NSPanel?
     private var timer: Timer?
+    private var shownID: UUID?
+    private weak var thumbnailView: ThumbnailView?
+    private let activeFiles: OutputActiveFiles
+
+    /// While a saved file is being dragged it counts as in use for Output cleanup.
+    init(activeFiles: OutputActiveFiles = .shared) { self.activeFiles = activeFiles }
+
+    /// Longest side of the thumbnail, in points.
+    static let maxSide: CGFloat = 220
 
     /// Inset of the thumbnail inside the glass panel; the thumbnail's corners stay concentric with the panel's.
     static let thumbnailInset = GlintDesign.cardInset
@@ -18,16 +51,33 @@ final class QuickAccessPanel {
 
     private static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
-    /// `onDragOut` runs when a drag leaves the thumbnail. While a saved file is being dragged it counts as in use
-    /// for Output cleanup.
-    func show(image: CGImage, fileURL: URL?, activeFiles: OutputActiveFiles = .shared,
-              onEdit: @escaping () -> Void, onDragOut: @escaping () -> Void = {}) {
+    /// The screen showing the display `displayID` names, if it is among `screens`.
+    static func screen(for displayID: CGDirectDisplayID?, among screens: [NSScreen] = NSScreen.screens) -> NSScreen? {
+        guard let displayID else { return nil }
+        return screens.first { Self.displayID(of: $0) == displayID }
+    }
+
+    static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+
+    func thumbnailPixelSide(for displayID: CGDirectDisplayID?) -> Int {
+        let scale = (Self.screen(for: displayID) ?? NSScreen.main)?.backingScaleFactor ?? 2
+        return Int((Self.maxSide * scale).rounded(.up))
+    }
+
+    func fileSaved(_ url: URL, for id: UUID) {
+        guard shownID == id else { return }
+        thumbnailView?.fileURL = url
+    }
+
+    func show(_ item: QuickAccessItem) {
         let signpost = CaptureSignposts.begin("QuickAccessShown")
         defer { CaptureSignposts.end(signpost) }
         dismiss()
-        guard let screen = NSScreen.main else { return }
-        let maxSide: CGFloat = 220
-        let ratio = CGFloat(image.width) / max(CGFloat(image.height), 1)
+        guard let screen = Self.screen(for: item.displayID) ?? NSScreen.main else { return }
+        let maxSide = Self.maxSide
+        let ratio = CGFloat(item.image.width) / max(CGFloat(item.image.height), 1)
         let size = ratio >= 1 ? NSSize(width: maxSide, height: maxSide / ratio) : NSSize(width: maxSide * ratio, height: maxSide)
         let inset = Self.thumbnailInset
         let panelSize = NSSize(width: size.width + inset * 2, height: size.height + inset * 2)
@@ -43,16 +93,19 @@ final class QuickAccessPanel {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.isReleasedWhenClosed = false
 
-        let nsImage = NSImage(cgImage: image, size: size)
-        let view = ThumbnailView(frame: NSRect(origin: .zero, size: size), image: nsImage, fileURL: fileURL,
+        let nsImage = NSImage(cgImage: item.thumbnail, size: size)
+        let view = ThumbnailView(frame: NSRect(origin: .zero, size: size), image: nsImage, dragImage: item.image,
                                  activeFiles: activeFiles, cornerRadius: Self.thumbnailCornerRadius)
+        let onEdit = item.onEdit, onDragOut = item.onDragOut
         view.onClick = { [weak self] in self?.dismiss(); onEdit() }
         view.onClose = { [weak self] in self?.dismiss() }
         view.onHover = { [weak self] inside in inside ? self?.timer?.invalidate() : self?.scheduleDismiss() }
-        view.onDragStart = { [weak self] in
+        view.onDragStart = { [weak self] file in
             self?.timer?.invalidate()
-            onDragOut()
+            onDragOut(file)
         }
+        thumbnailView = view
+        shownID = item.id
 
         let content = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -92,6 +145,7 @@ final class QuickAccessPanel {
 
     func dismiss() {
         timer?.invalidate()
+        shownID = nil
         guard let p = panel else { return }
         panel = nil
         let reduceMotion = Self.reduceMotion
@@ -131,17 +185,19 @@ private final class ThumbnailView: NSView, NSDraggingSource {
     var onClick: (() -> Void)?
     var onClose: (() -> Void)?
     var onHover: ((Bool) -> Void)?
-    var onDragStart: (() -> Void)?
+    var onDragStart: ((URL?) -> Void)?
     private let image: NSImage
-    private let fileURL: URL?
+    private let dragImage: CGImage
+    /// The saved file, once there is one. Until then a drag carries the image itself.
+    var fileURL: URL?
     private let dragFile: ActiveDragFile
     private let closeButton = NSButton()
     private var downPoint: NSPoint = .zero
     private var dragged = false
 
-    init(frame: NSRect, image: NSImage, fileURL: URL?, activeFiles: OutputActiveFiles, cornerRadius: CGFloat) {
+    init(frame: NSRect, image: NSImage, dragImage: CGImage, activeFiles: OutputActiveFiles, cornerRadius: CGFloat) {
         self.image = image
-        self.fileURL = fileURL
+        self.dragImage = dragImage
         dragFile = ActiveDragFile(files: activeFiles)
         super.init(frame: frame)
         wantsLayer = true
@@ -217,9 +273,10 @@ private final class ThumbnailView: NSView, NSDraggingSource {
     override func mouseDragged(with event: NSEvent) {
         guard !dragged, hypot(event.locationInWindow.x - downPoint.x, event.locationInWindow.y - downPoint.y) > 4 else { return }
         dragged = true
-        onDragStart?()
-        dragFile.begin(fileURL)
-        let writer: NSPasteboardWriting = fileURL.map { $0 as NSURL } ?? image
+        let file = fileURL
+        onDragStart?(file)
+        dragFile.begin(file)
+        let writer: NSPasteboardWriting = file.map { $0 as NSURL } ?? NSImage(cgImage: dragImage, size: bounds.size)
         let item = NSDraggingItem(pasteboardWriter: writer)
         item.setDraggingFrame(bounds, contents: image)
         beginDraggingSession(with: [item], event: event, source: self)
