@@ -75,6 +75,23 @@ struct SelectionSessionTests {
         #expect(session.takeFrozen().isEmpty)
     }
 
+    @Test func overlayCloseTimeIsRecordedWhenTheSelectionEnds() async throws {
+        var presentedAt: ContinuousClock.Instant?
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services {
+            #expect($0.closedAt == nil, "The overlay is still up while selecting")
+            presentedAt = .now
+            $0.selection = area
+            $0.confirm()
+        })
+        #expect(session.closedAt == nil)
+
+        _ = try await session.run()
+
+        let closedAt = try #require(session.closedAt)
+        #expect(try #require(presentedAt) <= closedAt)
+        #expect(closedAt <= .now)
+    }
+
     @Test func failedOrIncompleteFreezeNeverPresentsAnOverlay() async throws {
         for incomplete in [false, true] {
             var presentations = 0
