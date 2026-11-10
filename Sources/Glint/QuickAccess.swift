@@ -22,6 +22,8 @@ final class QuickAccessPanel {
     /// for Output cleanup.
     func show(image: CGImage, fileURL: URL?, activeFiles: OutputActiveFiles = .shared,
               onEdit: @escaping () -> Void, onDragOut: @escaping () -> Void = {}) {
+        let signpost = CaptureSignposts.begin("QuickAccessShown")
+        defer { CaptureSignposts.end(signpost) }
         dismiss()
         guard let screen = NSScreen.main else { return }
         let maxSide: CGFloat = 220

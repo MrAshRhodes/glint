@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let pipeline = pipeline
         return URLCaptureHandler(services: .init(
             isCaptureBusy: { pipeline.isBusy },
-            startCapture: { pipeline.start($0) }
+            startCapture: { pipeline.start($0, trigger: .url) }
         ))
     }()
     lazy var cleanupScheduler: OutputCleanupScheduler = {
@@ -193,14 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     private func perform(_ action: HotkeyAction) {
         switch action {
-        case .captureArea: pipeline.start(.area)
-        case .captureAreaToClipboard: pipeline.start(.areaToClipboard)
-        case .captureWindow: pipeline.start(.window)
-        case .captureFullscreen: pipeline.start(.fullscreen)
-        case .captureText: pipeline.start(.text)
-        case .repeatLast: pipeline.start(.repeatLast)
+        case .captureArea: pipeline.start(.area, trigger: .hotkey)
+        case .captureAreaToClipboard: pipeline.start(.areaToClipboard, trigger: .hotkey)
+        case .captureWindow: pipeline.start(.window, trigger: .hotkey)
+        case .captureFullscreen: pipeline.start(.fullscreen, trigger: .hotkey)
+        case .captureText: pipeline.start(.text, trigger: .hotkey)
+        case .repeatLast: pipeline.start(.repeatLast, trigger: .hotkey)
         case .recordScreen: recorder.toggle()
-        case .captureScrolling: pipeline.start(.scrolling)
+        case .captureScrolling: pipeline.start(.scrolling, trigger: .hotkey)
         }
     }
 
@@ -325,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         case .idle, .selecting, .ready, .countdown: return "Cancel Recording"
         }
     }
-    @objc private func timerCapture(_ sender: NSMenuItem) { pipeline.start(.timer(sender.tag)) }
+    @objc private func timerCapture(_ sender: NSMenuItem) { pipeline.start(.timer(sender.tag), trigger: .timer) }
     @objc private func toggleSnapToEdges() {
         prefs.snapToEdges.toggle()
         NotificationCenter.default.post(name: .glintPreferencesChanged, object: nil)

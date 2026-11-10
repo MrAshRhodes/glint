@@ -127,6 +127,82 @@ are retained locally under `.build/benchmark/baseline-20261022T151935Z-44265` an
 `.build/benchmark/current-20261022T152237Z-60304` (ignored build artifacts; rerun the
 commands above on another checkout).
 
+### Capture, editor and export signposts
+
+The overlay intervals above begin once the overlay is running. The `Capture` category of the same subsystem
+(`io.github.mrashrhodes.glint`) covers the rest of the path, so the two numbers that decide whether Glint feels like a
+native screenshot can be read from one collection: **hotkey → first overlay frame** and **mouse-up →
+clipboard/thumbnail**. The same method applies: an optimized build, cold and warm captures kept separate, and the same
+revisions, displays and input path when comparing.
+
+| Interval | Spans |
+| --- | --- |
+| `QueueDelay` | A global hotkey's callback arriving, through the main actor handling it. |
+| `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `scrolling`, `timer`). |
+| `PermissionCheck` | The Screen Recording permission check that starts an area, window or full-screen capture. |
+| `ShareableContent` | One ScreenCaptureKit shareable-content query (the overlay's freeze, a window grab). |
+| `SnapTargets` | Building the overlay's edge-snap targets. Emitted through `OverlayPerformance`, which stays free of GlintCore. |
+| `CaptureImage` | One ScreenCaptureKit screenshot call. |
+| `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
+| `RawWrite` | Writing the raw screenshot. |
+| `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
+| `OutputWrite` | Saving a direct export, including its encode. |
+| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite`, `Pasteboard` and `export.drag`. |
+| `Pasteboard` | Putting the image on the clipboard, including its PNG and TIFF encodes. |
+| `QuickAccessShown` | Creating the thumbnail panel and putting it on screen. |
+| `editor.open` | An editor model's creation to its first finished preview. Every editor kind (capture, reopened image or project, recording, preset designer) emits it. |
+| `editor.render` | One preview render, off the main thread. |
+| `export.copy` | The editor's Copy action: final render, clipboard write and the follow-up work. |
+| `export.drag` | The editor's drag-out: final render and writing the drag file. |
+
+`CaptureTotal` includes the time the user spends choosing, so read latency from the stage intervals, not from its
+duration. Its end message says how the capture task ended: `cancelled` for Esc or task cancellation, `failed` for a
+capture or permission error. A failure after the image exists (render, save, clipboard) is tagged on that stage's own
+interval (`Render`, `OutputWrite`, `Pasteboard`) and leaves `CaptureTotal` untagged, and a render retry runs inside the
+same `CaptureTotal`. Intervals ended by cancellation or an error must be excluded from latency percentiles, as for the
+overlay.
+
+Only one capture runs at a time, but other work can overlap it: Reopen Last Image retention encodes in the background
+after the previous capture, and an editor that is already open keeps rendering previews. Each interval has its own
+opaque signpost ID and there is no capture identifier, so attribute stage intervals to a `CaptureTotal` by time
+containment only while nothing else ran, and read an `Encode*` interval that is not inside an `OutputWrite`,
+`Pasteboard` or `export.drag` interval as other work (retention, an editor Save). Metadata is limited to the trigger
+and mode on `CaptureTotal` and `eventAgeMs` on `QueueDelay`: never add coordinates, window titles, file paths or image
+content.
+
+The two headline numbers come from timestamps across both categories:
+
+- Hotkey → first overlay frame: the `QueueDelay` begin time minus its `eventAgeMs`, to the `OverlayFirstDraw` end
+  (category `SelectionOverlay`).
+- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end. Mouse-up → thumbnail: the
+  same begin to the `QuickAccessShown` end. With **Open editor after capture** on, neither runs: read `editor.open`
+  instead, which begins when the editor model is created rather than at mouse-up, and `export.copy`.
+
+`QueueDelay` measures the scheduling delay between the Carbon callback and the main actor; it does not show that App
+Nap is the cause. `eventAgeMs` is `GetCurrentEventTime() − GetEventTime(event)`, both on Carbon's event clock, so no
+value is subtracted across clocks. `GetCurrentEventTime()` was checked against `ProcessInfo.systemUptime`: they
+agree to the digit, with a worst difference of 0.65 ms over 2,000 paired reads. A *real* hotkey event's timestamp was
+not checked, because that needs a physical key press, so treat the hotkey → first frame start as unverified. As with
+the overlay, `OverlayFirstDraw` and `QuickAccessShown` end at CPU-side milestones, not on-screen presentation; pair
+them with a live frame trace for any input-to-visible-frame claim.
+
+Collect both categories the same way as the overlay trace:
+
+```sh
+mkdir -p .build/capture-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 60 \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Capture" OR category == "SelectionOverlay")' \
+  > .build/capture-traces/cold.ndjson
+```
+
+The command was smoke-tested only against unit-test runs, not live captures. Those runs produced matched begin and
+end records for every interval above except `ShareableContent`, `CaptureImage` and `QuickAccessShown`, which the
+tests stub and which need a live capture. `QueueDelay` came from a unit test, not a real hotkey press.
+
+Provisional reference-host budgets (targets, **not** measured native performance): hotkey → first overlay frame
+≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
+displays is recorded here: that needs the live capture UI and has not been measured yet.
+
 ### Profiling launch and idle work
 
 Work done at launch and while idle is marked with signposts in subsystem `io.github.mrashrhodes.glint`.
