@@ -2,10 +2,20 @@ import AppKit
 import GlintCapture
 @testable import GlintCore
 @testable import GlintEditor
+import ImageIO
 import Testing
 @testable import Glint
 
 private enum TestFailure: Error { case write, recognition }
+
+/// Pixel size and horizontal density (dpi) ImageIO recorded for the first image in `data`.
+private func pixelSizeAndDensity(of data: Data) throws -> (width: Int, height: Int, dpi: Double) {
+    let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+    let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+    return (try #require(properties[kCGImagePropertyPixelWidth] as? Int),
+            try #require(properties[kCGImagePropertyPixelHeight] as? Int),
+            try #require(properties[kCGImagePropertyDPIWidth] as? Double))
+}
 
 @MainActor
 final class CaptureFixture {
@@ -19,6 +29,7 @@ final class CaptureFixture {
     var recent: [URL] = []
     var copies = 0
     var copiedImage: CGImage?
+    var copiedScales: (scale: ExportScale, backingScale: CGFloat)?
     var copiedTexts: [String] = []
     var sounds = 0
     var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
@@ -69,7 +80,12 @@ final class CaptureFixture {
             }
             return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
         }
-        services.copy = { [self] image in copies += 1; copiedImage = image; return copySucceeds }
+        services.copy = { [self] image, scale, backingScale in
+            copies += 1
+            copiedImage = image
+            copiedScales = (scale, backingScale)
+            return copySucceeds
+        }
         services.copyText = { [self] in copiedTexts.append($0) }
         services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
         services.recognize = { [self] image, _ in
@@ -350,7 +366,7 @@ struct CaptureWindowLifecycleTests {
                 present(capturer)
                 return f.image
             }
-            $0.copy = { _ in visibleAfterCapture.append(editor.isVisible); return true }
+            $0.copy = { _, _, _ in visibleAfterCapture.append(editor.isVisible); return true }
             $0.recognize = { _, _ in visibleAfterCapture.append(editor.isVisible); return [] }
         }
         try await #require(pipeline.start(mode)).value
@@ -415,7 +431,7 @@ struct CaptureWindowLifecycleTests {
                 select(capturer)
                 return f.image
             }
-            $0.copy = { _ in presentLate(); return true }
+            $0.copy = { _, _, _ in presentLate(); return true }
             $0.recognize = { _, _ in presentLate(); return [] }
         }
         try await #require(pipeline.start(mode)).value
@@ -570,6 +586,45 @@ struct CapturePipelineTests {
         #expect(PixelBuffer(saved)?.data == PixelBuffer(copied)?.data)
         #expect(f.wallpaperReads == 1 && f.copies == 1)
         #expect(f.notifications.map(\.title) == ["Screenshot saved"])
+    }
+
+    @Test(arguments: ExportScale.allCases, [false, true])
+    func copyReceivesTheScalesOfTheSavedFile(scale: ExportScale, clipboardOnly: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.exportScale = scale
+        f.preferences.copyToClipboardAfterCapture = true
+        await f.run(clipboardOnly: clipboardOnly)
+        let copied = try #require(f.copiedScales)
+        #expect(f.copies == 1 && copied.scale == scale && copied.backingScale == 2)
+        if clipboardOnly {
+            #expect(f.writes.isEmpty)
+        } else {
+            let write = try #require(f.writes.first)
+            #expect(write.scale == copied.scale && write.backingScale == copied.backingScale)
+        }
+    }
+
+    @Test(arguments: ExportScale.allCases)
+    func pastedCaptureHasTheSizeAndDensityOfTheSavedFile(scale: ExportScale) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.exportScale = scale
+        f.preferences.copyToClipboardAfterCapture = true
+        let pasteboard = NSPasteboard(name: .init("glint.pipeline.density.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        await f.pipeline {
+            $0.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
+        }.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+
+        let savedURL = try #require(f.recent.first)
+        let file = try pixelSizeAndDensity(of: Data(contentsOf: savedURL))
+        let png = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .png)))
+        let tiff = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .tiff)))
+        // The 100×40 capture came from a 2× display: Original and 2× keep that size at 144 dpi, 1× halves it at 72.
+        let expected = scale == .x1 ? (width: 50, height: 20, dpi: 72.0) : (width: 100, height: 40, dpi: 144.0)
+        for output in [file, png, tiff] {
+            #expect(output.width == expected.width && output.height == expected.height)
+            #expect(abs(output.dpi - expected.dpi) < 0.1)
+        }
     }
 
     @Test func unreadableWallpaperReportsFallbackWithoutBlockingExport() async throws {
