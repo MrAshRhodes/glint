@@ -123,6 +123,122 @@ struct ImageGrabberTests {
         await #expect(throws: CaptureError.self) {
             try await ImageGrabber.grabWindow(own, scale: 1, options: options)
         }
+        // A window from the freeze never bypasses the policy.
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.grabWindow(own, scale: 1, options: options,
+                                              known: StubWindow(windowID: own.id, frame: own.frame))
+        }
+    }
+
+    private struct StubWindow: QueriedWindow {
+        let windowID: CGWindowID
+        let frame: CGRect
+    }
+
+    @Test func freezeTimeWindowIsReusedOnlyWhileItsSizeMatchesTheLiveWindow() {
+        let frame = CGRect(x: 10, y: 20, width: 300, height: 200)
+        let known = StubWindow(windowID: 5, frame: frame)
+        #expect(ImageGrabber.reusable(known, liveFrame: frame)?.windowID == 5)
+        // The grab renders the window itself, so only its size matters, not where it moved.
+        #expect(ImageGrabber.reusable(known, liveFrame: frame.offsetBy(dx: 500, dy: -30))?.windowID == 5)
+        #expect(ImageGrabber.reusable(known, liveFrame: CGRect(x: 10, y: 20, width: 300.005, height: 200)) != nil)
+
+        let stale = [CGRect(x: 10, y: 20, width: 301, height: 200), CGRect(x: 10, y: 20, width: 300, height: 199),
+                     CGRect(x: 10, y: 20, width: CGFloat.nan, height: 200), .null, .infinite]
+        for live in stale {
+            #expect(ImageGrabber.reusable(known, liveFrame: live) == nil)
+        }
+        #expect(ImageGrabber.reusable(known, liveFrame: nil) == nil)
+        #expect(ImageGrabber.reusable(nil, liveFrame: frame) == nil)
+    }
+
+    @Test func resolvingUsesTheKnownWindowWithoutAnyLookup() async throws {
+        let pixels = image()
+        var lookups = 0
+        let grab = try await ImageGrabber.grabResolvingWindow(known: 1, fresh: { lookups += 1; return 2 }) { window in
+            #expect(window == 1)
+            return ImageGrabber.Grab(image: pixels, scale: 1)
+        }
+        #expect(grab.image === pixels)
+        #expect(lookups == 0)
+    }
+
+    @Test func resolvingLooksTheWindowUpOnceWhenNothingIsKnown() async throws {
+        var lookups = 0
+        var grabbed: [Int] = []
+        _ = try await ImageGrabber.grabResolvingWindow(known: nil, fresh: { lookups += 1; return 7 }) { window in
+            grabbed.append(window)
+            return ImageGrabber.Grab(image: image(), scale: 1)
+        }
+        #expect(lookups == 1)
+        #expect(grabbed == [7])
+
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.grabResolvingWindow(known: nil, fresh: { () -> Int? in nil }) { _ in
+                Issue.record("A window that is not listed has nothing to grab")
+                return ImageGrabber.Grab(image: image(), scale: 1)
+            }
+        }
+    }
+
+    @Test func failedKnownWindowIsRetriedOnceOnAFreshLookup() async throws {
+        var lookups = 0
+        var grabbed: [Int] = []
+        let pixels = image()
+        let grab = try await ImageGrabber.grabResolvingWindow(known: 1, fresh: { lookups += 1; return 2 }) { window in
+            grabbed.append(window)
+            if window == 1 { throw CaptureError.failed("stale window") }
+            return ImageGrabber.Grab(image: pixels, scale: 1)
+        }
+        #expect(grab.image === pixels)
+        #expect(grabbed == [1, 2])
+        #expect(lookups == 1)
+    }
+
+    @Test func failedKnownWindowThatIsGoneIsReportedMissing() async {
+        let error = await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.grabResolvingWindow(known: 1, fresh: { () -> Int? in nil }) { _ in
+                throw CaptureError.failed("stale window")
+            }
+        }
+        guard case .windowNotFound? = error else {
+            Issue.record("Expected windowNotFound, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test func failedFreshWindowIsNotRetriedAgain() async {
+        var lookups = 0
+        var grabbed: [Int] = []
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.grabResolvingWindow(known: nil, fresh: { lookups += 1; return 7 }) { window in
+                grabbed.append(window)
+                throw CaptureError.failed("grab")
+            }
+        }
+        #expect(lookups == 1)
+        #expect(grabbed == [7])
+    }
+
+    @Test func cancellationNeverRetriesAKnownWindow() async {
+        var lookups = 0
+        for error in [CancellationError(), CaptureError.cancelled] as [Error] {
+            await #expect(throws: (any Error).self) {
+                try await ImageGrabber.grabResolvingWindow(known: 1, fresh: { lookups += 1; return 2 }) { _ in
+                    throw error
+                }
+            }
+        }
+        #expect(lookups == 0)
+
+        let task = Task {
+            try await ImageGrabber.grabResolvingWindow(known: 1, fresh: { lookups += 1; return 2 }) { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CaptureError.failed("grab")
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(lookups == 0)
     }
 
     @Test func freezingUsesEveryDisplayInInputOrderWithoutDiskFallback() async throws {

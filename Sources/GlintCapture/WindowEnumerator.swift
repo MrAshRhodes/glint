@@ -93,12 +93,20 @@ public enum WindowEnumerator {
         return snapshot
     }
 
-    /// Whether the window is still on screen, e.g. a picked menu that may have closed meanwhile.
-    static func isOnScreen(_ id: CGWindowID) -> Bool {
-        let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]] ?? []
-        return list.contains {
-            ($0[kCGWindowNumber as String] as? UInt32) == id && ($0[kCGWindowIsOnscreen as String] as? Bool ?? false)
+    /// The window's current bounds while it is still on screen, nil once it is gone (e.g. a picked menu that closed).
+    /// The same lookup that confirms it is on screen also says whether it was resized since it was listed.
+    static func onScreenFrame(of id: CGWindowID) -> CGRect? {
+        onScreenFrame(of: id, in: CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]] ?? [])
+    }
+
+    static func onScreenFrame(of id: CGWindowID, in list: [[String: Any]]) -> CGRect? {
+        for d in list where (d[kCGWindowNumber as String] as? UInt32) == id {
+            guard d[kCGWindowIsOnscreen as String] as? Bool ?? false,
+                  let bounds = d[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds) else { continue }
+            return frame
         }
+        return nil
     }
 
     @MainActor
