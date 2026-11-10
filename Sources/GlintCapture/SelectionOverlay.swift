@@ -22,6 +22,15 @@ final class SelectionSession {
         }
         var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
         var present: @MainActor (SelectionSession) -> Void = { $0.presentOverlay() }
+        /// The pointer's real position, which the overlay may not have seen a mouse event for yet.
+        var pointerLocation: @MainActor () -> CGPoint = {
+            CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        }
+        var movePointer: @MainActor (CGPoint) -> Void = { CGWarpMouseCursorPosition($0) }
+        /// Calls the handler when the active Space or the display layout changes, until the returned closure runs.
+        var observeChanges: @MainActor (@escaping @MainActor () -> Void) -> @MainActor () -> Void = {
+            SelectionSession.observeSystemChanges($0)
+        }
     }
 
     var mode: Mode
@@ -41,6 +50,14 @@ final class SelectionSession {
         let nextState = enabled ? "off" : "on"
         return "Snap: \(enabled ? "on" : "off")  ·  \(action) ⌘: \(nextState)"
     }
+    var hint: String { Self.hint(mode: mode, snappingHint: snappingHint) }
+
+    static func hint(mode: Mode, snappingHint: String) -> String {
+        mode == .area
+            ? "Drag to select  ·  \(snappingHint)  ·  ⇧: square  ·  Space: window  ·  "
+                + "Hold Space while dragging: move  ·  Esc: cancel"
+            : "Click a window  ·  Space: area  ·  Esc: cancel"
+    }
 
     private var panels: [OverlayPanel] = []
     private var windows: [WindowInfo] = []
@@ -57,6 +74,8 @@ final class SelectionSession {
     private var command = false
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
     private var isRunning = false
+    /// Stops watching for Space and display changes; set while the selection is running.
+    private var stopObserving: (@MainActor () -> Void)?
     private var completionError: Error?
     private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
@@ -90,6 +109,8 @@ final class SelectionSession {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             isRunning = true
+            // The panels, frozen images and window snapshot belong to the displays and Space they were made for.
+            stopObserving = services.observeChanges { [weak self] in self?.finish(.failure(CaptureError.cancelled)) }
             do {
                 try await prepare()
                 try Task.checkCancellation()
@@ -115,6 +136,23 @@ final class SelectionSession {
     func takeFrozen() -> [FrozenDisplay] {
         defer { frozen.removeAll() }
         return frozen
+    }
+
+    private static func observeSystemChanges(_ handler: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let center = NotificationCenter.default
+        let space = workspace.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
+        }
+        let screens = center.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
+        }
+        return {
+            workspace.removeObserver(space)
+            center.removeObserver(screens)
+        }
     }
 
     private func prepare() async throws {
@@ -249,16 +287,43 @@ final class SelectionSession {
         updateHover(); refresh()
     }
 
+    /// Space picks the other mode, except while dragging an area: there it moves the whole rectangle until released.
+    func spaceDown() {
+        if mode == .area, drag != nil {
+            drag?.beginReposition()
+        } else {
+            toggleMode()
+        }
+    }
+
+    func spaceUp() { drag?.endReposition() }
+
     func nudge(dx: CGFloat, dy: CGFloat) {
         if drag != nil {
             drag?.nudge(dx: dx, dy: dy)
             updateSelection()
         } else {
-            cursor.x += dx; cursor.y += dy
-            CGWarpMouseCursorPosition(cursor)
-            updateHover()
+            nudgePointer(dx: dx, dy: dy)
         }
         refresh()
+    }
+
+    /// Moves the real pointer, so the keys and the mouse stay in step. The pointer stays on the displays: a step
+    /// into a gap or past the outer edge stops at the edge of the display it started on.
+    private func nudgePointer(dx: CGFloat, dy: CGFloat) {
+        let current = services.pointerLocation()
+        var target = CGPoint(x: current.x + dx, y: current.y + dy)
+        let frames = displays.map(\.frame)
+        if !frames.contains(where: { $0.contains(target) }),
+           let index = CaptureGeometry.index(containing: current, in: frames) {
+            let frame = frames[index]
+            // The far edges belong to the neighbouring point, so the last position inside is one point short.
+            target = CGPoint(x: min(max(target.x, frame.minX), frame.maxX - 1),
+                             y: min(max(target.y, frame.minY), frame.maxY - 1))
+        }
+        if target != current { services.movePointer(target) }
+        cursor = target
+        updateHover()
     }
 
     func confirm() {
@@ -292,6 +357,8 @@ final class SelectionSession {
     private func finish(_ result: Result<SelectionOutcome, Error>) {
         guard isRunning else { return }
         isRunning = false
+        stopObserving?()
+        stopObserving = nil
         onPresented = nil
         let c = continuation
         continuation = nil
@@ -487,12 +554,7 @@ final class OverlayView: NSView {
 
     /// Corner radius of the window-picker highlight, close to the system window corner radius.
     private static let windowCornerRadius: CGFloat = 10
-    private static let windowHint = "Click a window  ·  Space: area  ·  Esc: cancel"
     private static var hintLayouts: [String: TextLayout] = [:]
-
-    private static func areaHint(snappingHint: String) -> String {
-        "Drag to select  ·  \(snappingHint)  ·  ⇧: square  ·  Space: window  ·  Esc: cancel"
-    }
 
     private static func hintLayout(_ text: String) -> TextLayout {
         if let cached = hintLayouts[text] { return cached }
@@ -506,8 +568,14 @@ final class OverlayView: NSView {
     /// capsules at every scale in use, and the text drawing itself, which loads fonts and glyphs on first use.
     static func warmUp(scales: Set<CGFloat>) {
         let areaHints = [false, true].flatMap { snapToEdges in
-            [false, true].map { areaHint(snappingHint: SelectionSession.snappingHint(snapToEdges: snapToEdges, command: $0)) }
+            [false, true].map {
+                SelectionSession.hint(
+                    mode: .area,
+                    snappingHint: SelectionSession.snappingHint(snapToEdges: snapToEdges, command: $0)
+                )
+            }
         }
+        let windowHint = SelectionSession.hint(mode: .window, snappingHint: "")
         let hints = (areaHints + [windowHint]).map(hintLayout)
         let numbers = TextLayout("0123456789  ×  ,", attributes: detailAttributes)
         for scale in scales where scale > 0 {
@@ -594,7 +662,8 @@ final class OverlayView: NSView {
         self.scale = scale
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+                                       options: [.mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect,
+                                                 .mouseEnteredAndExited],
                                        owner: self, userInfo: nil))
     }
 
@@ -603,6 +672,10 @@ final class OverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    // Cursor rects only apply to the key window, and AppKit does not support cursor updates for an always-active
+    // tracking area, so entering or moving over any panel sets the crosshair too.
+    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
+    override func mouseEntered(with e: NSEvent) { NSCursor.crosshair.set() }
 
     // global CG <-> view-local conversion
     private func toCG(_ e: NSEvent) -> CGPoint {
@@ -621,7 +694,11 @@ final class OverlayView: NSView {
 
     // Hotkey chords include ⌘, so a release that happens before this panel is key would otherwise leave the hint stale.
     override func mouseMoved(with e: NSEvent) {
-        OverlayPerformance.measure("MouseMoved") { updateModifiers(e); session.mouseMoved(to: toCG(e)) }
+        OverlayPerformance.measure("MouseMoved") {
+            NSCursor.crosshair.set()
+            updateModifiers(e)
+            session.mouseMoved(to: toCG(e))
+        }
     }
     override func flagsChanged(with e: NSEvent) { updateModifiers(e) }
     override func mouseDown(with e: NSEvent) {
@@ -642,7 +719,7 @@ final class OverlayView: NSView {
         let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
         switch e.keyCode {
         case 53: session.cancel()
-        case 49: session.toggleMode()
+        case 49: if !e.isARepeat { session.spaceDown() }
         case 36, 76: session.confirm()
         case 123: session.nudge(dx: -step, dy: 0)
         case 124: session.nudge(dx: step, dy: 0)
@@ -650,6 +727,11 @@ final class OverlayView: NSView {
         case 126: session.nudge(dx: 0, dy: -step)
         default: break
         }
+    }
+
+    override func keyUp(with e: NSEvent) {
+        updateModifiers(e)
+        if e.keyCode == 49 { session.spaceUp() }
     }
 
     private func makeSnapshot() -> Snapshot {
@@ -690,8 +772,7 @@ final class OverlayView: NSView {
         }
 
         if session.mode == .window || session.selection == nil {
-            let text = session.mode == .area ? Self.areaHint(snappingHint: session.snappingHint) : Self.windowHint
-            let layout = Self.hintLayout(text)
+            let layout = Self.hintLayout(session.hint)
             snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36),
                                   scale: scale)
         }

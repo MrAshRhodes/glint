@@ -66,8 +66,8 @@ struct RecordingEnvironment {
     }
 }
 
-/// Region selection through the same overlay screenshots use. Space switches to picking a window,
-/// which records that window's area.
+/// Region selection through the same overlay screenshots use. Space before a drag switches to picking a window,
+/// which records that window's area; holding it during a drag moves the selection.
 @MainActor
 final class SelectionRegionPicker: RegionPicking {
     private let selection: SelectionSession

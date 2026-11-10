@@ -332,6 +332,330 @@ struct SelectionSessionTests {
         #expect(hooks == 0)
     }
 
+    // MARK: Space held during a drag
+
+    @Test func holdingSpaceDuringADragMovesTheSelectionAndTheOutcomeKeepsIt() async throws {
+        var moved: CGRect?
+        var modeWhileMoving: SelectionSession.Mode?
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services { session in
+            session.mouseDown(at: CGPoint(x: -90, y: -10))
+            session.mouseDragged(to: CGPoint(x: -70, y: 10))
+            session.spaceDown()
+            session.mouseDragged(to: CGPoint(x: -60, y: 20))
+            moved = session.selection
+            modeWhileMoving = session.mode
+            session.spaceUp()
+            session.mouseDragged(to: CGPoint(x: -50, y: 30))
+            session.mouseUp(at: CGPoint(x: -50, y: 30))
+        })
+
+        let outcome = try await session.run()
+
+        #expect(moved == CGRect(x: -80, y: 0, width: 20, height: 20))
+        #expect(modeWhileMoving == .area)
+        guard case .area(let rect, let id) = outcome else {
+            Issue.record("Expected an area selection")
+            return
+        }
+        #expect(rect == CGRect(x: -80, y: 0, width: 30, height: 30) && id == display.id)
+    }
+
+    @Test func releasingTheMouseWhileSpaceIsHeldEndsTheSelectionWithTheMovedRectangle() async throws {
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services { session in
+            session.mouseDown(at: CGPoint(x: -90, y: -10))
+            session.mouseDragged(to: CGPoint(x: -70, y: 10))
+            session.spaceDown()
+            session.mouseDragged(to: CGPoint(x: -65, y: 15))
+            session.mouseUp(at: CGPoint(x: -65, y: 15))
+            session.spaceUp()
+        })
+
+        let outcome = try await session.run()
+
+        guard case .area(let rect, let id) = outcome else {
+            Issue.record("Expected an area selection")
+            return
+        }
+        #expect(rect == CGRect(x: -85, y: -5, width: 20, height: 20) && id == display.id)
+    }
+
+    @Test func movingTheSelectionCannotLeaveTheDisplayWhereTheDragStarted() async throws {
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services { session in
+            session.mouseDown(at: CGPoint(x: -90, y: -10))
+            session.mouseDragged(to: CGPoint(x: -70, y: 10))
+            session.spaceDown()
+            session.mouseDragged(to: CGPoint(x: 400, y: 500))
+            session.mouseUp(at: CGPoint(x: 400, y: 500))
+        })
+
+        let outcome = try await session.run()
+
+        guard case .area(let rect, let id) = outcome else {
+            Issue.record("Expected an area selection")
+            return
+        }
+        #expect(rect == CGRect(x: -20, y: 40, width: 20, height: 20) && id == display.id)
+        #expect(display.frame.contains(rect))
+    }
+
+    @Test func nudgingDuringADragThenMovingTheMouseDoesNotUndoTheNudge() async throws {
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services { session in
+            session.mouseDown(at: CGPoint(x: -90, y: -10))
+            session.mouseDragged(to: CGPoint(x: -70, y: 10))
+            session.nudge(dx: 5, dy: 0)
+            session.mouseDragged(to: CGPoint(x: -70, y: 10))
+            #expect(session.selection == CGRect(x: -85, y: -10, width: 20, height: 20))
+            session.mouseDragged(to: CGPoint(x: -60, y: 10))
+            session.mouseUp(at: CGPoint(x: -60, y: 10))
+        })
+
+        let outcome = try await session.run()
+
+        guard case .area(let rect, _) = outcome else {
+            Issue.record("Expected an area selection")
+            return
+        }
+        #expect(rect == CGRect(x: -85, y: -10, width: 30, height: 20))
+    }
+
+    @Test func spaceBeforeADragStillSwitchesModes() {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.spaceDown()
+        #expect(session.mode == .window)
+        session.spaceUp()
+        #expect(session.mode == .window)
+        session.spaceDown()
+        #expect(session.mode == .area)
+    }
+
+    @Test func theHintNamesWhatSpaceDoesBeforeAndDuringADrag() {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        #expect(session.hint.contains("Space: window"))
+        #expect(session.hint.contains("Hold Space while dragging: move"))
+        session.spaceDown()
+        #expect(session.hint == "Click a window  ·  Space: area  ·  Esc: cancel")
+    }
+
+    // MARK: Nudging the pointer
+
+    @MainActor
+    private final class FakePointer {
+        var location: CGPoint
+        private(set) var warps: [CGPoint] = []
+
+        init(_ location: CGPoint) { self.location = location }
+
+        func warp(to point: CGPoint) {
+            warps.append(point)
+            location = point
+        }
+    }
+
+    private func session(pointer: FakePointer, displays: [DisplayInfo]) -> SelectionSession {
+        var services = SelectionSession.Services()
+        services.pointerLocation = { pointer.location }
+        services.movePointer = { pointer.warp(to: $0) }
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services)
+        session.useDisplays(displays)
+        return session
+    }
+
+    @Test func nudgingWithoutADragMovesTheRealPointerByTheStep() {
+        let pointer = FakePointer(CGPoint(x: -50, y: 20))
+        let session = session(pointer: pointer, displays: [display])
+        session.nudge(dx: 10, dy: -1)
+        #expect(pointer.warps == [CGPoint(x: -40, y: 19)])
+        #expect(session.cursor == CGPoint(x: -40, y: 19))
+    }
+
+    @Test func nudgingStartsFromTheRealPointerNotFromTheLastMouseEvent() {
+        let pointer = FakePointer(CGPoint(x: -50, y: 20))
+        let session = session(pointer: pointer, displays: [display])
+        // The pointer moved without a mouse event reaching the overlay.
+        session.cursor = CGPoint(x: -90, y: 0)
+        session.nudge(dx: 1, dy: 0)
+        #expect(pointer.warps == [CGPoint(x: -49, y: 20)])
+        #expect(session.cursor == CGPoint(x: -49, y: 20))
+    }
+
+    @Test func nudgingStopsAtTheEdgeOfTheDisplayAndDoesNotWarpWhenNothingWouldMove() {
+        let pointer = FakePointer(CGPoint(x: -5, y: 20))
+        let session = session(pointer: pointer, displays: [display])
+        session.nudge(dx: 10, dy: 0)
+        #expect(pointer.warps == [CGPoint(x: -1, y: 20)])
+        #expect(session.cursor == CGPoint(x: -1, y: 20))
+        session.nudge(dx: 10, dy: 0)
+        #expect(pointer.warps.count == 1)
+        #expect(session.cursor == CGPoint(x: -1, y: 20))
+        session.nudge(dx: 0, dy: -1_000)
+        #expect(pointer.warps.last == CGPoint(x: -1, y: -20))
+        #expect(session.cursor == CGPoint(x: -1, y: -20))
+    }
+
+    @Test func nudgingCrossesIntoAnAdjacentDisplayButNotIntoTheGapBeforeAnother() {
+        let right = DisplayInfo(id: 8, frame: CGRect(x: 0, y: -20, width: 100, height: 80), scale: 1,
+                                name: "Right", isMain: false)
+        let apart = DisplayInfo(id: 9, frame: CGRect(x: 110, y: -20, width: 100, height: 80), scale: 1,
+                                name: "Apart", isMain: false)
+        let pointer = FakePointer(CGPoint(x: -5, y: 20))
+        let session = session(pointer: pointer, displays: [display, right, apart])
+        session.nudge(dx: 10, dy: 0)
+        #expect(pointer.location == CGPoint(x: 5, y: 20))
+        pointer.location = CGPoint(x: 95, y: 20)
+        session.nudge(dx: 10, dy: 0)
+        #expect(pointer.location == CGPoint(x: 99, y: 20))
+        #expect(session.cursor == CGPoint(x: 99, y: 20))
+    }
+
+    // MARK: Display and Space changes
+
+    @MainActor
+    private final class ChangeObservation {
+        private(set) var registrations = 0
+        private(set) var removals = 0
+        private var handlers: [@MainActor () -> Void] = []
+
+        func observe(_ handler: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+            registrations += 1
+            handlers.append(handler)
+            return { self.removals += 1 }
+        }
+
+        func fire() { handlers.forEach { $0() } }
+    }
+
+    enum SystemChange: CaseIterable {
+        case activeSpace, displayConfiguration
+
+        @MainActor func post() {
+            switch self {
+            case .activeSpace:
+                NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.activeSpaceDidChangeNotification,
+                                                           object: NSWorkspace.shared)
+            case .displayConfiguration:
+                NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification,
+                                                object: NSApplication.shared)
+            }
+        }
+    }
+
+    private static func isCancelled(_ error: any Error) -> Bool {
+        if case CaptureError.cancelled = error { return true }
+        return false
+    }
+
+    @Test func aDisplayOrSpaceChangeCancelsTheSelectionOnceAndReleasesEverything() async throws {
+        let observation = ChangeObservation()
+        let image = try image()
+        var services = services { session in
+            #expect(observation.registrations == 1)
+            observation.fire()
+            observation.fire()
+            // Input that was already on its way must not complete a selection that has ended.
+            session.selection = area
+            session.confirm()
+        }
+        services.observeChanges = { observation.observe($0) }
+        let session = SelectionSession(mode: .area, lastArea: nil, freeze: { _ in
+            [FrozenDisplay(display: display, image: image)]
+        }, services: services)
+
+        await #expect { try await session.run() } throws: { Self.isCancelled($0) }
+
+        #expect(observation.removals == 1)
+        #expect(session.frozen.isEmpty)
+        observation.fire()
+        #expect(observation.removals == 1)
+    }
+
+    @Test func aChangeDuringTheFreezeCannotPresentALateOverlay() async throws {
+        let observation = ChangeObservation()
+        let started = Gate(), release = Gate()
+        let image = try image()
+        var presentations = 0
+        var services = services { _ in presentations += 1 }
+        services.observeChanges = { observation.observe($0) }
+        let session = SelectionSession(mode: .area, lastArea: nil, freeze: { _ in
+            started.open()
+            await release.wait()
+            return [FrozenDisplay(display: display, image: image)]
+        }, services: services)
+        let task = Task { try await session.run() }
+        await started.wait()
+        #expect(observation.registrations == 1)
+        observation.fire()
+        release.open()
+
+        await #expect { try await task.value } throws: { Self.isCancelled($0) }
+        #expect(presentations == 0)
+        #expect(session.frozen.isEmpty)
+        #expect(observation.removals == 1)
+    }
+
+    enum Ending: CaseIterable { case confirm, escape, change, taskCancellation, failedFreeze }
+
+    @Test(arguments: Ending.allCases)
+    func theChangeObserverIsRemovedExactlyOnceHoweverTheSelectionEnds(ending: Ending) async throws {
+        let observation = ChangeObservation()
+        let presented = Gate()
+        var services = services { session in
+            switch ending {
+            case .confirm:
+                session.selection = area
+                session.confirm()
+            case .escape: session.cancel()
+            case .change: observation.fire()
+            case .taskCancellation, .failedFreeze: presented.open()
+            }
+        }
+        services.observeChanges = { observation.observe($0) }
+        let freeze: (([DisplayInfo]) async throws -> [FrozenDisplay])? = ending == .failedFreeze
+            ? { _ in throw CaptureError.failed("Snapshot failed") } : nil
+        let session = SelectionSession(mode: .area, lastArea: nil, freeze: freeze, services: services)
+        let task = Task { try await session.run() }
+        if ending == .taskCancellation {
+            await presented.wait()
+            task.cancel()
+        }
+
+        _ = try? await task.value
+
+        #expect(observation.registrations == 1)
+        #expect(observation.removals == 1)
+        observation.fire()
+        session.cancel()
+        session.selection = area
+        session.confirm()
+        #expect(observation.removals == 1)
+    }
+
+    @Test(arguments: SystemChange.allCases)
+    func theRealSpaceAndDisplayNotificationsCancelTheSelectionAndStopBeingObserved(change: SystemChange) async throws {
+        var deliveries = 0
+        var removals = 0
+        var services = services { _ in change.post() }
+        let observe = services.observeChanges
+        services.observeChanges = { handler in
+            let remove = observe { deliveries += 1; handler() }
+            return { removals += 1; remove() }
+        }
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services)
+
+        await #expect { try await session.run() } throws: { Self.isCancelled($0) }
+
+        #expect(deliveries == 1 && removals == 1)
+        change.post()
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        #expect(deliveries == 1)
+    }
+
+    @Test func endingTheSelectionRestoresTheArrowCursor() async throws {
+        NSCursor.crosshair.set()
+        let session = SelectionSession(mode: .area, lastArea: nil, services: services { $0.cancel() })
+        await #expect(throws: CaptureError.self) { try await session.run() }
+        #expect(NSCursor.current == NSCursor.arrow)
+    }
+
     private func draw(_ view: OverlayView) {
         guard let context = CGContext(data: nil, width: Int(view.bounds.width), height: Int(view.bounds.height),
                                       bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
