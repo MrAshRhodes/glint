@@ -127,6 +127,93 @@ are retained locally under `.build/benchmark/baseline-20261022T151935Z-44265` an
 `.build/benchmark/current-20261022T152237Z-60304` (ignored build artifacts; rerun the
 commands above on another checkout).
 
+### Capture, editor and export signposts
+
+The overlay intervals above begin once the overlay is running. The `Capture` category of the same subsystem
+(`io.github.mrashrhodes.glint`) covers the rest of the path, so the two numbers that decide whether Glint feels like a
+native screenshot can be read from one collection: **hotkey → first overlay frame** and **mouse-up →
+clipboard/thumbnail**. The same method applies: an optimized build, cold and warm captures kept separate, and the same
+revisions, displays and input path when comparing.
+
+| Interval | Spans |
+| --- | --- |
+| `QueueDelay` | A global hotkey's callback arriving, through the main actor handling it. |
+| `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `scrolling`, `timer`). |
+| `PermissionCheck` | The Screen Recording permission check that starts an area, window or full-screen capture. |
+| `ShareableContent` | One ScreenCaptureKit shareable-content query: Glint's own refill after launch or a change of screens or session, a capture that had no usable kept snapshot (the overlay's freeze, a grab), a window grab. |
+| `SnapTargets` | Building the overlay's edge-snap targets. Emitted through `OverlayPerformance`, which stays free of GlintCore. |
+| `CaptureImage` | One ScreenCaptureKit screenshot call. |
+| `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
+| `RawWrite` | Writing the raw screenshot. |
+| `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
+| `OutputWrite` | Saving a direct export, including its encode. |
+| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite`, `Pasteboard` and `export.drag`. |
+| `Pasteboard` | Putting the image on the clipboard, including its PNG and TIFF encodes. |
+| `QuickAccessShown` | Creating the thumbnail panel and putting it on screen. |
+| `editor.open` | An editor model's creation to its first finished preview. Every editor kind (capture, reopened image or project, recording, preset designer) emits it. |
+| `editor.render` | One preview render, off the main thread. |
+| `export.copy` | The editor's Copy action: final render, clipboard write and the follow-up work. |
+| `export.drag` | The editor's drag-out: final render and writing the drag file. |
+
+`CaptureTotal` includes the time the user spends choosing, so read latency from the stage intervals, not from its
+duration. Its end message says how the capture task ended: `cancelled` for Esc or task cancellation, `failed` for a
+capture or permission error. A failure after the image exists (render, save, clipboard) is tagged on that stage's own
+interval (`Render`, `OutputWrite`, `Pasteboard`) and leaves `CaptureTotal` untagged, and a render retry runs inside the
+same `CaptureTotal`. Intervals ended by cancellation or an error must be excluded from latency percentiles, as for the
+overlay.
+
+Only one capture runs at a time, but other work can overlap it: Reopen Last Image retention encodes in the background
+after the previous capture, and an editor that is already open keeps rendering previews. Each interval has its own
+opaque signpost ID and there is no capture identifier, so attribute stage intervals to a `CaptureTotal` by time
+containment only while nothing else ran, and read an `Encode*` interval that is not inside an `OutputWrite`,
+`Pasteboard` or `export.drag` interval as other work (retention, an editor Save). Metadata is limited to the trigger
+and mode on `CaptureTotal` and `eventAgeMs` on `QueueDelay`: never add coordinates, window titles, file paths or image
+content.
+
+Glint keeps ScreenCaptureKit's shareable content (displays, applications and windows: metadata, no pixels) between
+captures, so a hotkey does not wait for the query. It is queried after launch and again once the screens or the session
+have been quiet for a second (display change, wake, screens waking, session becoming active), only when Screen
+Recording is already granted, and never prompts. Three events in the `Capture` category, with `displays=<count>` as
+their only metadata, show how a capture got its content: `ShareableContentKept` (it used the snapshot kept from before
+the hotkey), `ShareableContentQueried` (nothing usable was kept, so it queried for itself: expected for the first
+capture after a change, and for every capture if Glint's own application is missing from the snapshot) and
+`ShareableContentRetried` (a capture failed on a kept snapshot, which was dropped, and ran again on a new query). The
+kept share is `Kept / (Kept + Queried)`. Read the first capture after a launch, wake or display change apart from warm
+ones. Permission checks are not cached; `PermissionCheck` shows whether they need to be.
+
+The two headline numbers come from timestamps across both categories:
+
+- Hotkey → first overlay frame: the `QueueDelay` begin time minus its `eventAgeMs`, to the `OverlayFirstDraw` end
+  (category `SelectionOverlay`).
+- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end. Mouse-up → thumbnail: the
+  same begin to the `QuickAccessShown` end. With **Open editor after capture** on, neither runs: read `editor.open`
+  instead, which begins when the editor model is created rather than at mouse-up, and `export.copy`.
+
+`QueueDelay` measures the scheduling delay between the Carbon callback and the main actor; it does not show that App
+Nap is the cause. `eventAgeMs` is `GetCurrentEventTime() − GetEventTime(event)`, both on Carbon's event clock, so no
+value is subtracted across clocks. `GetCurrentEventTime()` was checked against `ProcessInfo.systemUptime`: they
+agree to the digit, with a worst difference of 0.65 ms over 2,000 paired reads. A *real* hotkey event's timestamp was
+not checked, because that needs a physical key press, so treat the hotkey → first frame start as unverified. As with
+the overlay, `OverlayFirstDraw` and `QuickAccessShown` end at CPU-side milestones, not on-screen presentation; pair
+them with a live frame trace for any input-to-visible-frame claim.
+
+Collect both categories the same way as the overlay trace:
+
+```sh
+mkdir -p .build/capture-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 60 \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Capture" OR category == "SelectionOverlay")' \
+  > .build/capture-traces/cold.ndjson
+```
+
+The command was smoke-tested only against unit-test runs, not live captures. Those runs produced matched begin and
+end records for every interval above except `ShareableContent`, `CaptureImage` and `QuickAccessShown`, which the
+tests stub and which need a live capture. `QueueDelay` came from a unit test, not a real hotkey press.
+
+Provisional reference-host budgets (targets, **not** measured native performance): hotkey → first overlay frame
+≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
+displays is recorded here: that needs the live capture UI and has not been measured yet.
+
 ## Command Line Tools only
 
 Glint builds without Xcode, with a few differences:
@@ -215,7 +302,7 @@ The baseline accepts axis-aligned contrast runs of at least 48 sample pixels wit
 
 An optimized local run on 2026-10-22 measured 0.30–0.36 ms for the first detector invocation per fixture and 0.30–0.32 ms warm medians (25 iterations). These timings exclude screen acquisition, downsampling and overlay rendering; they are **not** first-capture or pointer-responsiveness measurements. Aggregate precision is 8/68 (11.8%) and recall 8/16 (50%) on this deliberately mixed set. Real desktop accuracy is unmeasured. Raising confidence from these pixel runs alone cannot distinguish decoration from a meaningful boundary; low-contrast/small targets are missed, and moving content changes candidates between snapshots. **Content detection remains disabled**, with no target-choice UI.
 
-Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences. Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
+Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences (this is about pixels: ScreenCaptureKit's shareable content, which holds only display, application and window metadata, is kept ready ahead of a capture, see the signposts section). Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
 
 ### Interactive release checks
 

@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import GlintCore
 import ImageIO
 import ScreenCaptureKit
 
@@ -139,7 +140,9 @@ enum ImageGrabber {
             cfg.height = Int((local.height * display.scale).rounded())
             cfg.showsCursor = !options.hideCursor
             cfg.scalesToFit = false
-            let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let img = try await CaptureSignposts.measure("CaptureImage") {
+                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            }
             return Grab(image: img, scale: display.scale)
         }
     }
@@ -204,14 +207,20 @@ enum ImageGrabber {
     ) async throws -> [FrozenDisplay] {
         try Task.checkCancellation()
         guard !displays.isEmpty else { throw CaptureError.noDisplay }
-        let snapshot = try await content()
+        let snapshot: Snapshot
+        do {
+            snapshot = try await content()
+        } catch {
+            try Task.checkCancellation()
+            throw permissionDenial(error) ?? error
+        }
         return try await freeze(displays, options: options) { display, options in
             do {
                 return try await capture(display, options, snapshot)
             } catch {
                 // As in captureWithFallback, a cancelled freeze reports cancellation rather than the failed grab.
                 try Task.checkCancellation()
-                throw error
+                throw permissionDenial(error) ?? error
             }
         }
     }
@@ -254,7 +263,10 @@ enum ImageGrabber {
         let knownWindow = known.flatMap { $0.windowID == win.id ? $0 as? SCWindow : nil }
         return try await captureWithFallback(allowed: options.allowScreencaptureFallback, capture: {
             try await grabResolvingWindow(known: knownWindow, fresh: {
-                try await WindowEnumerator.shareableContent().windows.first { $0.windowID == win.id }
+                let content = try await CaptureSignposts.measure("ShareableContent") {
+                    try await WindowEnumerator.shareableContent()
+                }
+                return content.windows.first { $0.windowID == win.id }
             }, grab: { w in
                 let filter = SCContentFilter(desktopIndependentWindow: w)
                 let cfg = SCStreamConfiguration()
@@ -263,7 +275,9 @@ enum ImageGrabber {
                 cfg.showsCursor = !options.hideCursor
                 cfg.ignoreShadowsSingleWindow = !options.includeWindowShadow
                 cfg.backgroundColor = .clear
-                let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+                let img = try await CaptureSignposts.measure("CaptureImage") {
+                    try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+                }
                 return Grab(image: img, scale: scale)
             })
         }, fallback: {
@@ -323,11 +337,20 @@ enum ImageGrabber {
         } catch {
             try Task.checkCancellation()
             if isCancellation(error) { throw error }
+            // A refusal is not something the screencapture subprocess can repair, and it must open the permissions window.
+            if let denial = permissionDenial(error) { throw denial }
             guard allowed else { throw error }
             let grab = try await fallback()
             try Task.checkCancellation()
             return grab
         }
+    }
+
+    /// ScreenCaptureKit reports a declined Screen Recording grant as an ordinary error; map it to
+    /// `.permissionDenied` (as recording and scroll capture do) and leave every other error untouched.
+    static func permissionDenial(_ error: Error) -> CaptureError? {
+        guard case .permissionDenied = ScreenRecorder.captureError(from: error) else { return nil }
+        return .permissionDenied
     }
 
     private static func runScreencapture(_ args: [String]) async throws -> CGImage {

@@ -125,18 +125,15 @@ final class SelectionSession {
         guard !displays.isEmpty else { throw CaptureError.noDisplay }
         // The displays are grabbed off the main actor while the window list is read, the snap targets are worked
         // out and the overlay's drawing caches are filled: none of them waits for the others.
-        let freezeInterval = freeze == nil ? nil : OverlayPerformance.begin("FreezeCapture")
-        defer { OverlayPerformance.end("FreezeCapture", freezeInterval) }
         async let frozenDisplays = freezeDisplays(displays)
         let enumeration = OverlayPerformance.begin("WindowEnumeration")
         let snapshot = await services.snapshot(excludeOwnWindows, excludedWindowIDs)
         OverlayPerformance.end("WindowEnumeration", enumeration)
-        let snapWindows = snapshot.snapWindows
-        let targets = await Task.detached(priority: .userInitiated) {
+        let targets = OverlayPerformance.measureCapture("SnapTargets") {
             Dictionary(uniqueKeysWithValues: displays.map {
-                ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapWindows))
+                ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
             })
-        }.value
+        }
         OverlayView.warmUp(scales: Set(displays.map(\.scale)))
         let grabbed = try await frozenDisplays
         try Task.checkCancellation()
@@ -160,6 +157,8 @@ final class SelectionSession {
     /// The displays as they look now, or nil when this selection is live and freezes nothing.
     private func freezeDisplays(_ displays: [DisplayInfo]) async throws -> [FrozenDisplay]? {
         guard let freeze else { return nil }
+        let interval = OverlayPerformance.begin("FreezeCapture")
+        defer { OverlayPerformance.end("FreezeCapture", interval) }
         return try await freeze(displays)
     }
 

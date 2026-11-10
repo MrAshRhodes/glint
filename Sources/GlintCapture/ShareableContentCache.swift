@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import GlintCore
 import os
 import ScreenCaptureKit
 
@@ -132,7 +133,9 @@ final class ContentCache<Snapshot>: @unchecked Sendable {
 enum ShareableContentCache {
     typealias Entry = ContentCache<SCShareableContent>.Entry
 
-    static let shared = ContentCache<SCShareableContent> { try await WindowEnumerator.shareableContent() }
+    static let shared = ContentCache<SCShareableContent> {
+        try await CaptureSignposts.measure("ShareableContent") { try await WindowEnumerator.shareableContent() }
+    }
 
     /// Dropped whenever the screens or the session may have changed, then refilled by `CapturePrewarmer`.
     static func invalidate() { shared.invalidate() }

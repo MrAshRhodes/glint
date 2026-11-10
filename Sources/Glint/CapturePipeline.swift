@@ -27,6 +27,10 @@ final class CapturePipeline {
             try Compositor.render(image: $0, settings: $1, backingScale: $2, wallpaper: $3)
         }
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
+        /// A failure the user must not miss, even with notifications off: see `FailureFeedback`.
+        var fail: @MainActor (String, String, URL?) -> Void = { Notifier.postFailure(title: $0, body: $1, fileURL: $2) }
+        /// A start request dropped because a capture or recording is already in progress.
+        var reject: @MainActor () -> Void = { NSSound.beep() }
         var requestRetry: @MainActor (String, String) -> Bool = { CaptureRecovery.requestRetry(title: $0, message: $1) }
         var sound: @MainActor () -> Void = { Notifier.playSound() }
         var addRecent: (URL) -> Void = { RecentFiles.add($0) }
@@ -96,19 +100,39 @@ final class CapturePipeline {
         retention = services.retention(prefs)
     }
 
-    enum Mode: Equatable { case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int) }
+    enum Mode: Equatable {
+        case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int)
+
+        /// The signpost label: the mode alone, without a timer's delay.
+        var signpostLabel: String {
+            switch self {
+            case .area: "area"
+            case .window: "window"
+            case .fullscreen: "fullscreen"
+            case .repeatLast: "repeatLast"
+            case .text: "text"
+            case .areaToClipboard: "areaToClipboard"
+            case .scrolling: "scrolling"
+            case .timer: "timer"
+            }
+        }
+    }
 
     // MARK: capture entry
 
     /// Starts a capture. While a scrolling capture runs, starting another one finishes it instead.
     @discardableResult
-    func start(_ mode: Mode) -> Task<Void, Never>? {
+    func start(_ mode: Mode, trigger: CaptureSignposts.Trigger = .menu) -> Task<Void, Never>? {
         if mode == .scrolling, let activeScroll {
             activeScroll.finish()
             return nil
         }
-        guard !isBusy else { return nil }
+        guard !isBusy else {
+            services.reject()
+            return nil
+        }
         busy = true
+        let signpost = CaptureSignposts.beginCapture(trigger: trigger, mode: mode.signpostLabel)
         let capturer = ScreenCapturer.shared
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
@@ -144,12 +168,14 @@ final class CapturePipeline {
         }
 
         return Task { @MainActor in
+            var outcome = CaptureSignposts.Outcome.completed
             defer {
                 capturer.onSelectionPresented = nil
                 busy = false
                 activeScroll = nil
                 onStatusTitle?(nil)
                 restoreWindows()
+                CaptureSignposts.end(signpost, outcome == .completed && Task.isCancelled ? .cancelled : outcome)
             }
             do {
                 try Task.checkCancellation()
@@ -179,12 +205,16 @@ final class CapturePipeline {
                 }
             } catch CaptureError.cancelled {
                 // user pressed Esc
+                outcome = .cancelled
             } catch is CancellationError {
                 // The capture task was cancelled before it produced an output.
+                outcome = .cancelled
             } catch CaptureError.permissionDenied {
+                outcome = .failed
                 services.permissionDenied()
             } catch {
-                services.notify("Capture failed", error.localizedDescription, nil)
+                outcome = .failed
+                services.fail("Capture failed", error.localizedDescription, nil)
             }
         }
     }
@@ -209,7 +239,7 @@ final class CapturePipeline {
             services.notify("Text copied", "Recognized text copied to clipboard", nil)
         } catch {
             guard !Task.isCancelled else { return }
-            services.notify("Text recognition failed", error.localizedDescription, nil)
+            services.fail("Text recognition failed", error.localizedDescription, nil)
         }
     }
 
@@ -230,9 +260,11 @@ final class CapturePipeline {
         var rawURL = existingRaw
         if saveRaw, prefs.saveRaw, let url = prefs.outputPaths.rawURL() {
             do {
-                rawURL = try services.write(image, url, .plainPNG, .original, scale)
+                rawURL = try CaptureSignposts.measure("RawWrite") {
+                    try services.write(image, url, .plainPNG, .original, scale)
+                }
             } catch {
-                services.notify("Raw screenshot not saved", error.localizedDescription, nil)
+                services.fail("Raw screenshot not saved", error.localizedDescription, nil)
             }
         }
         var working = image
@@ -291,7 +323,9 @@ final class CapturePipeline {
         let rendered: CGImage
         while true {
             do {
-                rendered = try services.render(image, settings, scale, wallpaper)
+                rendered = try CaptureSignposts.measure("Render") {
+                    try services.render(image, settings, scale, wallpaper)
+                }
                 break
             } catch {
                 services.notify("Screenshot not exported", error.localizedDescription, nil)
@@ -305,7 +339,9 @@ final class CapturePipeline {
             let format = prefs.exportFormat
             let url = prefs.outputPaths.outputURL(format: format) ?? prefs.outputPaths.saveURL(format: format)
             do {
-                saved = try services.write(rendered, url, format, exportScale, scale)
+                saved = try CaptureSignposts.measure("OutputWrite") {
+                    try services.write(rendered, url, format, exportScale, scale)
+                }
             } catch {
                 failures.append("Save failed: \(error.localizedDescription)")
             }
@@ -320,6 +356,7 @@ final class CapturePipeline {
              sharedAs: copied ? .copied : nil)
         let title: String
         let detail: String
+        var failed = !failures.isEmpty
         if let saved {
             title = failures.isEmpty ? "Screenshot saved" : "Screenshot saved, but copy failed"
             detail = saved.lastPathComponent + (copied ? " — also copied to clipboard." : "")
@@ -329,8 +366,14 @@ final class CapturePipeline {
         } else {
             title = "Screenshot export failed"
             detail = "The beautified image was not saved or copied."
+            failed = true
         }
-        services.notify(title, ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n"), saved)
+        let message = ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n")
+        if failed {
+            services.fail(title, message, saved)
+        } else {
+            services.notify(title, message, saved)
+        }
         if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
             quickAccess.show(image: rendered, fileURL: saved, onEdit: { [weak self] in
                 self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)
