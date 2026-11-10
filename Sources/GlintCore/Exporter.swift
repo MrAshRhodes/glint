@@ -20,6 +20,11 @@ public enum ExportFormat: Codable, Equatable, Hashable, Sendable {
         switch self { case .png: return .png; case .jpeg: return .jpeg; case .heic: return .heic; case .tiff: return .tiff }
     }
 
+    /// The `CaptureSignposts` interval name for encoding in this format.
+    fileprivate var encodeSignpost: StaticString {
+        switch self { case .png: "EncodePNG"; case .jpeg: "EncodeJPEG"; case .heic: "EncodeHEIC"; case .tiff: "EncodeTIFF" }
+    }
+
     public var supportsAlpha: Bool {
         if case .jpeg = self { return false }
         return true
@@ -39,6 +44,13 @@ public enum Exporter {
     /// Encodes `image`. `x1`/`x2` resample to 1×/2× the image's point size (pixels / `backingScale`).
     public static func data(for image: CGImage, format: ExportFormat = .plainPNG, scale: ExportScale = .original,
                             backingScale: CGFloat = 1) throws -> Data {
+        try CaptureSignposts.measure(format.encodeSignpost) {
+            try encoded(image, format: format, scale: scale, backingScale: backingScale)
+        }
+    }
+
+    private static func encoded(_ image: CGImage, format: ExportFormat, scale: ExportScale,
+                                backingScale: CGFloat) throws -> Data {
         var output = resampled(image, scale: scale, backingScale: backingScale)
         let dpiFactor: CGFloat
         switch scale {
@@ -88,12 +100,16 @@ public enum Exporter {
     @discardableResult
     public static func copyToClipboard(_ image: CGImage, scale: ExportScale = .original, backingScale: CGFloat = 1,
                                        pasteboard: NSPasteboard = .general) -> Bool {
+        let signpost = CaptureSignposts.begin("Pasteboard")
+        var copied = false
+        defer { CaptureSignposts.end(signpost, copied ? .completed : .failed) }
         guard let png = try? data(for: image, format: .plainPNG, scale: scale, backingScale: backingScale) else { return false }
         pasteboard.clearContents()
         var ok = pasteboard.setData(png, forType: .png)
         if let tiff = try? data(for: image, format: .tiff, scale: scale, backingScale: backingScale) {
             ok = pasteboard.setData(tiff, forType: .tiff) && ok
         }
+        copied = ok
         return ok
     }
 
