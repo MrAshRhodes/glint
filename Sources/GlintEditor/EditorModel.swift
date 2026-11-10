@@ -670,13 +670,19 @@ final class EditorModel: ObservableObject {
     /// redaction pass has not finished.
     func finalRenderer() -> @Sendable () throws -> CGImage {
         guard !awaitsRedaction else { return { throw EditorError.redactionPending } }
-        resolveWallpaperNow()
         let image = image, settings = settings, annotations = annotations, scale = backingScale
-        let background = backgroundImage(for: settings), wallpaper = wallpaperImage
+        let background = backgroundImage(for: settings)
+        // A wallpaper that is still loading is decoded by the render itself, so an export never falls back to the
+        // plain background and a render run off the main actor takes the decode with it. The load already under way
+        // goes on and updates the preview.
+        let loadedWallpaper = wallpaperImage
+        let pendingWallpaper = wallpaperLoad.map { (url: $0.url, files: renderCache.images) }
         let time = isRecording ? recordingTime : nil
         let presentation = exportPresentation
         let renderer = renderer, presentationRenderer = presentationRenderer
         return {
+            let wallpaper = pendingWallpaper.flatMap { try? DesktopWallpaper.load(url: $0.url, using: $0.files).get() }
+                ?? loadedWallpaper
             if let presentation {
                 return try presentationRenderer(image, settings, annotations, scale, background, wallpaper, time,
                                                 presentation).image

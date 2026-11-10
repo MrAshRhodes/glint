@@ -100,6 +100,22 @@ struct EditorRenderReuseTests {
         })
     }
 
+    @Test func aRenderTakenBeforeTheWallpaperLoadsDecodesItOffTheMainActor() async throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        try FileManager.default.createDirectory(at: f.directory, withIntermediateDirectories: true)
+        let file = f.directory.appendingPathComponent("wallpaper.png")
+        try writeImage(pureRed, to: file)
+        let model = EditorModel(context: f.context, preferences: f.preferences, presetStore: f.presets,
+                                wallpaperURL: { file })
+        var look = framedLook
+        look.usesDesktopWallpaper = true
+        model.settings = look
+        // Nothing has run on the main actor since the toggle, so the wallpaper has not been delivered to the model yet.
+        let render = model.finalRenderer()
+        let final = try await Task.detached { try render() }.value
+        #expect(isRed(final))
+    }
+
     @Test func aWallpaperSwitchedOffBeforeItLoadsIsIgnored() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let model = EditorModel(context: f.context, preferences: f.preferences, presetStore: f.presets,
