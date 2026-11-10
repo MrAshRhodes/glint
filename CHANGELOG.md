@@ -8,6 +8,11 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Changed
+
+- The editor shows your capture as soon as it opens: its first frame places the capture where the composed preview will put it, with the same crop, orientation and proportions, instead of leaving the canvas empty until the preview has been rendered, and the first render no longer waits out the short delay that groups later changes. With **Auto-redact** on, an image the editor still has to scan itself (such as one from **Open Image…**) stays behind "Checking for sensitive information…" until the scan is done, so nothing unredacted is drawn, previewed or offered for dragging in the meantime; captures Glint already redacted on the way in show at once. If the first render fails, the editor shows the error and leaves no placeholder behind. ([#109])
+- GlintCore API: `ProvisionalFrame` works out where a capture sits in the composed layout, and `Compositor.layout` and the auto-balance crop are shared with the renderer so the two cannot disagree. GlintEditor's `EditorContext` gains `autoRedactionApplied` for captures that already carry their redactions. ([#109])
+
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
@@ -312,3 +317,4 @@ First public release.
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
 [#108]: https://github.com/MrAshRhodes/glint/issues/108
+[#109]: https://github.com/MrAshRhodes/glint/issues/109

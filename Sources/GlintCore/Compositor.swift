@@ -87,13 +87,7 @@ public enum Compositor {
         } ?? annotations
 
         // 1. auto-balance crop + annotations burned into content (redactions destroy pixels here)
-        var border: BorderInfo?
-        var region: CGRect?
-        if settings.autoBalance, let b = AutoBalance.detectBorder(in: original) {
-            border = b
-            region = AutoBalance.balanceCropRect(imageSize: original.pixelSize, border: b)
-        }
-        let base = (region ?? imageBounds).integral
+        let (border, region, base) = balancedBase(of: original, settings: settings)
         // Pointer effects are painted into the frame before annotations, so redactions cover them too.
         let active = annotationTime.flatMap { time in presentation.flatMap { $0.isInert ? nil : ($0, time) } }
         let source = active.map { PresentationRenderer.decorate(original, presentation: $0.0, time: $0.1) } ?? original
@@ -202,6 +196,19 @@ public enum Compositor {
             return RenderResult(image: content, layout: layout, border: border, region: contentRegion)
         }
         return RenderResult(image: rendered, layout: layout, border: border, region: contentRegion)
+    }
+
+    /// The auto-balance border and crop of `image` (already sRGB) and the integral base region of source pixels the
+    /// card wraps. Rendering and `ProvisionalFrame` both use it, so a prediction cannot disagree with the render.
+    static func balancedBase(of image: CGImage, settings: RenderSettings)
+        -> (border: BorderInfo?, region: CGRect?, base: CGRect) {
+        var border: BorderInfo?
+        var region: CGRect?
+        if settings.autoBalance, let b = AutoBalance.detectBorder(in: image) {
+            border = b
+            region = AutoBalance.balanceCropRect(imageSize: image.pixelSize, border: b)
+        }
+        return (border, region, (region ?? CGRect(origin: .zero, size: image.pixelSize)).integral)
     }
 
     /// The zoomed-in part of `base` (source pixels) at `time`, with the content's aspect ratio, or nil for none.

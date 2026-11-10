@@ -862,6 +862,30 @@ struct CapturePipelineTests {
         #expect(f.renderedImages.allSatisfy { $0 === f.image })
         #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty && f.sounds == 1)
     }
+
+    @Test(arguments: [true, false])
+    func theEditorIsToldWhetherTheCaptureWasAlreadyRedacted(autoRedact: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = autoRedact
+        f.preferences.openEditorAfterCapture = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var opened: [(editor: EditorWindowController, holdsBack: Bool, showsCapture: Bool)] = []
+        // Looks at the editor as it is presented, before anything it starts asynchronously has run.
+        let pipeline = f.pipeline {
+            $0.presentEditor = { opened.append(($0, $0.model.awaitsRedaction, $0.model.provisional != nil)) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+
+        let first = try #require(opened.first)
+        defer { first.editor.window?.close() }
+        #expect(opened.count == 1)
+        #expect(!first.holdsBack, "The pipeline already redacted the capture, so the editor has nothing to wait for")
+        #expect(first.showsCapture)
+        let pixels = try #require(PixelBuffer(first.editor.model.image))
+        let expected: UInt8 = autoRedact ? 0 : 255
+        #expect(pixels.pixel(50, 20) == (expected, expected, expected, 255))
+        #expect(f.recognizedImages.count == (autoRedact ? 1 : 0))
+    }
 }
 
 @Suite("Scrolling capture in the pipeline")

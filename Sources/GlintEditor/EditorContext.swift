@@ -16,9 +16,13 @@ public struct EditorContext {
     /// remembered settings and auto-redaction are not applied, and changes made in the session are not
     /// remembered for the next capture.
     public let restored: EditorRestoreState?
+    /// True when `image` already has automatic redaction burned in, as the capture pipeline does before it opens
+    /// the editor. The editor can then draw it at once instead of holding it back until its own redaction pass has
+    /// finished, because that pass has nothing left to hide.
+    public let autoRedactionApplied: Bool
 
     public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                isRecording: Bool = false, restored: EditorRestoreState? = nil) {
+                isRecording: Bool = false, restored: EditorRestoreState? = nil, autoRedactionApplied: Bool = false) {
         self.image = image
         self.backingScale = backingScale
         self.rawURL = rawURL
@@ -26,6 +30,7 @@ public struct EditorContext {
         self.isComposed = isComposed
         self.isRecording = isRecording
         self.restored = restored
+        self.autoRedactionApplied = autoRedactionApplied
     }
 
     var windowTitle: String {

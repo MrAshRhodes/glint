@@ -94,6 +94,20 @@ struct Preview {
     var mapper: CanvasMapper
 }
 
+/// The capture placed on the canvas where the composed preview will put it, without composing anything.
+struct ProvisionalPreview {
+    var frame: ProvisionalFrame
+    var mapper: CanvasMapper
+}
+
+/// Moments in the editor's opening that `EditorModel.milestones` times from when the model was created.
+enum EditorMilestone: Hashable {
+    /// An image of the capture, provisional or composed, was first drawn on the canvas.
+    case firstImage
+    /// The first composed preview was published.
+    case composedPreview
+}
+
 enum ZoomAreaEditPhase { case began, changed, ended }
 
 @MainActor
@@ -124,11 +138,15 @@ final class EditorModel: ObservableObject {
                 preferences.lastRenderSettings = settings
                 preferences.autoBalance = settings.autoBalance
             }
+            refreshProvisional()
             requestRender()
         }
     }
     @Published private(set) var annotations: [Annotation] = [] {
-        didSet { requestRender() }
+        didSet {
+            refreshProvisional()
+            requestRender()
+        }
     }
     /// Always empty while a zoom area is being edited, so Delete, nudges and other selection commands can't
     /// touch annotations the canvas isn't showing handles for.
@@ -171,6 +189,12 @@ final class EditorModel: ObservableObject {
         }
     }
     @Published private(set) var preview: Preview?
+    /// Where the capture will sit once composed, so the canvas can show it before the first composed preview
+    /// exists. Nil once that preview is published, when no placement can be predicted, and while redaction is pending.
+    @Published private(set) var provisional: ProvisionalPreview?
+    /// The editor is still running automatic redaction on a capture that hasn't been redacted yet, so nothing drawn
+    /// from its pixels is shown or published until that pass finishes.
+    @Published private(set) var awaitsRedaction = false
     @Published private(set) var wallpaperProblem: String?
     @Published var presets: [Preset] = []
     @Published var statusMessage: String?
@@ -194,6 +218,12 @@ final class EditorModel: ObservableObject {
     private var rendering = false
     private var dirty = false
     private var scheduled = false
+    /// Cleared once the first composed preview exists or the first render fails.
+    private var providesProvisional = false
+    private let created = ProcessInfo.processInfo.systemUptime
+    /// Seconds from creating the model to each opening milestone reached so far.
+    private(set) var milestones: [EditorMilestone: TimeInterval] = [:]
+    var onMilestone: ((EditorMilestone, TimeInterval) -> Void)?
     private var interactionBase: [Annotation]?
     private var styleCoalesceKey: String?
     private var styleEditDate = Date.distantPast
@@ -269,12 +299,20 @@ final class EditorModel: ObservableObject {
         self.presets = presetStore.presets
         self.designMakeDefault = designIsDefault
         if design == nil, let restored = context.restored { self.annotations = restored.annotations }
+        awaitsRedaction = automaticallyRedacts && !context.autoRedactionApplied
+        providesProvisional = design == nil && !isRecording
+        refreshProvisional()
         refreshWallpaper()
-        requestRender()
-        if preferences.autoRedact, design == nil, !isComposed, !isRecording, !isRestored { Task { await self.runAutoRedact(announce: false) } }
+        requestInitialRender()
+        if automaticallyRedacts { Task { await self.runInitialAutoRedact() } }
     }
 
     // MARK: State helpers
+
+    /// A normal capture is scanned for sensitive information when the editor opens, if the preference is on.
+    private var automaticallyRedacts: Bool {
+        preferences.autoRedact && design == nil && !isComposed && !isRecording && !isRestored
+    }
 
     /// A normal capture remembers its look for the next one; a preset designer, reopened image or project must not
     /// overwrite it.
@@ -371,6 +409,55 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// The first render doesn't wait out the debounce `requestRender()` adds, since nothing is on screen to coalesce
+    /// with. It still hops to a later main-actor turn, so a renderer replaced right after `init` is the one used.
+    private func requestInitialRender() {
+        dirty = true
+        guard !scheduled else { return }
+        scheduled = true
+        Task { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.kick()
+        }
+    }
+
+    /// Places the capture on the canvas the way the composed preview will, while that preview is still rendering.
+    private func refreshProvisional() {
+        guard providesProvisional, preview == nil, !awaitsRedaction,
+              let frame = ProvisionalFrame(image: image, settings: settings, annotations: annotations,
+                                           backingScale: backingScale) else {
+            if provisional != nil { provisional = nil }
+            return
+        }
+        provisional = ProvisionalPreview(frame: frame, mapper: CanvasMapper(region: frame.region,
+                                                                            contentRect: frame.layout.contentRect))
+    }
+
+    private func runInitialAutoRedact() async {
+        defer { releaseRedactionHold() }
+        await runAutoRedact(announce: false)
+    }
+
+    /// Ends the wait for automatic redaction, whether or not it found anything, and renders what it left.
+    private func releaseRedactionHold() {
+        guard awaitsRedaction else { return }
+        awaitsRedaction = false
+        refreshProvisional()
+        dirty = true
+        kick()
+    }
+
+    private func mark(_ milestone: EditorMilestone) {
+        guard milestones[milestone] == nil else { return }
+        let elapsed = ProcessInfo.processInfo.systemUptime - created
+        milestones[milestone] = elapsed
+        onMilestone?(milestone, elapsed)
+    }
+
+    /// Called by the canvas after it draws an image of the capture, provisional or composed.
+    func noteImageDrawn() { mark(.firstImage) }
+
     private func previewScale() -> CGFloat {
         let size = image.pixelSize
         let est = Compositor.layout(contentSize: size, insetApplied: settings.inset >= 1, settings: settings,
@@ -390,7 +477,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func kick() {
-        guard !rendering, dirty else { return }
+        guard !rendering, dirty, !awaitsRedaction else { return }
         dirty = false
         rendering = true
         var s = settings
@@ -424,12 +511,19 @@ final class EditorModel: ObservableObject {
 
     private func finishRender(_ p: Preview) {
         preview = p
+        providesProvisional = false
+        if provisional != nil { provisional = nil }
+        mark(.composedPreview)
         rendering = false
         if dirty { kick() }
     }
 
     private func failRender(_ message: String) {
         statusMessage = message
+        if preview == nil {
+            providesProvisional = false
+            if provisional != nil { provisional = nil }
+        }
         rendering = false
         if dirty { kick() }
     }

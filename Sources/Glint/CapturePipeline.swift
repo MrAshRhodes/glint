@@ -263,9 +263,11 @@ final class CapturePipeline {
         // A cancelled capture task must not publish output that finished late.
         guard !Task.isCancelled else { return }
         if prefs.openEditorAfterCapture && !clipboardOnly {
-            openEditor(image: working, scale: scale, rawURL: rawURL, source: source)
+            openEditor(image: working, scale: scale, rawURL: rawURL, source: source,
+                       autoRedactionApplied: redactionOptions != nil)
         } else {
-            exportDirectly(image: working, scale: scale, rawURL: rawURL, source: source, clipboardOnly: clipboardOnly)
+            exportDirectly(image: working, scale: scale, rawURL: rawURL, source: source, clipboardOnly: clipboardOnly,
+                           autoRedactionApplied: redactionOptions != nil)
         }
     }
 
@@ -275,7 +277,8 @@ final class CapturePipeline {
         EditorHeadless.initialSettings(preferences: prefs, presetStore: presetStore, presetName: presetName)
     }
 
-    private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool) {
+    private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool,
+                                autoRedactionApplied: Bool = false) {
         let settings = settings()
         var wallpaper: CGImage?
         var wallpaperProblem: String?
@@ -330,7 +333,8 @@ final class CapturePipeline {
         services.notify(title, ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n"), saved)
         if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
             quickAccess.show(image: rendered, fileURL: saved, onEdit: { [weak self] in
-                self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)
+                self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source,
+                                 autoRedactionApplied: autoRedactionApplied)
             }, onDragOut: { [weak self] in
                 self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: saved)
             })
@@ -430,9 +434,9 @@ final class CapturePipeline {
 
     @discardableResult
     func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                    restored: EditorRestoreState? = nil) -> EditorWindowController {
+                    restored: EditorRestoreState? = nil, autoRedactionApplied: Bool = false) -> EditorWindowController {
         let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed,
-                                    restored: restored)
+                                    restored: restored, autoRedactionApplied: autoRedactionApplied)
         let controller = EditorWindowController(context: context, preferences: prefs, presetStore: presetStore)
         editors.append(controller)
         controller.onClose = { [weak self, weak controller] in

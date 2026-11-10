@@ -93,6 +93,18 @@ Retries do not recapture the screen, repeat a raw-history save, or create a raw 
 in-memory recovery, not protection against quitting or a crash. The CLI still exits with an error;
 its input file is unchanged.
 
+`ProvisionalFrame(image:settings:annotations:backingScale:maxPixels:)` is the editor's first frame: where a capture
+sits in the composed preview, worked out without composing anything. It shares `Compositor.layout` and the
+auto-balance crop with the renderer, so its `layout`, `region` and orientation match what `renderDetailed` returns for
+the same input, and `draw(_:in:scale:)` places the oriented, cropped capture in `layout.contentRect`; the background,
+shadow, frame and the card's corners are left to the composed preview. It is `nil` whenever the composed
+preview could differ from the capture beyond that: any annotation (redactions are burned in), a tilt, or a capture
+over `maxPixels` (40 million). As in the renderer, only captures of up to `AutoBalance.maxPixels` are scanned for an
+auto-balance border, and only those are normalised to sRGB first, so a large capture costs nothing extra.
+The editor draws the frame until its first composed preview exists, and holds the capture back, drawing neither
+frame nor preview, while its own automatic redaction pass is pending, unless
+`EditorContext.autoRedactionApplied` says the capture pipeline already burned the redactions in.
+
 ## Annotations
 `Annotation(id,z,kind,style,visibleRange: AnnotationTiming? = nil)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)

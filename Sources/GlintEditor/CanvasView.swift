@@ -80,8 +80,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
                 self.window?.invalidateCursorRects(for: self)
             } }
             .store(in: &bag)
-        model.$preview
-            .sink { [weak self] _ in DispatchQueue.main.async {
+        Publishers.Merge(model.$preview.map { _ in }, model.$provisional.map { _ in })
+            .sink { [weak self] in DispatchQueue.main.async {
                 // A zoomed preview is rendered at the size it is shown, which is only known once one exists.
                 guard let self, self.model.canvasZoom != .fit else { return }
                 self.needsLayout = true
@@ -107,8 +107,17 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     // MARK: Geometry
 
+    private typealias Shown = (layout: RenderLayout, mapper: CanvasMapper)
+
+    /// The canvas layout on screen: the composed preview's, or where the capture will land until that exists.
+    private var shownFrame: Shown? {
+        if let p = model.preview { return (p.layout, p.mapper) }
+        if let p = model.provisional { return (p.frame.layout, p.mapper) }
+        return nil
+    }
+
     private var displayRect: CGRect {
-        guard let p = model.preview else { return .zero }
+        guard let p = shownFrame else { return .zero }
         let area = contentRect
         let avail = area.insetBy(dx: margin, dy: margin)
         let cs = p.layout.canvasSize
@@ -123,7 +132,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     /// The canvas size on screen for Fit Width and 100%, measured at full resolution so it doesn't depend on how
     /// sharp the current preview is.
-    private func zoomedSize(_ p: Preview, available: CGSize) -> CGSize? {
+    private func zoomedSize(_ p: Shown, available: CGSize) -> CGSize? {
         let perImage = p.mapper.scaleX
         guard perImage > 0 else { return nil }
         let canvasPixels = CGSize(width: p.layout.canvasSize.width / perImage,
@@ -134,24 +143,24 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     private var viewScale: CGFloat {
-        guard let p = model.preview, p.layout.canvasSize.width > 0 else { return 1 }
+        guard let p = shownFrame, p.layout.canvasSize.width > 0 else { return 1 }
         return displayRect.width / p.layout.canvasSize.width
     }
 
     private func toView(_ p: CGPoint) -> CGPoint {
-        guard let m = model.preview?.mapper else { return p }
+        guard let m = shownFrame?.mapper else { return p }
         let c = m.toCanvas(p), r = displayRect, s = viewScale
         return CGPoint(x: r.minX + c.x * s, y: r.minY + c.y * s)
     }
 
     private func toImage(_ v: CGPoint) -> CGPoint {
-        guard let m = model.preview?.mapper else { return v }
+        guard let m = shownFrame?.mapper else { return v }
         let r = displayRect, s = viewScale
         return m.toImage(CGPoint(x: (v.x - r.minX) / s, y: (v.y - r.minY) / s))
     }
 
     /// View points per image pixel.
-    private var viewPerImage: CGFloat { viewScale * (model.preview?.mapper.scaleX ?? 1) }
+    private var viewPerImage: CGFloat { viewScale * (shownFrame?.mapper.scaleX ?? 1) }
 
     private func viewRect(_ r: CGRect) -> CGRect {
         let a = toView(CGPoint(x: r.minX, y: r.minY)), b = toView(CGPoint(x: r.maxX, y: r.maxY))
@@ -164,7 +173,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
         let area = contentRect
         let avail = CGSize(width: max(area.width - 2 * margin, 10), height: max(area.height - 2 * margin, 10))
         // A zoomed canvas is rendered as large as it is shown, so it stays sharp while scrolling.
-        let shown = model.preview.flatMap { model.canvasZoom == .fit ? nil : zoomedSize($0, available: avail) } ?? avail
+        let shown = shownFrame.flatMap { model.canvasZoom == .fit ? nil : zoomedSize($0, available: avail) } ?? avail
         model.updatePreviewTarget(CGSize(width: shown.width * scale, height: shown.height * scale))
         positionEditor()
     }
@@ -179,7 +188,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     /// Scrolls a canvas that is larger than the window; Fit never scrolls.
     override func scrollWheel(with event: NSEvent) {
-        guard model.canvasZoom != .fit, let p = model.preview else { return super.scrollWheel(with: event) }
+        guard model.canvasZoom != .fit, let p = shownFrame else { return super.scrollWheel(with: event) }
         let avail = contentRect.insetBy(dx: margin, dy: margin)
         guard let size = zoomedSize(p, available: avail.size) else { return }
         let step: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
@@ -194,7 +203,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func resetCursorRects() {
-        if model.tool != .select, model.isEditable { addCursorRect(displayRect, cursor: .crosshair) }
+        if model.tool != .select, model.isEditable, model.preview != nil { addCursorRect(displayRect, cursor: .crosshair) }
     }
 
     // MARK: Drawing
@@ -202,7 +211,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.underPageBackgroundColor.setFill()
         bounds.fill()
-        guard let p = model.preview, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        guard let p = model.preview else { return drawStandIn(in: ctx) }
         let r = displayRect
         if case .transparent = model.settings.background { drawChecker(in: r) }
         ctx.saveGState()
@@ -211,6 +221,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
         ctx.scaleBy(x: 1, y: -1)
         ctx.draw(p.image, in: CGRect(x: 0, y: 0, width: r.width, height: r.height))
         ctx.restoreGState()
+        model.noteImageDrawn()
 
         if let area = model.editedZoomArea {
             drawZoomArea(area)
@@ -224,6 +235,25 @@ final class CanvasView: NSView, NSTextViewDelegate {
             drawSelection(model.editingView(a), single: model.selection.count == 1)
         }
         if case .zoom(let start, let end, let square) = drag { drawZoomMarquee(from: start, to: end, square: square) }
+    }
+
+    /// Until the composed preview exists: the capture itself, placed where the composed preview will put it, or a
+    /// hint while the capture is held back for automatic redaction.
+    private func drawStandIn(in ctx: CGContext) {
+        if let p = model.provisional {
+            let r = displayRect
+            guard r.width > 0, r.height > 0, p.frame.layout.canvasSize.width > 0 else { return }
+            if case .transparent = model.settings.background { drawChecker(in: r) }
+            ctx.saveGState()
+            ctx.interpolationQuality = .medium
+            ctx.translateBy(x: r.minX, y: r.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            p.frame.draw(model.image, in: ctx, scale: r.width / p.frame.layout.canvasSize.width)
+            ctx.restoreGState()
+            model.noteImageDrawn()
+        } else if model.awaitsRedaction {
+            drawHint("Checking for sensitive information…")
+        }
     }
 
     private var imageBounds: CGRect { CGRect(origin: .zero, size: model.image.pixelSize) }
