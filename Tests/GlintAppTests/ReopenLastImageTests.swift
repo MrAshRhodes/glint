@@ -183,7 +183,12 @@ private final class ReopenFixture {
     var removedRecent: [URL] = []
     var copies: [CGImage] = []
     var copySucceeds = true
-    var failRender = false
+    private let failRenderFlag = Box(false)
+    /// Read from the render closure, which runs off the main thread.
+    var failRender: Bool {
+        get { failRenderFlag.snapshot }
+        set { failRenderFlag.withValue { $0 = newValue } }
+    }
     var presented: [EditorWindowController] = []
     var presentedRecordings: [RecordingEditorWindowController] = []
     var readProject: (@Sendable (URL) throws -> GlintProject)?
@@ -236,8 +241,8 @@ private final class ReopenFixture {
         services.addRecent = { [self] in recent.append($0) }
         services.removeRecent = { [self] in removedRecent.append($0) }
         services.sound = {}
-        services.render = { [self] image, settings, backingScale, wallpaper in
-            if failRender { throw RenderError.annotationsNotApplied }
+        services.render = { [failRenderFlag] image, settings, backingScale, wallpaper in
+            if failRenderFlag.snapshot { throw RenderError.annotationsNotApplied }
             return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.presentEditor = { [self] in presented.append($0) }
@@ -477,8 +482,10 @@ struct ReopenLastImageTests {
         #expect(await eventually { gate.hasEntered })
         await f.pipeline.handle(image: f.solid(1), scale: 2, source: "test", rawURL: nil, saveRaw: false,
                                 clipboardOnly: true)
-        #expect(!gate.hasFinished, "Copy must finish while the disk queue is still held")
         #expect(f.copies.count == 1)
+        // The export is reported by its turn in the output queue, which does not wait for the held kept-copy queue.
+        #expect(await eventually { !f.notifications.isEmpty })
+        #expect(!gate.hasFinished, "Copy must finish while the disk queue is still held")
         #expect(f.notifications.map(\.title) == ["Copied to clipboard"])
         #expect(f.pipeline.isKeepingScreenshots)
         #expect(f.outputFiles().isEmpty)

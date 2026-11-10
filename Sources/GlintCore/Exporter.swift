@@ -38,6 +38,8 @@ public enum ExportScale: String, Codable, CaseIterable, Sendable {
 public enum ExportError: Error, Equatable {
     case encodingFailed
     case writeFailed(String)
+    /// `Exporter.write(replacing: false)` found a file at the destination and left it alone.
+    case fileExists
 }
 
 public enum Exporter {
@@ -80,17 +82,41 @@ public enum Exporter {
         return data as Data
     }
 
+    /// Encodes `image` and writes it to `url`, replacing a file that is already there.
+    ///
+    /// Pass `replacing: false` for a name that was only checked to be unused, not reserved: the file then appears
+    /// complete or not at all, and one that another writer created meanwhile is left alone and reported as
+    /// `ExportError.fileExists`, so the caller can pick another name.
     @discardableResult
     public static func write(_ image: CGImage, to url: URL, format: ExportFormat = .plainPNG, scale: ExportScale = .original,
-                             backingScale: CGFloat = 1) throws -> URL {
+                             backingScale: CGFloat = 1, replacing: Bool = true) throws -> URL {
         let bytes = try data(for: image, format: format, scale: scale, backingScale: backingScale)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try bytes.write(to: url, options: .atomic)
+            if replacing {
+                try bytes.write(to: url, options: .atomic)
+            } else {
+                try writeWithoutReplacing(bytes, to: url)
+            }
+        } catch ExportError.fileExists {
+            throw ExportError.fileExists
         } catch {
             throw ExportError.writeFailed(error.localizedDescription)
         }
         return url
+    }
+
+    /// Stages `bytes` beside `url` and moves them into place, which fails instead of replacing an existing file.
+    private static func writeWithoutReplacing(_ bytes: Data, to url: URL) throws {
+        let fileManager = FileManager.default
+        let staging = url.deletingLastPathComponent().appendingPathComponent(".glint-\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: staging) }
+        try bytes.write(to: staging)
+        do {
+            try fileManager.moveItem(at: staging, to: url)
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            throw ExportError.fileExists
+        }
     }
 
     /// Puts a PNG (plus TIFF for legacy apps) on the general pasteboard.

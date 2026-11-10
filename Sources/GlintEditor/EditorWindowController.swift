@@ -342,6 +342,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     // MARK: Public API
 
+    /// The unstyled capture was written after this editor opened (capture saves it in the background).
+    public func rawFileSaved(_ url: URL) {
+        model.rawFileSaved(url)
+    }
+
     public func showEditor() {
         guard let window else { return }
         window.center()

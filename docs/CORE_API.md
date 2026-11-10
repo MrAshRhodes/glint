@@ -10,7 +10,8 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
   `RGBAColor.white/.black/.red/.clear`.
 - `ColorSpaces.sRGB`; `GlintImageIO.load(url:) -> CGImage?` (EXIF-orientation applied), `GlintImageIO.load(data:)`,
   `CGImage.glintSRGB() -> CGImage` (convert), `GlintBitmap.makeContext(width:height:)`,
-  `CGImage.glintCropped(to: CGRect)`.
+  `CGImage.glintCropped(to: CGRect)`, `CGImage.glintThumbnail(maxPixelSide:) -> CGImage` (a downscaled copy with the
+  same aspect ratio and transparency; an image that already fits is returned as is, never enlarged).
 
 ## Models
 - `BackgroundStyle` enum: `.solid(RGBAColor)`, `.linear(LinearGradient)` (`angle` CSS degrees: 0 = to top,
@@ -196,7 +197,11 @@ Annotation case names and their serialized representations are unchanged.
 ## Export / paths
 - `ExportFormat`: `.png(interlaced:)` (`.plainPNG`), `.jpeg(quality:)`, `.heic(quality:)`, `.tiff`; `.fileExtension`.
   `ExportScale`: `.original, .x1, .x2` (relative to the image's backing scale).
-- `Exporter.data(for:format:scale:backingScale:) throws -> Data`, `Exporter.write(_:to:format:scale:backingScale:)`,
+- `Exporter.data(for:format:scale:backingScale:) throws -> Data`,
+  `Exporter.write(_:to:format:scale:backingScale:replacing:)` (throws `ExportError`: `.encodingFailed`,
+  `.writeFailed(String)`, `.fileExists`; replaces an existing file by default, while `replacing: false` stages the
+  bytes beside `url` and moves them into place, so a file that another writer created at that name meanwhile is left
+  alone and `.fileExists` is thrown for the caller to pick another name),
   `Exporter.copyToClipboard(_:scale:backingScale:pasteboard:)` (PNG + TIFF on `NSPasteboard`; pass the same `scale` and
   `backingScale` as the matching `write` and the pasted image has the saved file's pixel size and density).
 - `OutputPaths(historyDirectory:, saveDirectory:, fileNameTemplate:)`: `rawURL(date:)`, `outputURL(date:)`,
@@ -311,7 +316,8 @@ public final class OutputActiveFiles: @unchecked Sendable {
   A missing, corrupt or unknown-version index is treated as empty: it never crashes and never causes a deletion.
 - The editor's drag cache (`Caches/Glint/Drag`, removed when the editor closes) is separate, and a retained Output
   file is never the editor's drag payload. A quick-access thumbnail drag can offer a file that is already in the
-  Output folder, so wrap that drag in `OutputActiveFiles.begin/end` (calls nest) to keep `cleanUp()` from removing
+  Output folder (capture writes it in the background, and a drag that starts before the file exists carries the
+  image itself), so wrap that drag in `OutputActiveFiles.begin/end` (calls nest) to keep `cleanUp()` from removing
   it. `begin` waits briefly if `cleanUp()` is moving that very file to the Trash at that moment, so check that the
   file still exists after calling it.
 

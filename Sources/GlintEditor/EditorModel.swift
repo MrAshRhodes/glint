@@ -102,7 +102,8 @@ final class EditorModel: ObservableObject {
     let isRecording: Bool
     var onBeginEditing: (() -> Void)?
     let backingScale: CGFloat
-    let rawURL: URL?
+    /// The unstyled capture on disk. Capture writes it in the background, so it is set once the file exists.
+    @Published private(set) var rawURL: URL?
     let source: String?
     /// The image is already a finished output, so it opens flattened and its look isn't remembered.
     let isComposed: Bool
@@ -344,6 +345,11 @@ final class EditorModel: ObservableObject {
     var canRedo: Bool { undoManager.canRedo }
 
     private var pixelScale: Double { Double(backingScale) }
+
+    /// Called once the raw capture has been written, which can be after the editor opened: reveals Open Raw.
+    func rawFileSaved(_ url: URL) {
+        rawURL = url
+    }
 
     // MARK: Rendering
 

@@ -95,6 +95,32 @@ struct ExportAndPrefsTests {
         #expect(GlintImageIO.load(url: url)?.width == 8)
     }
 
+    @Test func writingWithoutReplacingLeavesAnExistingFileAlone() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("taken.png")
+        let original = Data([1, 2, 3])
+        try original.write(to: url)
+
+        #expect(throws: ExportError.fileExists) {
+            try Exporter.write(TestImages.solid(8, 8, .red), to: url, replacing: false)
+        }
+        #expect(try Data(contentsOf: url) == original)
+        // The refused write leaves nothing behind beside the file.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["taken.png"])
+
+        // Save As relies on replacing, which stays the default.
+        try Exporter.write(TestImages.solid(8, 8, .red), to: url)
+        #expect(GlintImageIO.load(url: url)?.width == 8)
+    }
+
+    @Test func writingWithoutReplacingCreatesAFreeName() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("sub/free.png")
+        #expect(try Exporter.write(TestImages.solid(8, 8, .red), to: url, replacing: false) == url)
+        #expect(GlintImageIO.load(url: url)?.width == 8)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path) == ["free.png"])
+    }
+
     @Test func clipboardRoundTrip() throws {
         let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
         #expect(Exporter.copyToClipboard(TestImages.solid(12, 9, .red), pasteboard: pb))
