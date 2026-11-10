@@ -225,6 +225,7 @@ revisions, displays and input path when comparing.
 | `CaptureImage` | One ScreenCaptureKit screenshot call. |
 | `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
 | `RawWrite` | Writing the raw screenshot. |
+| `Recognize` | One text-recognition pass over an image: automatic redaction, Detect Text or Capture Text. A capture is recognised once per set of redaction settings, so a capture that is redacted and then edited shows one interval, not two. |
 | `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
 | `OutputWrite` | Saving a direct export, including its encode. |
 | `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite` and `export.drag`. The clipboard's PNG encode starts in the background right after `Pasteboard` begins and its TIFF encode runs when an app asks for it, so neither is nested in `Pasteboard`; a save that reuses the clipboard's PNG has no `EncodePNG` of its own. |
@@ -472,6 +473,33 @@ PERF_OVERLAY_FIRST_DRAW_MAX_MS=3000 PERF_EXPORT_P95_MS=5000 \
   node .github/scripts/perf-guard.cjs --overlay full=<full summary.json> --overlay damage=<damage summary.json> \
     --export .build/export-summary.json
 ```
+
+### Profiling the editor render
+
+Every preview, copy and export of a capture renders it again, so the editor keeps what a change of look doesn't
+touch: `RenderCache` holds the capture's sRGB copy and the capture with its annotations burned in, and
+`ImageFileCache` holds decoded background, wallpaper and watermark images until their files change. A bounded,
+permission-free CPU comparison also works with Command Line Tools:
+
+```sh
+Scripts/benchmark-editor-render.sh compare origin/main  # interleaved: that revision's GlintCore vs. the working tree
+Scripts/benchmark-editor-render.sh baseline HEAD        # one side only, from immutable git sources
+Scripts/benchmark-editor-render.sh current              # one side only, a snapshot of the working tree
+```
+
+The `swiftc -O` harness compiles each variant's `Sources/GlintCore` with `Scripts/EditorRenderBenchmark.swift` into one
+module and runs every scenario in a fresh process on a synthetic capture that is never shown (`SIZE`, default
+`5120x2880`; `SOURCE=p3|srgb`, default `p3`): a padding drag with 0, 12 or 40 annotations, a shadow drag and an
+annotation drag with 12, a padding drag with a magnifier among the annotations (its lens snapshot is never cached, so
+that case always bakes again), a cycle through every background kind including the desktop wallpaper, a
+full-resolution export right after a preview, and a `stages` run that times conversion, annotation baking,
+composition, file decoding and stand-ins for the thumbnail and the present step separately. `ROUNDS=1..30`
+(default 5) and `FRAMES=2..500` (default 24) bound the run; the first frame of each process is reported apart from
+the warm ones, with peak memory. Each run keeps a manifest (host, toolchain, load average before and after, source
+hashes), the raw `samples.jsonl` and a percentile `summary.json` under `.build/benchmark/editor-render-*`. The numbers
+are offscreen CPU time and memory on one host, **not** main-thread stalls, frame pacing, window-server presentation
+or input latency. Run comparisons with other builds and heavy background work stopped, and check the live editor by
+hand.
 
 ## Command Line Tools only
 

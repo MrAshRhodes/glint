@@ -265,19 +265,23 @@ final class CapturePipeline {
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
                 saveRaw: Bool, clipboardOnly: Bool = false, displayID: CGDirectDisplayID? = nil) async {
         let redactionOptions = prefs.autoRedact
-            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, padding: 3)
+            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, backingScale: scale)
             : nil
         services.sound()
         let raw = RawCapture(url: existingRaw)
         if saveRaw, prefs.saveRaw { saveRawCapture(image, backingScale: scale, as: raw) }
         var working = image
+        // What the editor and a direct export's Edit action are told, so neither reads the same text again.
+        var redaction = RedactionAnalysis.notRequested
         if let opts = redactionOptions {
             let redactions: [Annotation]
             while true {
                 do {
                     let lines = try await services.recognize(image, opts.recognizer)
                     guard !Task.isCancelled else { return }
-                    redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
+                    let outcome = AutoRedact.analyse(lines, options: opts, imageSize: image.pixelSize)
+                    redactions = outcome.annotations
+                    redaction = outcome.analysis
                     break
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -301,10 +305,10 @@ final class CapturePipeline {
         // A cancelled capture task must not publish output that finished late.
         guard !Task.isCancelled else { return }
         if prefs.openEditorAfterCapture && !clipboardOnly {
-            openEditor(image: working, scale: scale, raw: raw, source: source)
+            openEditor(image: working, scale: scale, raw: raw, source: source, redaction: redaction)
         } else {
             await exportDirectly(image: working, scale: scale, raw: raw, source: source, clipboardOnly: clipboardOnly,
-                                 displayID: displayID)
+                                 displayID: displayID, redaction: redaction)
         }
     }
 
@@ -353,7 +357,7 @@ final class CapturePipeline {
     /// background: its URL, the Recent list and the notification follow once it exists, so nothing claims a save that
     /// has not happened. Everything the export depends on is read here, so later preference changes don't alter it.
     private func exportDirectly(image: CGImage, scale: CGFloat, raw: RawCapture, source: String?, clipboardOnly: Bool,
-                                displayID: CGDirectDisplayID?) async {
+                                displayID: CGDirectDisplayID?, redaction: RedactionAnalysis = .notRequested) async {
         let release = outputQueue.hold()
         defer { release() }
         let settings = settings()
@@ -408,7 +412,7 @@ final class CapturePipeline {
         guard copied || !Task.isCancelled else { return }
         if let thumbnailImage {
             quickAccess.show(QuickAccessItem(id: id, thumbnail: thumbnailImage, image: rendered, displayID: displayID, onEdit: { [weak self] in
-                self?.openEditor(image: image, scale: scale, raw: raw, source: source)
+                self?.openEditor(image: image, scale: scale, raw: raw, source: source, redaction: redaction)
             }, onDragOut: { [weak self] file in
                 self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: file)
             }))
@@ -593,16 +597,18 @@ final class CapturePipeline {
     // MARK: editor
 
     /// Opens the editor for a fresh capture. Its raw file may not be written yet; the editor is told when it is.
-    private func openEditor(image: CGImage, scale: CGFloat, raw: RawCapture, source: String?) {
-        let controller = openEditor(image: image, scale: scale, rawURL: raw.url, source: source)
+    private func openEditor(image: CGImage, scale: CGFloat, raw: RawCapture, source: String?,
+                            redaction: RedactionAnalysis = .notRequested) {
+        let controller = openEditor(image: image, scale: scale, rawURL: raw.url, source: source, redaction: redaction)
         raw.attach(controller)
     }
 
     @discardableResult
     func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                    restored: EditorRestoreState? = nil) -> EditorWindowController {
+                    restored: EditorRestoreState? = nil,
+                    redaction: RedactionAnalysis = .notRequested) -> EditorWindowController {
         let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed,
-                                    restored: restored)
+                                    restored: restored, redaction: redaction)
         let controller = EditorWindowController(context: context, preferences: prefs, presetStore: presetStore)
         editors.append(controller)
         controller.onClose = { [weak self, weak controller] in

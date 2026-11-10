@@ -27,7 +27,8 @@ public enum CaptureTiming {
     }
 
     enum Stage: String, CaseIterable, Sendable {
-        /// The ScreenCaptureKit content query every capture starts with.
+        /// The ScreenCaptureKit content every capture starts with: the kept snapshot when it can serve the capture,
+        /// else a new query, so a warm run times what a capture pays rather than a query it would skip.
         case shareableContent = "shareable_content"
         /// One display grab from that content, as the frozen overlay background does it.
         case displayGrab = "display_grab"

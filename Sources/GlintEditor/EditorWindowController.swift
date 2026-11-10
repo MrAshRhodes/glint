@@ -834,6 +834,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     public func windowWillClose(_ notification: Notification) {
         isClosed = true
+        model.close()
         tracking?.shutdown()
         clearRetry()
         canvas.endEditing()

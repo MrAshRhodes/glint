@@ -21,11 +21,33 @@ public enum DesktopWallpaperError: LocalizedError, Equatable {
 }
 
 public enum DesktopWallpaper {
+    /// The file behind the menu-bar display's current Space wallpaper, found without decoding it so the decode can
+    /// run off the main thread.
+    @MainActor
+    public static func currentURL() -> URL? {
+        guard let screen = NSScreen.screens.first else { return nil }
+        return NSWorkspace.shared.desktopImageURL(for: screen)
+    }
+
     /// The menu-bar display's current Space, independent of which app window has focus.
     @MainActor
     public static func current() -> Result<CGImage, DesktopWallpaperError> {
-        guard let screen = NSScreen.screens.first else { return .failure(.unavailable) }
-        return load(url: NSWorkspace.shared.desktopImageURL(for: screen))
+        load(url: currentURL())
+    }
+
+    /// `load(url:)`, kept in `cache` until the wallpaper file changes. Failures are not kept. The primary image is
+    /// decoded here, so it is kept apart from a plain load of the same file, which reads the first image.
+    public static func load(url: URL?, using cache: ImageFileCache) -> Result<CGImage, DesktopWallpaperError> {
+        guard let url, url.isFileURL else { return load(url: url) }
+        var failure: DesktopWallpaperError?
+        let image = cache.image(at: url, variant: "wallpaper") { file in
+            switch load(url: file) {
+            case .success(let image): return image
+            case .failure(let error): failure = error; return nil
+            }
+        }
+        if let image { return .success(image) }
+        return .failure(failure ?? .unreadable(url.lastPathComponent))
     }
 
     /// Reads only the wallpaper file, never a capture of desktop windows or icons.

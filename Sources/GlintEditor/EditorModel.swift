@@ -88,10 +88,37 @@ enum TextSizeVariant: Double, CaseIterable {
 
 enum ZOrderMove { case forward, backward, front, back }
 
+/// Why the editor refuses to produce output.
+enum EditorError: LocalizedError, Equatable {
+    /// The first automatic redaction pass has not finished, so the pixels may still hold what it is about to cover.
+    case redactionPending
+
+    var errorDescription: String? {
+        switch self {
+        case .redactionPending:
+            return "Glint is still checking this capture for sensitive information. Try again in a moment."
+        }
+    }
+}
+
 struct Preview {
     var image: CGImage
     var layout: RenderLayout
     var mapper: CanvasMapper
+}
+
+/// The capture placed on the canvas where the composed preview will put it, without composing anything.
+struct ProvisionalPreview {
+    var frame: ProvisionalFrame
+    var mapper: CanvasMapper
+}
+
+/// Moments in the editor's opening that `EditorModel.milestones` times from when the model was created.
+enum EditorMilestone: Hashable {
+    /// An image of the capture, provisional or composed, was first drawn on the canvas.
+    case firstImage
+    /// The first composed preview was published.
+    case composedPreview
 }
 
 enum ZoomAreaEditPhase { case began, changed, ended }
@@ -125,11 +152,15 @@ final class EditorModel: ObservableObject {
                 preferences.lastRenderSettings = settings
                 preferences.autoBalance = settings.autoBalance
             }
+            refreshProvisional()
             requestRender()
         }
     }
     @Published private(set) var annotations: [Annotation] = [] {
-        didSet { requestRender() }
+        didSet {
+            refreshProvisional()
+            requestRender()
+        }
     }
     /// Always empty while a zoom area is being edited, so Delete, nudges and other selection commands can't
     /// touch annotations the canvas isn't showing handles for.
@@ -172,6 +203,16 @@ final class EditorModel: ObservableObject {
         }
     }
     @Published private(set) var preview: Preview?
+    /// Where the capture will sit once composed, so the canvas can show it before the first composed preview
+    /// exists. Nil once that preview is published, when no placement can be predicted, and while redaction is pending.
+    @Published private(set) var provisional: ProvisionalPreview?
+    /// The editor is still running automatic redaction on a capture that hasn't been redacted yet, so nothing drawn
+    /// from its pixels is shown or published until that pass finishes.
+    @Published private(set) var awaitsRedaction = false
+    /// What automatic redaction found in this capture: the capture pipeline's finished answer when the editor reused
+    /// it, otherwise the editor's own pass. `pending` while a pass runs, `failed` when recognition failed, and
+    /// `cancelled` once the editor closed mid-pass.
+    @Published private(set) var redactionAnalysis: RedactionAnalysis = .notRequested
     @Published private(set) var wallpaperProblem: String?
     @Published var presets: [Preset] = []
     @Published var statusMessage: String?
@@ -188,19 +229,40 @@ final class EditorModel: ObservableObject {
     /// Desired preview size in device pixels (set by the canvas).
     var previewTarget = CGSize(width: 1800, height: 1200)
 
-    private var backgroundCache: [String: CGImage] = [:]
+    /// Keeps what a preview, copy or export repeats for this capture, so a change that doesn't touch it doesn't redo it.
+    let renderCache: RenderCache
     private let recognizeText: (CGImage) async throws -> [RecognizedLine]
-    private let wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError>
+    /// Replaces the default wallpaper lookup, which decodes the file off the main thread. Tests inject one.
+    private let wallpaperProvider: (@MainActor () -> Result<CGImage, DesktopWallpaperError>)?
+    private let wallpaperURL: @MainActor () -> URL?
     private var wallpaperImage: CGImage?
+    /// The wallpaper being decoded off the main thread, and the request that identifies its result.
+    private var wallpaperLoad: (request: Int, url: URL?)?
+    private var wallpaperRequests = 0
     private var rendering = false
     /// `editor.open`: from this model's creation to its first finished preview.
     private var openSignpost: CaptureSignposts.Interval?
     private var dirty = false
     private var scheduled = false
+    /// Cleared once the first composed preview exists or the first render fails.
+    private var providesProvisional = false
+    private let created = ProcessInfo.processInfo.systemUptime
+    /// Seconds from creating the model to each opening milestone reached so far.
+    private(set) var milestones: [EditorMilestone: TimeInterval] = [:]
+    var onMilestone: ((EditorMilestone, TimeInterval) -> Void)?
     private var interactionBase: [Annotation]?
     private var styleCoalesceKey: String?
     private var styleEditDate = Date.distantPast
     private var autoRedactIDs: Set<UUID> = []
+    /// The latest automatic redaction pass, and the one that applies its result: a pass that finds a newer one, or a
+    /// closed editor, when its recognition returns discards what it read.
+    private var redactionGeneration = 0
+    /// The pass started when the editor opened, kept so closing the editor can cancel it.
+    private var redactionPass: Task<Void, Never>?
+    private var isClosed = false
+    /// The text last read from `image`, so redacting again (with other categories) or Detect Text doesn't read the
+    /// same pixels twice.
+    private var recognition: (image: CGImage, lines: [RecognizedLine])?
 
     typealias Renderer = @Sendable (_ image: CGImage, _ settings: RenderSettings, _ annotations: [Annotation],
                                     _ backingScale: CGFloat, _ backgroundImage: CGImage?,
@@ -209,8 +271,16 @@ final class EditorModel: ObservableObject {
         try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
                                       backgroundImage: background, wallpaper: wallpaper, annotationTime: time)
     }
+    /// `compositorRenderer` that reuses `cache` between renders of the same capture; pixels are identical.
+    static func cachedRenderer(_ cache: RenderCache) -> Renderer {
+        { image, settings, annotations, scale, background, wallpaper, time in
+            try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations,
+                                          backingScale: scale, backgroundImage: background, wallpaper: wallpaper,
+                                          annotationTime: time, cache: cache)
+        }
+    }
     /// Composes previews and final output; replaceable so tests can force render failures.
-    var renderer: Renderer = EditorModel.compositorRenderer
+    var renderer: Renderer
 
     typealias PresentationRenderer = @Sendable (_ image: CGImage, _ settings: RenderSettings,
                                                 _ annotations: [Annotation], _ backingScale: CGFloat,
@@ -243,8 +313,12 @@ final class EditorModel: ObservableObject {
 
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
-         wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
+         wallpaperProvider: (@MainActor () -> Result<CGImage, DesktopWallpaperError>)? = nil,
+         wallpaperURL: @escaping @MainActor () -> URL? = { DesktopWallpaper.currentURL() }) {
         openSignpost = CaptureSignposts.begin("editor.open")
+        let cache = RenderCache()
+        self.renderCache = cache
+        self.renderer = EditorModel.cachedRenderer(cache)
         self.image = context.image
         self.isRecording = context.isRecording
         self.backingScale = max(context.backingScale, 1)
@@ -259,6 +333,7 @@ final class EditorModel: ObservableObject {
         self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
+        self.wallpaperURL = wallpaperURL
         var initialSettings = design?.settings ?? context.restored?.settings
             ?? (context.isComposed ? .passThrough : EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore))
         if context.isRecording { initialSettings.autoBalance = false }
@@ -273,14 +348,31 @@ final class EditorModel: ObservableObject {
         self.presets = presetStore.presets
         self.designMakeDefault = designIsDefault
         if design == nil, let restored = context.restored { self.annotations = restored.annotations }
+        let reusesRedaction = automaticallyRedacts
+            && context.redaction.isReusable(for: RedactionAnalysis.Settings(detector: redactOptions))
+        awaitsRedaction = automaticallyRedacts && !reusesRedaction
+        if awaitsRedaction {
+            redactionAnalysis = .pending
+        } else {
+            // Nothing is running here, so a `pending` handed in has no pass to finish it.
+            redactionAnalysis = context.redaction.isPending ? .notRequested : context.redaction
+            if reusesRedaction { lastRedactSummary = context.redaction.summary }
+        }
+        providesProvisional = design == nil && !isRecording
+        refreshProvisional()
         refreshWallpaper()
-        requestRender()
-        if preferences.autoRedact, design == nil, !isComposed, !isRecording, !isRestored { Task { await self.runAutoRedact(announce: false) } }
+        requestInitialRender()
+        if awaitsRedaction { redactionPass = Task { [weak self] in await self?.runInitialAutoRedact() } }
     }
 
     deinit { CaptureSignposts.end(openSignpost, .cancelled) }
 
     // MARK: State helpers
+
+    /// A normal capture is scanned for sensitive information when the editor opens, if the preference is on.
+    private var automaticallyRedacts: Bool {
+        preferences.autoRedact && design == nil && !isComposed && !isRecording && !isRestored
+    }
 
     /// A normal capture remembers its look for the next one; a preset designer, reopened image or project must not
     /// overwrite it.
@@ -356,11 +448,46 @@ final class EditorModel: ObservableObject {
     private func refreshWallpaper() {
         wallpaperImage = nil
         wallpaperProblem = nil
+        wallpaperLoad = nil
         guard settings.usesDesktopWallpaper else { return }
-        switch wallpaperProvider() {
+        if let wallpaperProvider {
+            apply(wallpaperProvider())
+            return
+        }
+        // A large wallpaper takes long enough to decode that doing it here would stall the window, so it is read off
+        // the main thread. Previews wait for it; an export that needs it sooner decodes it itself.
+        wallpaperRequests += 1
+        let request = wallpaperRequests, url = wallpaperURL(), files = renderCache.images
+        wallpaperLoad = (request, url)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = DesktopWallpaper.load(url: url, using: files)
+            await self?.finishWallpaper(result, request: request)
+        }
+    }
+
+    private func apply(_ wallpaper: Result<CGImage, DesktopWallpaperError>) {
+        switch wallpaper {
         case .success(let image): wallpaperImage = image
         case .failure(let error): wallpaperProblem = error.localizedDescription
         }
+    }
+
+    /// A result for a wallpaper that was switched off, requested again or already decoded for an export is ignored.
+    private func finishWallpaper(_ result: Result<CGImage, DesktopWallpaperError>, request: Int) {
+        guard wallpaperLoad?.request == request else { return }
+        wallpaperLoad = nil
+        apply(result)
+        dirty = true
+        kick()
+    }
+
+    /// Decodes a wallpaper that is still loading now, from the cache if the other thread just finished it, so an
+    /// export never falls back to the plain background.
+    private func resolveWallpaperNow() {
+        guard let pending = wallpaperLoad else { return }
+        wallpaperLoad = nil
+        apply(DesktopWallpaper.load(url: pending.url, using: renderCache.images))
+        requestRender()
     }
 
     func chooseBackground(_ background: BackgroundStyle) {
@@ -382,6 +509,67 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// The first render doesn't wait out the debounce `requestRender()` adds, since nothing is on screen to coalesce
+    /// with. It still hops to a later main-actor turn, so a renderer replaced right after `init` is the one used.
+    private func requestInitialRender() {
+        dirty = true
+        guard !scheduled else { return }
+        scheduled = true
+        Task { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.kick()
+        }
+    }
+
+    /// Places the capture on the canvas the way the composed preview will, while that preview is still rendering.
+    private func refreshProvisional() {
+        guard providesProvisional, preview == nil, !awaitsRedaction,
+              let frame = ProvisionalFrame(image: image, settings: settings, annotations: annotations,
+                                           backingScale: backingScale) else {
+            if provisional != nil { provisional = nil }
+            return
+        }
+        provisional = ProvisionalPreview(frame: frame, mapper: CanvasMapper(region: frame.region,
+                                                                            contentRect: frame.layout.contentRect))
+    }
+
+    private func runInitialAutoRedact() async {
+        await runAutoRedact(announce: false)
+    }
+
+    /// Ends the wait for automatic redaction, whether or not it found anything, and renders what it left.
+    private func releaseRedactionHold() {
+        guard awaitsRedaction else { return }
+        awaitsRedaction = false
+        refreshProvisional()
+        dirty = true
+        kick()
+    }
+
+    /// Ends this editor's automatic redaction for good. A pass still running is cancelled and what it reads is
+    /// discarded, so it can never be applied to a capture that is no longer on screen; the analysis is `cancelled`
+    /// and, if the first pass had not finished, the capture stays held back so nothing unredacted is drawn or exported.
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        redactionGeneration += 1
+        redactionPass?.cancel()
+        redactionPass = nil
+        if redactionAnalysis.isPending { redactionAnalysis = .cancelled }
+        isBusy = false
+    }
+
+    private func mark(_ milestone: EditorMilestone) {
+        guard milestones[milestone] == nil else { return }
+        let elapsed = ProcessInfo.processInfo.systemUptime - created
+        milestones[milestone] = elapsed
+        onMilestone?(milestone, elapsed)
+    }
+
+    /// Called by the canvas after it draws an image of the capture, provisional or composed.
+    func noteImageDrawn() { mark(.firstImage) }
+
     private func previewScale() -> CGFloat {
         let size = image.pixelSize
         let est = Compositor.layout(contentSize: size, insetApplied: settings.inset >= 1, settings: settings,
@@ -392,21 +580,23 @@ final class EditorModel: ObservableObject {
         return max(0.05, min(1, fit))
     }
 
-    private func backgroundImage(for settings: RenderSettings) -> CGImage? {
+    private func backgroundURL(for settings: RenderSettings) -> URL? {
         guard case .image(let path, _) = settings.background else { return nil }
-        if let cached = backgroundCache[path] { return cached }
-        let loaded = GlintImageIO.load(url: URL(fileURLWithPath: path))
-        if let loaded { backgroundCache[path] = loaded }
-        return loaded
+        return URL(fileURLWithPath: path)
+    }
+
+    /// The background image file, decoded again only when the file changed. Previews read it off the main thread.
+    private func backgroundImage(for settings: RenderSettings) -> CGImage? {
+        backgroundURL(for: settings).flatMap { renderCache.images.image(at: $0) }
     }
 
     private func kick() {
-        guard !rendering, dirty else { return }
+        guard !rendering, dirty, !awaitsRedaction, wallpaperLoad == nil else { return }
         dirty = false
         rendering = true
         var s = settings
         s.outputScale = settings.outputScale * Double(previewScale())
-        let bg = backgroundImage(for: settings)
+        let backgroundFile = backgroundURL(for: settings), files = renderCache.images
         let wallpaper = wallpaperImage
         let img = image, scale = backingScale
         let anns = annotations.filter { $0.id != editingID }
@@ -414,6 +604,7 @@ final class EditorModel: ObservableObject {
         let renderer = self.renderer
         let activePresentation = previewPresentation, renderPresentation = self.presentationRenderer
         Task.detached(priority: .userInitiated) { [weak self] in
+            let bg = backgroundFile.flatMap { files.image(at: $0) }
             let r: RenderResult
             do {
                 r = try CaptureSignposts.measure("editor.render") {
@@ -438,6 +629,9 @@ final class EditorModel: ObservableObject {
         CaptureSignposts.end(openSignpost)
         openSignpost = nil
         preview = p
+        providesProvisional = false
+        if provisional != nil { provisional = nil }
+        mark(.composedPreview)
         rendering = false
         if dirty { kick() }
     }
@@ -446,6 +640,10 @@ final class EditorModel: ObservableObject {
         CaptureSignposts.end(openSignpost, .failed)
         openSignpost = nil
         statusMessage = message
+        if preview == nil {
+            providesProvisional = false
+            if provisional != nil { provisional = nil }
+        }
         rendering = false
         if dirty { kick() }
     }
@@ -460,15 +658,19 @@ final class EditorModel: ObservableObject {
     }
 
     /// Full-resolution output with annotations visible at the current recording time burned in.
-    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
+    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels, and throws
+    /// `EditorError.redactionPending` while the first automatic redaction pass has not finished.
     func renderFinal() throws -> CGImage {
         try finalRenderer()()
     }
 
     /// Takes every input `renderFinal` reads now, so the render can run off the main actor while the editor goes on
     /// taking edits: nothing changed after this call alters the image it makes. Like `renderFinal` it throws rather
-    /// than returning unredacted pixels.
+    /// than returning unredacted pixels, and throws `EditorError.redactionPending` while the first automatic
+    /// redaction pass has not finished.
     func finalRenderer() -> @Sendable () throws -> CGImage {
+        guard !awaitsRedaction else { return { throw EditorError.redactionPending } }
+        resolveWallpaperNow()
         let image = image, settings = settings, annotations = annotations, scale = backingScale
         let background = backgroundImage(for: settings), wallpaper = wallpaperImage
         let time = isRecording ? recordingTime : nil
@@ -493,6 +695,7 @@ final class EditorModel: ObservableObject {
 
     /// Capture every rendering input now; subsequent edits or wallpaper changes cannot alter an in-flight clip.
     func recordingFrameRenderer() -> RecordingExporter.FrameRenderer {
+        resolveWallpaperNow()
         let settings = settings, annotations = annotations, scale = backingScale
         let background = backgroundImage(for: settings), wallpaper = wallpaperImage
         let presentation = exportPresentation
@@ -993,38 +1196,60 @@ final class EditorModel: ObservableObject {
             lastRedactSummary = "Automatic redaction is unavailable for recordings. Manual annotations stay fixed across the whole clip; review every frame before sharing."
             return
         }
+        guard !isClosed else { return }
+        redactionGeneration += 1
+        let pass = redactionGeneration
+        let source = image
+        redactionAnalysis = .pending
         isBusy = true
-        defer { isBusy = false }
+        defer { if pass == redactionGeneration { isBusy = false } }
         preferences.autoRedactOptions = redactOptions
-        guard let lines = try? await recognizeText(image) else {
-            lastRedactSummary = "Text recognition failed."
+        let lines: [RecognizedLine]
+        do {
+            lines = try await recognizedLines(in: source)
+        } catch {
+            guard isCurrent(pass, reading: source) else { return }
+            redactionAnalysis = .failed("Text recognition failed.")
+            lastRedactSummary = redactionAnalysis.summary
+            releaseRedactionHold()
             return
         }
+        guard isCurrent(pass, reading: source) else { return }
         ocrLines = lines
-        var options = AutoRedactOptions(detector: redactOptions, color: redactColor,
-                                        padding: 3 * pixelScale)
-        options.recognizer = TextRecognizer.Options()
-        let findings = SensitiveInfoDetector(options: redactOptions).findings(in: lines)
-        var made = AutoRedact.annotations(for: lines, options: options, imageSize: image.pixelSize)
+        let options = AutoRedactOptions(detector: redactOptions, color: redactColor, backingScale: backingScale)
+        let outcome = AutoRedact.analyse(lines, options: options, imageSize: source.pixelSize)
+        var made = outcome.annotations
         var z = nextZ()
         for i in made.indices { made[i].z = z; z += 1 }
-        var counts: [SensitiveCategory: Int] = [:]
-        for f in findings { counts[f.category, default: 0] += 1 }
-        let summary = counts.sorted { $0.key.rawValue < $1.key.rawValue }
-            .map { "\($0.key.displayName) ×\($0.value)" }.joined(separator: ", ")
-        lastRedactSummary = made.isEmpty ? "No sensitive information found." : "Redacted \(made.count): \(summary)"
+        redactionAnalysis = outcome.analysis
+        lastRedactSummary = outcome.analysis.summary
 
         var all = annotations.filter { !autoRedactIDs.contains($0.id) }
         all.append(contentsOf: made)
         autoRedactIDs = Set(made.map(\.id))
         setAnnotations(all, actionName: "Auto-Redact")
+        releaseRedactionHold()
         if announce, made.isEmpty { NSSound.beep() }
+    }
+
+    /// True while `pass` is still the latest automatic redaction and this editor still shows `source`; a result for
+    /// anything else must not be applied.
+    private func isCurrent(_ pass: Int, reading source: CGImage) -> Bool {
+        pass == redactionGeneration && !isClosed && image === source
+    }
+
+    /// The text of `source`, read once: asking again for the same pixels returns what was read.
+    private func recognizedLines(in source: CGImage) async throws -> [RecognizedLine] {
+        if let held = recognition, held.image === source { return held.lines }
+        let lines = try await recognizeText(source)
+        recognition = (source, lines)
+        return lines
     }
 
     func detectText() async {
         isBusy = true
         defer { isBusy = false }
-        ocrLines = (try? await TextRecognizer.recognize(in: image)) ?? []
+        ocrLines = (try? await recognizedLines(in: image)) ?? []
         statusMessage = ocrLines.isEmpty ? "No text detected." : "Detected \(ocrLines.count) lines."
     }
 

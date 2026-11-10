@@ -9,7 +9,7 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
 - `RGBAColor(r,g,b,a)` (0…1) · `RGBAColor(hex:"#RRGGBB[AA]")?` · `.hexString` · `.cgColor` · `.nsColor` ·
   `RGBAColor.white/.black/.red/.clear`.
 - `ColorSpaces.sRGB`; `GlintImageIO.load(url:) -> CGImage?` (EXIF-orientation applied), `GlintImageIO.load(data:)`,
-  `CGImage.glintSRGB() -> CGImage` (convert), `GlintBitmap.makeContext(width:height:)`,
+  `CGImage.glintSRGB() -> CGImage` (convert; returns the image itself when `isGlintSRGB`), `GlintBitmap.makeContext(width:height:)`,
   `CGImage.glintCropped(to: CGRect)`, `CGImage.glintThumbnail(maxPixelSide:) -> CGImage` (a downscaled copy with the
   same aspect ratio and transparency; an image that already fits is returned as is, never enlarged).
 
@@ -102,6 +102,37 @@ and the cache file's URL, which are fulfilled when the render and the file write
 is handed to the destination and the editor beeps, shows the failure and offers **Retry**. Save and Share still render
 on the main actor.
 
+Rendering one capture repeatedly (an editor's previews, copies and exports) can share its look-independent work.
+Pass one `RenderCache()` as the final `cache:` argument of `render`/`renderDetailed` and it keeps the capture's sRGB copy
+and the capture with its annotations burned in, so a change of only the background, shadow, padding, window frame,
+rotation, tilt, watermark or output scale composes without converting or baking again. The burned-in image is replaced
+when the capture, the annotations, the auto-balance crop or its fill change. A cache holds at most `maxBytes`
+(default 256 MB) of pixels, is safe to use from several threads at once, never keeps a failed bake (so a failure still
+throws `annotationsNotApplied`), is bypassed for recording frames (`annotationTime`), and does not keep a bake that
+includes a magnifier (its lens holds further full-size images), which is burned in again each time. Pixels are
+identical with or without a cache. `cache.images` is an `ImageFileCache` (`image(at:variant:load:)`, usable on its own): it
+keeps the decoded `.image` background and image watermark files, at most `capacity` (default 3) of them within
+`maxBytes`, until the file is written to or replaced (its modification or change time, size or identity changes), and
+never keeps a file that failed to load. `variant` names how a file is decoded, so two decodes of one file that can
+differ are kept apart.
+`DesktopWallpaper.currentURL()` finds the wallpaper file without decoding it and `DesktopWallpaper.load(url:using:)`
+decodes it through an `ImageFileCache`, so an editor can read it off the main thread.
+
+`ProvisionalFrame(image:settings:annotations:backingScale:maxPixels:)` is the editor's first frame: where a capture
+sits in the composed preview, worked out without composing anything. It shares `Compositor.layout` and the
+auto-balance crop with the renderer, so its `layout`, `region` and orientation match what `renderDetailed` returns for
+the same input, and `draw(_:in:scale:)` places the oriented, cropped capture in `layout.contentRect`; the background,
+shadow, frame and the card's corners are left to the composed preview. It is `nil` whenever the composed
+preview could differ from the capture beyond that: any annotation (redactions are burned in), a tilt, or a capture
+over `maxPixels` (40 million). As in the renderer, only captures of up to `AutoBalance.maxPixels` are scanned for an
+auto-balance border, and only those are normalised to sRGB first, so a large capture costs nothing extra.
+The editor draws the frame until its first composed preview exists, and holds the capture back, drawing neither
+frame nor preview, while its own automatic redaction pass is pending, unless `EditorContext.redaction` is a finished
+`RedactionAnalysis` taken with the editor's settings: the capture pipeline already burned the redactions in and read
+the text, so the editor draws at once and does not read it again (see "OCR / redaction").
+While that first pass is pending, `EditorModel.renderFinal()` throws `EditorError.redactionPending` (Copy, Save, Share
+and drag-out report it with a retry), so nothing unredacted is published.
+
 ## Annotations
 `Annotation(id,z,kind,style,visibleRange: AnnotationTiming? = nil)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
 .ellipse(CGRect) .pen([CGPoint]) .highlighter([CGPoint]) .text(origin,String,maxWidth) .counter(center,Int)
@@ -187,14 +218,40 @@ are local to the editor session; automatic redaction remains plain opaque Solid.
   `rect(for: Range<String.Index>)`).
   Images taller than 4,096 px are read in 4,096 px bands with a 256 px overlap; boxes are mapped back to the
   full image and lines repeated in an overlap are removed, so OCR and auto-redaction cover tall scrolling captures.
+  `TextRecognizer.statistics` (`passes`, `failures`, `seconds`, `inFlight`) counts recognition passes in the
+  process: one per `recognize`/`recognizeSync` call, however many bands. It only grows and other work adds to it, so
+  read it before and after an action and subtract. Each pass is also a `Recognize` signpost interval (see
+  CONTRIBUTING.md). `TextRecognizer.Options` is `Equatable`.
 - `SensitiveCategory` (`email, phone, creditCard, ipAddress, apiKey, ssn, url, macAddress, custom`),
   `SensitiveInfoOptions(categories:, customWords:, caseSensitive:)` (+ `.default`, `.all`),
   `SensitiveInfoDetector(options:).matches(in: String) -> [SensitiveMatch]`,
   `.findings(in: [RecognizedLine]) -> [SensitiveFinding]` (rect + category), `Luhn.isValid(_:)`.
-- `AutoRedactOptions(detector:, color:, padding:, recognizer:)`;
-  `AutoRedact.run(_ image:, options:) async -> [Annotation]`; `AutoRedact.annotations(for lines:, options:)`.
+- `AutoRedactOptions(detector:, color:, padding:, recognizer:)` and `AutoRedactOptions(detector:, color:,
+  backingScale:, recognizer:)`, which takes its padding from `RedactionPolicy`;
+  `AutoRedact.run(_ image:, options:) async -> [Annotation]` (an OCR failure yields no annotations, so it is not for
+  output that must not leak); `AutoRedact.annotations(for lines:, options:)`;
+  `AutoRedact.analyse(_ lines:, options:, imageSize:) -> (annotations:, analysis:)`.
   Automatic redaction always generates solid `.redact` annotations, independent of the manual mode.
   Detection is a first pass, not a guarantee; review the exported image before sharing.
+- `RedactionPolicy` is how recognised text becomes covered pixels, shared by the capture pipeline, the editor and
+  `EditorHeadless`: Vision's normalised boxes (origin bottom-left) become image pixels with a top-left origin
+  (`x * width`, `(1 - maxY) * height`); a match grows by `RedactionPolicy.padding(backingScale:)`, which is
+  `paddingPoints` (3) logical points, so 3 px at 1× and 6 px at 2×; the result is clipped to the image and dropped when
+  nothing is left. A capture is therefore covered identically whichever of them redacts it.
+- `RedactionAnalysis` (`notRequested`, `pending`, `noMatches(Settings)`, `matches(Findings, Settings)`,
+  `failed(String)`, `cancelled`) is the state of one capture's automatic redaction. `Settings` is the detector options
+  plus the recogniser options (not the colour or padding); `Findings` has counts only, never the recognised text.
+  `isReusable(for:)` is true only for a finished answer (`noMatches`/`matches`) with equal settings. The capture
+  pipeline reads the text once and passes its finished analysis to the editor in `EditorContext.redaction`, both when
+  it opens the editor itself and when a direct export's thumbnail offers Edit, so the editor reuses it instead of
+  reading the already-redacted pixels again. A `pending`, `failed`, `cancelled` or `notRequested` analysis, or one taken
+  with other settings, is not reused and the editor runs its own pass, holding the capture back until it finishes.
+  `EditorModel` keeps the latest analysis as `redactionAnalysis` and discards the result of a pass that was
+  superseded, or that finishes after the editor closed (`EditorModel.close()`, called when its window closes, which
+  leaves it `cancelled`).
+  `EditorHeadless.render` follows the same rules and now throws when recognition fails instead of returning
+  unredacted pixels. The raw file, when saved, is written from the original capture before any redaction and is
+  unchanged by it.
 
 API migration: `AutoRedactOptions.style` and its initializer argument have been removed. Remove `style:`
 from automatic-redaction calls. Explicit `.blur` annotations are manual obfuscation;
@@ -237,7 +294,8 @@ is limited to a trigger, a mode label and durations: never coordinates, window t
 - `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` (not when it reuses the clipboard's
   PNG) and `Exporter.copyToClipboard` emits `Pasteboard`, which covers publishing the promise only: the PNG's
   `EncodePNG` runs on a background queue after it, and the TIFF's `EncodeTIFF` only when an app asks for it. Every
-  caller is timed without changing its signature.
+  caller is timed without changing its signature. `TextRecognizer.recognizeSync` emits `Recognize`, one interval per
+  recognition pass.
 
 ## Timing statistics and the export fixture (`TimingStatistics.swift`, `ExportTiming.swift`)
 What `Glint --diagnose --timing` and the CI performance guard share; CONTRIBUTING.md ("Timing diagnostics and the

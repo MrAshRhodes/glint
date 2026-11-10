@@ -237,19 +237,60 @@ enum BackgroundRenderer {
                 y += cell; row += 1
             }
         case .noise:
-            var rng = SplitMix64(seed: p.seed)
-            let grain = max(1, Int(cell))
-            var y = 0
-            while y < Int(rect.height) {
-                var x = 0
-                while x < Int(rect.width) {
-                    let v = Double(rng.next() % 1000) / 1000
-                    ctx.setFillColor(p.foreground.with(alpha: p.foreground.a * v * 0.25).cgColor)
-                    ctx.fill(CGRect(x: x, y: y, width: grain, height: grain))
-                    x += grain
-                }
-                y += grain
+            drawNoise(p, ctx: ctx, width: Int(rect.width), height: Int(rect.height), grain: max(1, Int(cell)))
+        }
+    }
+
+    /// Most cells `drawNoise` sorts at once, which bounds its scratch memory on very large canvases.
+    static let noiseBandCells = 1 << 20
+
+    /// One `grain`-pixel cell per grid position, row by row, each with an alpha from the pattern's seeded sequence.
+    /// Cells never overlap, so filling them grouped by alpha gives the same pixels as filling one at a time, with
+    /// a thousand context changes per band instead of one per cell.
+    static func drawNoise(_ p: PatternStyle, ctx: CGContext, width: Int, height: Int, grain: Int,
+                          bandCells: Int = noiseBandCells) {
+        guard width > 0, height > 0 else { return }
+        let levels = 1000
+        let columns = (width + grain - 1) / grain, rows = (height + grain - 1) / grain
+        let rowsPerBand = max(1, bandCells / columns)
+        var rng = SplitMix64(seed: p.seed)
+        var batch: [CGRect] = []
+        batch.reserveCapacity(4096)
+        var firstRow = 0
+        while firstRow < rows {
+            let bandRows = min(rowsPerBand, rows - firstRow)
+            let count = columns * bandRows
+            var levelOfCell = [UInt16](repeating: 0, count: count)
+            var offsets = [Int](repeating: 0, count: levels + 1)
+            for i in 0..<count {
+                let level = Int(rng.next() % UInt64(levels))
+                levelOfCell[i] = UInt16(level)
+                offsets[level + 1] += 1
             }
+            for level in 0..<levels { offsets[level + 1] += offsets[level] }
+            var next = offsets
+            var cellsByLevel = [UInt32](repeating: 0, count: count)
+            for i in 0..<count {
+                let level = Int(levelOfCell[i])
+                cellsByLevel[next[level]] = UInt32(i)
+                next[level] += 1
+            }
+            for level in 0..<levels where offsets[level] < offsets[level + 1] {
+                let v = Double(level) / Double(levels)
+                ctx.setFillColor(p.foreground.with(alpha: p.foreground.a * v * 0.25).cgColor)
+                var i = offsets[level]
+                while i < offsets[level + 1] {
+                    batch.removeAll(keepingCapacity: true)
+                    while i < offsets[level + 1], batch.count < 4096 {
+                        let cell = Int(cellsByLevel[i])
+                        batch.append(CGRect(x: (cell % columns) * grain, y: (firstRow + cell / columns) * grain,
+                                            width: grain, height: grain))
+                        i += 1
+                    }
+                    ctx.fill(batch)
+                }
+            }
+            firstRow += bandRows
         }
     }
 

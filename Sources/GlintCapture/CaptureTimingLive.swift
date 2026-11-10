@@ -47,7 +47,8 @@ extension CaptureTiming {
         func run(_ stage: Stage) async throws {
             switch stage {
             case .shareableContent:
-                content = try await ImageGrabber.ScreenContent.current(options: options)
+                content = try await ImageGrabber.ScreenContent.current(options: options,
+                                                                       displays: WindowEnumerator.displays())
             case .displayGrab:
                 guard allowScreenCapture else { throw CaptureError.permissionDenied }
                 let displays = WindowEnumerator.displays()

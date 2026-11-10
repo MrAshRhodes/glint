@@ -189,34 +189,45 @@ public enum RedactionStyle: String, Codable, CaseIterable, Sendable {
 public struct AutoRedactOptions: Sendable {
     public var detector: SensitiveInfoOptions
     public var color: RGBAColor
-    /// Extra margin around each box, pixels.
+    /// Extra margin around each box, pixels. `init(detector:color:backingScale:recognizer:)` derives it from
+    /// `RedactionPolicy`, which is what the capture pipeline and the editor use.
     public var padding: Double
     public var recognizer: TextRecognizer.Options
 
     public init(detector: SensitiveInfoOptions = .default,
-                color: RGBAColor = .black, padding: Double = 3, recognizer: TextRecognizer.Options = .init()) {
+                color: RGBAColor = .black, padding: Double = RedactionPolicy.paddingPoints,
+                recognizer: TextRecognizer.Options = .init()) {
         self.detector = detector; self.color = color; self.padding = padding
         self.recognizer = recognizer
     }
 }
 
 public enum AutoRedact {
-    /// OCR + detection; returns redaction annotations in image space. OCR failures yield an empty list.
+    /// OCR + detection; returns redaction annotations in image space. OCR failures yield an empty list, so a caller
+    /// that must not publish unredacted pixels uses `TextRecognizer` and `analyse` instead, which keep a failure
+    /// explicit.
     public static func run(_ image: CGImage, options: AutoRedactOptions = AutoRedactOptions()) async -> [Annotation] {
         guard let lines = try? await TextRecognizer.recognize(in: image, options: options.recognizer) else { return [] }
         return annotations(for: lines, options: options, imageSize: image.pixelSize)
     }
 
-    /// Creates fully opaque solid redactions, never source-derived obfuscation.
+    /// Creates fully opaque solid redactions, never source-derived obfuscation. `RedactionPolicy` describes how a
+    /// finding's box becomes the rect that is covered.
     public static func annotations(for lines: [RecognizedLine], options: AutoRedactOptions = AutoRedactOptions(),
                                    imageSize: CGSize? = nil) -> [Annotation] {
+        covered(lines, options: options, imageSize: imageSize).map(\.annotation)
+    }
+
+    /// Each finding that leaves a cover inside `imageSize`, paired with that cover.
+    static func covered(_ lines: [RecognizedLine], options: AutoRedactOptions,
+                        imageSize: CGSize?) -> [(finding: SensitiveFinding, annotation: Annotation)] {
         let findings = SensitiveInfoDetector(options: options.detector).findings(in: lines)
         let bounds = imageSize.map { CGRect(origin: .zero, size: $0) }
         return findings.enumerated().compactMap { index, f in
             var rect = f.rect.insetBy(dx: -options.padding, dy: -options.padding)
             if let bounds { rect = rect.intersection(bounds) }
             guard !rect.isNull, rect.width > 0, rect.height > 0 else { return nil }
-            return Annotation(z: index, kind: .redact(rect), style: AnnotationStyle(color: options.color))
+            return (f, Annotation(z: index, kind: .redact(rect), style: AnnotationStyle(color: options.color)))
         }
     }
 }

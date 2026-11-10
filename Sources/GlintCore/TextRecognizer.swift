@@ -44,7 +44,7 @@ public struct RecognizedLine: Equatable, Sendable {
 }
 
 public enum TextRecognizer {
-    public struct Options: Sendable {
+    public struct Options: Equatable, Sendable {
         public var languages: [String]
         public var usesLanguageCorrection: Bool
         public var minimumTextHeight: Float
@@ -53,6 +53,55 @@ public enum TextRecognizer {
             self.minimumTextHeight = minimumTextHeight
         }
     }
+
+    /// What the recognition passes of this process have cost so far. A pass is one call to `recognize` or
+    /// `recognizeSync`, so an image read in several bands is still one pass. Read it before and after an action to
+    /// count the passes the action ran; it only grows, and other work in the process adds to it too.
+    public struct Statistics: Equatable, Sendable {
+        /// Passes begun.
+        public var passes = 0
+        /// Passes that ended with an error.
+        public var failures = 0
+        /// Wall-clock seconds spent in passes that have ended.
+        public var seconds = 0.0
+        /// Passes begun and not yet ended.
+        public var inFlight = 0
+    }
+
+    public static var statistics: Statistics { counter.statistics }
+
+    /// Passes start on background queues and are read from anywhere, so the totals sit behind a lock. Tests build
+    /// their own to check the arithmetic without being disturbed by the process-wide one.
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var totals = Statistics()
+
+        var statistics: Statistics {
+            lock.lock()
+            defer { lock.unlock() }
+            return totals
+        }
+
+        /// Records a pass beginning and returns the time to hand to `end`.
+        func begin() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            totals.passes += 1
+            totals.inFlight += 1
+            return DispatchTime.now().uptimeNanoseconds
+        }
+
+        func end(startedAt start: UInt64, failed: Bool) {
+            let elapsed = DispatchTime.now().uptimeNanoseconds &- start
+            lock.lock()
+            defer { lock.unlock() }
+            totals.inFlight -= 1
+            totals.seconds += Double(elapsed) / 1_000_000_000
+            if failed { totals.failures += 1 }
+        }
+    }
+
+    static let counter = Counter()
 
     /// Accurate-mode Vision OCR. Boxes are converted to image pixels with a top-left origin.
     public static func recognize(in image: CGImage, options: Options = Options()) async throws -> [RecognizedLine] {
@@ -70,7 +119,24 @@ public enum TextRecognizer {
     /// Rows shared by neighbouring slices, taller than any line of text, so every line lies whole in one slice.
     public static let bandOverlap = 256
 
+    /// One recognition pass: counted in `statistics` and timed as the `Recognize` signpost interval.
     public static func recognizeSync(in image: CGImage, options: Options = Options()) throws -> [RecognizedLine] {
+        try recognizeSync(in: image, options: options, counter: counter)
+    }
+
+    static func recognizeSync(in image: CGImage, options: Options, counter: Counter) throws -> [RecognizedLine] {
+        let started = counter.begin()
+        do {
+            let lines = try CaptureSignposts.measure("Recognize") { try recognizePass(in: image, options: options) }
+            counter.end(startedAt: started, failed: false)
+            return lines
+        } catch {
+            counter.end(startedAt: started, failed: true)
+            throw error
+        }
+    }
+
+    private static func recognizePass(in image: CGImage, options: Options) throws -> [RecognizedLine] {
         let ranges = bands(height: image.height)
         guard ranges.count > 1 else { return try recognizeSingle(in: image, options: options) }
         return try recognizeBanded(ranges) { range in
