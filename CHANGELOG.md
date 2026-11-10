@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- Capture timing signposts for diagnosing slow captures. The hotkey callback, permission check, screen content query, image grab, render, encode, clipboard write and thumbnail, plus the editor's first preview, copy and drag, are timed in the `Capture` signpost category (subsystem `io.github.mrashrhodes.glint`), so hotkey-to-overlay and mouse-up-to-clipboard latency can be measured in Instruments or with `log stream`. Signposts carry only timings, the trigger and the capture mode, never coordinates, window titles, file paths or image content. ([#96])
+
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
@@ -312,5 +316,6 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#96]: https://github.com/MrAshRhodes/glint/issues/96
 [#100]: https://github.com/MrAshRhodes/glint/issues/100
 [#108]: https://github.com/MrAshRhodes/glint/issues/108

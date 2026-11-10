@@ -204,6 +204,20 @@ Annotation case names and their serialized representations are unchanged.
   `{uuid}`), `FileNaming.uniqueURL(directory:baseName:ext:)` (collision → `-2`, `-3`…). Default template
   `Glint-{datetime}`; raw = `Glint-{datetime}-{uuid}.png` in `Raw/`, output in `Output/`.
 
+## Capture signposts (`CaptureSignposts.swift`)
+Timing signposts for the capture path beyond the overlay, in subsystem `io.github.mrashrhodes.glint`, category
+`Capture`. CONTRIBUTING.md ("Capture, editor and export signposts") lists the intervals and how to read them. Metadata
+is limited to a trigger, a mode label and durations: never coordinates, window titles, file paths or image content.
+- `CaptureSignposts.begin(_:) -> Interval?` and `end(_:_:)` bracket an interval. A handle is `nil` while signposts are
+  disabled and `end(nil)` does nothing; `Interval` is `Sendable`. `end` takes an `Outcome` (`.completed`, `.cancelled`,
+  `.failed`); the last two are tagged on the interval's end, and those intervals are not latency samples.
+- `CaptureSignposts.measure(_:_:)` times a synchronous or `async` body, ending the interval as `.cancelled` or
+  `.failed` when it throws (`Outcome(error:)` tells `CancellationError` from a real failure).
+- `beginCapture(trigger:mode:)` (`CaptureTotal`, with `Trigger` `.hotkey`, `.menu`, `.url`, `.timer`) and
+  `beginQueueDelay(eventAgeSeconds:)` (`QueueDelay`) record the only metadata beyond a name.
+- `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` and `Exporter.copyToClipboard`
+  emits `Pasteboard`, so every caller is timed without changing its signature.
+
 ## Output retention (`OutputRetention.swift`)
 Opt-in keeping of the composed images a user copied or dragged, plus age-based cleanup of the images Glint itself
 saved to `Output/`. It backs **Reopen Last Image** and **Keep screenshots in Output for**. Nothing is written,

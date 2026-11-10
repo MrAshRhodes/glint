@@ -118,9 +118,11 @@ final class SelectionSession {
         windows = snapshot.windows
         displays = services.displays()
         guard !displays.isEmpty else { throw CaptureError.noDisplay }
-        targets = Dictionary(uniqueKeysWithValues: displays.map {
-            ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
-        })
+        targets = OverlayPerformance.measureCapture("SnapTargets") {
+            Dictionary(uniqueKeysWithValues: displays.map {
+                ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
+            })
+        }
         if let freeze {
             let interval = OverlayPerformance.begin("FreezeCapture")
             defer { OverlayPerformance.end("FreezeCapture", interval) }

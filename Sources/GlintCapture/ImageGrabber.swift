@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import GlintCore
 import ImageIO
 import ScreenCaptureKit
 
@@ -48,7 +49,9 @@ enum ImageGrabber {
         }
 
         static func current(options: CaptureOptions) async throws -> ScreenContent {
-            let content = try await WindowEnumerator.shareableContent()
+            let content = try await CaptureSignposts.measure("ShareableContent") {
+                try await WindowEnumerator.shareableContent()
+            }
             return ScreenContent(content, options: options)
         }
 
@@ -62,7 +65,9 @@ enum ImageGrabber {
             cfg.height = Int((local.height * display.scale).rounded())
             cfg.showsCursor = !options.hideCursor
             cfg.scalesToFit = false
-            let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let img = try await CaptureSignposts.measure("CaptureImage") {
+                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            }
             return Grab(image: img, scale: display.scale)
         }
     }
@@ -144,7 +149,9 @@ enum ImageGrabber {
             throw CaptureError.windowNotFound
         }
         return try await captureWithFallback(allowed: options.allowScreencaptureFallback, capture: {
-            let content = try await WindowEnumerator.shareableContent()
+            let content = try await CaptureSignposts.measure("ShareableContent") {
+                try await WindowEnumerator.shareableContent()
+            }
             guard let w = content.windows.first(where: { $0.windowID == win.id }) else { throw CaptureError.windowNotFound }
             let filter = SCContentFilter(desktopIndependentWindow: w)
             let cfg = SCStreamConfiguration()
@@ -153,7 +160,9 @@ enum ImageGrabber {
             cfg.showsCursor = !options.hideCursor
             cfg.ignoreShadowsSingleWindow = !options.includeWindowShadow
             cfg.backgroundColor = .clear
-            let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let img = try await CaptureSignposts.measure("CaptureImage") {
+                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            }
             return Grab(image: img, scale: scale)
         }, fallback: {
             // -o drops the shadow, -l captures a single window by id.

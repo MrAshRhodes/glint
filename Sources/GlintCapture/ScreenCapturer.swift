@@ -1,4 +1,5 @@
 import AppKit
+import GlintCore
 
 @MainActor
 public final class ScreenCapturer {
@@ -136,7 +137,7 @@ public final class ScreenCapturer {
     // MARK: Internals
 
     private func requirePermission() async throws {
-        try services.permission()
+        try CaptureSignposts.measure("PermissionCheck") { try services.permission() }
         try Task.checkCancellation()
     }
 
@@ -164,7 +165,9 @@ public final class ScreenCapturer {
     private func interactive(start: OverlayStartMode, kind: CaptureKind) async throws -> CaptureResult {
         try await requirePermission()
         let selection = try await select(start)
-        return try await grab(selection.outcome, kind: kind, frozen: selection.frozen)
+        return try await CaptureSignposts.measure("SelectionToImage") {
+            try await grab(selection.outcome, kind: kind, frozen: selection.frozen)
+        }
     }
 
     /// A non-nil `frozen` requires the pre-focus pixels, including when a requested display is missing.
