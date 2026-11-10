@@ -81,7 +81,7 @@ enum SnapTargets {
 }
 
 /// A drag keeps its original geometry independent of the magnetic preview.
-/// Mouse/modifier changes share a solver; explicit keyboard translation bypasses magnets.
+/// Mouse/modifier changes share a solver; explicit keyboard translation and holding Space bypass magnets.
 struct SnappingSelection {
     static let acquireDistance: CGFloat = 6
     static let releaseDistance: CGFloat = 10
@@ -115,22 +115,44 @@ struct SnappingSelection {
         }
     }
 
+    /// Everything a translation needs to move the rectangle relative to a past pointer position.
+    private struct Placement {
+        var pointer: CGPoint
+        var rawAnchor: CGPoint
+        var rawCursor: CGPoint
+        var rectangle: CGRect
+    }
+
     private let xTargets: [SnapEdge]
     private let yTargets: [SnapEdge]
     private var held: [Handle: SnapEdge] = [:]
+    /// The last pointer position, unclamped, so a translation can be measured against it.
+    private var pointer: CGPoint
+    /// How far a translation left the cursor from the pointer; later mouse motion keeps that offset.
+    private var pointerOffset = CGVector.zero
+    private var reposition: Placement?
+
+    var isRepositioning: Bool { reposition != nil }
 
     init(anchor: CGPoint, bounds: CGRect, targets: [SnapEdge], snapToEdges: Bool) {
         self.bounds = bounds
         self.snapToEdges = snapToEdges
         rawAnchor = CaptureGeometry.clamp(anchor, to: bounds)
         rawCursor = rawAnchor
+        pointer = rawAnchor
         rectangle = CGRect(origin: rawAnchor, size: .zero)
         xTargets = targets.filter { $0.axis == .x }
         yTargets = targets.filter { $0.axis == .y }
     }
 
     mutating func move(to cursor: CGPoint) {
-        rawCursor = CaptureGeometry.clamp(cursor, to: bounds)
+        pointer = cursor
+        if let base = reposition {
+            translate(base, by: CGVector(dx: cursor.x - base.pointer.x, dy: cursor.y - base.pointer.y))
+            return
+        }
+        rawCursor = CaptureGeometry.clamp(CGPoint(x: cursor.x + pointerOffset.dx, y: cursor.y + pointerOffset.dy),
+                                          to: bounds)
         recompute()
     }
 
@@ -138,17 +160,41 @@ struct SnappingSelection {
         guard self.shift != shift || self.command != command else { return }
         self.shift = shift
         self.command = command
-        recompute()
+        // A held Space only translates the rectangle; the new modifier takes effect from the next resize.
+        if reposition == nil { recompute() }
     }
 
     mutating func nudge(dx: CGFloat, dy: CGFloat) {
-        let x = min(max(dx, bounds.minX - rectangle.minX), bounds.maxX - rectangle.maxX)
-        let y = min(max(dy, bounds.minY - rectangle.minY), bounds.maxY - rectangle.maxY)
-        rawAnchor = CaptureGeometry.clamp(CGPoint(x: rawAnchor.x + x, y: rawAnchor.y + y), to: bounds)
-        rawCursor = CaptureGeometry.clamp(CGPoint(x: rawCursor.x + x, y: rawCursor.y + y), to: bounds)
-        // Keys deliberately translate the visible rectangle. Do not let magnets consume the step;
-        // mouse movement or an actual modifier transition resumes solving from the independent raw points.
-        rectangle = rectangle.offsetBy(dx: x, dy: y)
+        translate(placement, by: CGVector(dx: dx, dy: dy))
+        if reposition != nil { reposition = placement }
+    }
+
+    /// Holding Space moves the whole rectangle with the pointer instead of resizing it.
+    mutating func beginReposition() {
+        guard reposition == nil else { return }
+        reposition = placement
+    }
+
+    /// Resizing resumes from the moved rectangle on the next pointer motion; nothing is re-solved here,
+    /// so releasing the key never changes the rectangle by itself.
+    mutating func endReposition() {
+        reposition = nil
+    }
+
+    private var placement: Placement {
+        Placement(pointer: pointer, rawAnchor: rawAnchor, rawCursor: rawCursor, rectangle: rectangle)
+    }
+
+    /// Keys and Space deliberately translate the visible rectangle by `delta` from `base`, stopping at the
+    /// display edges, and do not let magnets consume the step. Mouse movement or an actual modifier
+    /// transition resumes solving from the independent raw points.
+    private mutating func translate(_ base: Placement, by delta: CGVector) {
+        let x = min(max(delta.dx, bounds.minX - base.rectangle.minX), bounds.maxX - base.rectangle.maxX)
+        let y = min(max(delta.dy, bounds.minY - base.rectangle.minY), bounds.maxY - base.rectangle.maxY)
+        rawAnchor = CaptureGeometry.clamp(CGPoint(x: base.rawAnchor.x + x, y: base.rawAnchor.y + y), to: bounds)
+        rawCursor = CaptureGeometry.clamp(CGPoint(x: base.rawCursor.x + x, y: base.rawCursor.y + y), to: bounds)
+        rectangle = base.rectangle.offsetBy(dx: x, dy: y)
+        pointerOffset = CGVector(dx: rawCursor.x - pointer.x, dy: rawCursor.y - pointer.y)
         held.removeAll()
         guides.removeAll()
     }

@@ -332,6 +332,121 @@ struct SnappingSelectionTests {
         #expect(drag.rectangle.origin == .zero && drag.rectangle.size == size)
     }
 
+    @Test func mouseMotionAfterANudgeContinuesFromTheNudgedRectangle() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.nudge(dx: 10, dy: -5)
+        let nudged = drag.rectangle
+        #expect(nudged == CGRect(x: 30, y: 15, width: 100, height: 70))
+        // The pointer has not moved, so the next motion event must not undo the nudge.
+        drag.move(to: CGPoint(x: 120, y: 90))
+        #expect(drag.rectangle == nudged)
+        drag.move(to: CGPoint(x: 125, y: 100))
+        #expect(drag.rectangle == CGRect(x: 30, y: 15, width: 105, height: 80))
+    }
+
+    @Test func aNudgeThatStopsAtTheDisplayEdgeStillLeavesMouseMotionContinuous() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.nudge(dx: 1_000, dy: 0)
+        let bounded = CGRect(x: 400, y: 20, width: 100, height: 70)
+        #expect(drag.rectangle == bounded)
+        drag.move(to: CGPoint(x: 120, y: 90))
+        #expect(drag.rectangle == bounded)
+        drag.move(to: CGPoint(x: 100, y: 90))
+        #expect(drag.rectangle == CGRect(x: 400, y: 20, width: 80, height: 70))
+    }
+
+    @Test func repositioningMovesTheWholeRectangleWithThePointer() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.beginReposition()
+        #expect(drag.isRepositioning)
+        #expect(drag.rectangle == CGRect(x: 20, y: 20, width: 100, height: 70))
+        drag.move(to: CGPoint(x: 160, y: 130))
+        #expect(drag.rectangle == CGRect(x: 60, y: 60, width: 100, height: 70))
+        #expect(drag.rawAnchor == CGPoint(x: 60, y: 60) && drag.rawCursor == CGPoint(x: 160, y: 130))
+        drag.move(to: CGPoint(x: 110, y: 80))
+        #expect(drag.rectangle == CGRect(x: 10, y: 10, width: 100, height: 70))
+    }
+
+    @Test func repositioningStopsAtTheDisplayEdgesAndComesBackWithThePointer() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        let start = drag.rectangle
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 1_000, y: 1_000))
+        #expect(drag.rectangle == CGRect(x: 400, y: 330, width: 100, height: 70))
+        drag.move(to: CGPoint(x: -1_000, y: -1_000))
+        #expect(drag.rectangle == CGRect(x: 0, y: 0, width: 100, height: 70))
+        // The position follows the pointer's distance from where Space went down, not a sum of clamped steps.
+        drag.move(to: CGPoint(x: 120, y: 90))
+        #expect(drag.rectangle == start)
+        #expect(drag.rawAnchor == CGPoint(x: 20, y: 20) && drag.rawCursor == CGPoint(x: 120, y: 90))
+    }
+
+    @Test func releasingSpaceResumesResizingFromTheMovedRectangleWithoutAJump() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 160, y: 130))
+        let moved = drag.rectangle
+        drag.endReposition()
+        #expect(!drag.isRepositioning)
+        #expect(drag.rectangle == moved)
+        drag.move(to: CGPoint(x: 160, y: 130))
+        #expect(drag.rectangle == moved)
+        drag.move(to: CGPoint(x: 170, y: 140))
+        #expect(drag.rectangle == CGRect(x: 60, y: 60, width: 110, height: 80))
+    }
+
+    @Test func releasingSpaceAfterTheRectangleStoppedAtAnEdgeCarriesOnFromItsCorner() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 700, y: 90))
+        #expect(drag.rectangle == CGRect(x: 400, y: 20, width: 100, height: 70))
+        drag.endReposition()
+        drag.move(to: CGPoint(x: 690, y: 100))
+        #expect(drag.rectangle == CGRect(x: 400, y: 20, width: 90, height: 80))
+    }
+
+    @Test func repositioningDoesNotSnapAndDropsTheGuides() {
+        var drag = selection(targets: [vertical(100), horizontal(100)])
+        drag.move(to: CGPoint(x: 96, y: 96))
+        #expect(drag.rectangle == CGRect(x: 20, y: 20, width: 80, height: 80) && !drag.guides.isEmpty)
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 99, y: 99))
+        #expect(drag.rectangle == CGRect(x: 23, y: 23, width: 80, height: 80))
+        #expect(drag.guides.isEmpty)
+    }
+
+    @Test func modifierChangesWhileRepositioningWaitForTheNextMouseMove() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 80))
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 140, y: 100))
+        let moved = drag.rectangle
+        drag.setModifiers(shift: true, command: false)
+        #expect(drag.rectangle == moved)
+        drag.endReposition()
+        #expect(drag.rectangle == moved)
+        drag.move(to: CGPoint(x: 140, y: 100))
+        #expect(drag.rectangle == CGRect(x: 40, y: 40, width: 100, height: 100))
+    }
+
+    @Test func aNudgeWhileRepositioningMovesTheStartingPointToo() {
+        var drag = selection(targets: [])
+        drag.move(to: CGPoint(x: 120, y: 90))
+        drag.beginReposition()
+        drag.move(to: CGPoint(x: 140, y: 90))
+        drag.nudge(dx: 10, dy: 0)
+        #expect(drag.rectangle == CGRect(x: 50, y: 20, width: 100, height: 70))
+        drag.move(to: CGPoint(x: 145, y: 90))
+        #expect(drag.rectangle == CGRect(x: 55, y: 20, width: 100, height: 70))
+        #expect(drag.isRepositioning)
+    }
+
     @MainActor @Test func captureOptionIsDefaultOffAndSessionKeepsSnapshot() {
         var options = CaptureOptions()
         #expect(!options.snapToEdges)

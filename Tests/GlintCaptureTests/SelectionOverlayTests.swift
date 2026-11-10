@@ -323,6 +323,96 @@ struct SelectionOverlayTests {
         overlay.rightMouseDown(with: try mouse(.rightMouseDown, anchor))
     }
 
+    private func overlayWithOwnDisplay() -> (SelectionSession, OverlayView) {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.useDisplays([DisplayInfo(id: 1, frame: CGRect(origin: .zero, size: size), scale: 1,
+                                         name: "Test", isMain: true)])
+        return (session, view(session))
+    }
+
+    /// An event at a global point of the 640 × 480 display the view above covers.
+    private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: point.x, y: size.height - point.y),
+                                        modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                        eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    private func spaceEvent(_ type: NSEvent.EventType, isARepeat: Bool = false) throws -> NSEvent {
+        try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                      context: nil, characters: " ", charactersIgnoringModifiers: " ",
+                                      isARepeat: isARepeat, keyCode: 49))
+    }
+
+    @Test func holdingSpaceDuringADragMovesTheSelectionAndReleasingItResumesResizing() throws {
+        let (session, overlay) = overlayWithOwnDisplay()
+        overlay.mouseDown(with: try mouseEvent(.leftMouseDown, at: CGPoint(x: 100, y: 100)))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 200, y: 160)))
+        #expect(session.selection == CGRect(x: 100, y: 100, width: 100, height: 60))
+
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        // Holding the key sends repeats, which must neither switch the mode nor restart the move.
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .area)
+        #expect(session.selection == CGRect(x: 100, y: 100, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 230, y: 150)))
+        #expect(session.selection == CGRect(x: 130, y: 90, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 700, y: 600)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 100, height: 60))
+
+        overlay.keyUp(with: try spaceEvent(.keyUp))
+        // The pointer is far past the rectangle's corner; the first motion after the release must not jump to it.
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 700, y: 600)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 690, y: 590)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 90, height: 50))
+    }
+
+    @Test func spaceBeforeADragSwitchesModeOncePerPressNotOncePerKeyRepeat() throws {
+        let (session, overlay) = overlayWithOwnDisplay()
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        #expect(session.mode == .window)
+        // Each repeat on its own would switch back and forth, so check after every one.
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .window)
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .window)
+        overlay.keyUp(with: try spaceEvent(.keyUp))
+        #expect(session.mode == .window)
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        #expect(session.mode == .area)
+    }
+
+    private func enterExitEvent(_ type: NSEvent.EventType) throws -> NSEvent {
+        try #require(NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                                            windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0,
+                                            userData: nil))
+    }
+
+    @Test func theOverlayShowsTheCrosshairWheneverThePointerEntersOrMovesOverAnyPanel() throws {
+        // The overlay does not retain its session, so keep it alive for the events below.
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        defer { withExtendedLifetime(session) {} }
+        let overlay = view(session)
+        let area = try #require(overlay.trackingAreas.first)
+        // The area asks for cursor updates, which AppKit does not support for an always-active area, and cursor
+        // rects only apply to the key window, so each panel also sets the crosshair from the enter and move events
+        // it does receive.
+        #expect(area.options.isSuperset(of: [.cursorUpdate, .activeAlways, .inVisibleRect, .mouseMoved,
+                                             .mouseEnteredAndExited]))
+
+        NSCursor.arrow.set()
+        overlay.mouseEntered(with: try enterExitEvent(.mouseEntered))
+        #expect(NSCursor.current == NSCursor.crosshair)
+
+        NSCursor.arrow.set()
+        overlay.mouseMoved(with: try mouseEvent(.mouseMoved, at: CGPoint(x: 100, y: 100)))
+        #expect(NSCursor.current == NSCursor.crosshair)
+
+        NSCursor.arrow.set()
+        overlay.cursorUpdate(with: try enterExitEvent(.cursorUpdate))
+        #expect(NSCursor.current == NSCursor.crosshair)
+    }
+
     @Test(arguments: [CGFloat(1), CGFloat(2)])
     func frozenScreenShowsUndimmedInTheSelectionAndUprightUnderTheDim(scale: CGFloat) throws {
         // Red in the top-left 100 × 100 points, blue elsewhere.

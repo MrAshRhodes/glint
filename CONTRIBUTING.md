@@ -53,7 +53,10 @@ coalesced events do not reset it. Intervals aborted on close are marked `cancell
 and must be excluded from latency percentiles. Correlate these with input dispatch
 and frame traces: invalidation omits earlier event processing, and draw completion
 is **not** screen presentation. Use a presentation trace or external measurement
-for real event-to-paint latency.
+for real event-to-paint latency. To judge presentation skew between displays, compare one
+overlay's per-panel `PanelCreation` and `FirstDraw` intervals on two or more displays; the
+panels are created and ordered in front one after another, and that order changes only if
+visible skew is demonstrated.
 Report sample counts, p50/p95, and individual stalls over 50 ms in the first two
 seconds. Check the actual display budget (16.7 ms at 60 Hz; 8.3 ms at 120 Hz) without
 claiming unmeasured refresh rates or hardware. Signposts must not include cursor
@@ -295,14 +298,22 @@ Before enabling a content mode, improve and measure the detector against represe
 
 ### Interactive release checks
 
-After `make test` and `make app`, check the same selection through area, area-to-clipboard, OCR-area and timed-area capture. Check live menu/Preferences synchronization, restart persistence and reset. Verify Command-click, including a first click on a secondary display, reaches the non-activating panel without moving it; starting a selection while the hotkey's Command is still held settles to the saved setting once released; stationary Command press/release updates the preview; Shift makes a square in each quadrant; Shift-arrow nudges by 10; and Space/Return/Esc/right-click keep their existing behavior. Compare preview and output at partially occluded edges, with no nearby windows, at display boundaries, and across negative-coordinate/mixed-Retina display arrangements.
+After `make test` and `make app`, check the same selection through area, area-to-clipboard, OCR-area and timed-area capture. Check live menu/Preferences synchronization, restart persistence and reset. Verify Command-click, including a first click on a secondary display, reaches the non-activating panel without moving it; starting a selection while the hotkey's Command is still held settles to the saved setting once released; stationary Command press/release updates the preview; Shift makes a square in each quadrant; Shift-arrow nudges by 10 (the selection during a drag, otherwise the pointer); Space before a drag still switches area/window; and Return/Esc/right-click keep their existing behavior. Compare preview and output at partially occluded edges, with no nearby windows, at display boundaries, and across negative-coordinate/mixed-Retina display arrangements.
+
+Check the selection overlay's transitions live, with at least two displays of different scales, and record what could not be exercised as unverified:
+
+- **Cursor.** The crosshair shows on every display's panel, including a panel that is not key (for example a secondary display while another is key) and while Glint is not the active app, after switching area/window mode, and when the pointer moves from one display to another; the arrow returns when the selection ends. Cursor rects only apply to the key window and AppKit does not support cursor updates for an always-active tracking area, so the panels also set the crosshair from the enter and move events; that this holds for a non-key panel while Glint is inactive has not been observed, so check it first.
+- **Hold Space during a drag.** The whole rectangle follows the pointer without resizing, stops at the display edge and comes back with the pointer, releasing Space resumes resizing without a jump, a held (repeating) Space does not switch mode, and releasing the mouse while Space is held captures the moved rectangle. Compare the captured pixels with the preview on the 1x and the 2x display. Two known limits to confirm rather than assume fixed: if Command is pressed while Space is held, AppKit may withhold the Space key-up, so release Space first (otherwise the move lasts until Space is pressed and released again or the mouse is released); and a Shift square held back by a display edge can resize abruptly when resizing resumes after the move, as it already does after an arrow nudge.
+- **Arrow nudge, then mouse.** With and without a drag, nudge and then move the mouse at once: the pointer and rectangle continue from the nudged position, with no stall or lag from event suppression after the pointer warp. Change the pointer's event suppression only if a focused reproduction shows it is needed.
+- **Space and display changes.** With the overlay open, switch Spaces (Control-arrow, Mission Control) and connect, disconnect or rearrange a display: the overlay closes without capturing, no panel stays on screen, the arrow cursor returns, and the next capture works. Try it while dragging, while Space is held and during the freeze.
+- **Skew.** On two displays, compare the `PanelCreation` and `FirstDraw` signposts of one overlay, as described above, and look for panels that appear visibly late.
 
 Profile both the first overlay and a warm overlay with snapping off/on. Record candidate preparation separately from input handling and drawing; synthetic geometry timings alone cannot establish that first-load lag ([#42](https://github.com/MrAshRhodes/glint/issues/42)) is unchanged. Do not enumerate windows, capture pixels or run a detector per pointer event.
 
 ## Capture focus and self-capture checks
 
 After changing screenshot acquisition or selection, run the focused capture and pipeline tests with
-`Scripts/swiftw.sh test --no-parallel --filter 'WindowEnumeratorTests|ImageGrabberTests|SelectionOverlayTests|SelectionSessionTests|CaptureGeometryTests|ScreenCapturerTests|CaptureWindowLifecycleTests|CapturePipelineTests'`
+`Scripts/swiftw.sh test --no-parallel --filter 'WindowEnumeratorTests|ImageGrabberTests|SelectionOverlayTests|SelectionSessionTests|SnappingSelectionTests|CaptureGeometryTests|ScreenCapturerTests|CaptureWindowLifecycleTests|CapturePipelineTests'`
 and `make build`. Build the native app with `make app CONFIG=debug` for the checks below. Synthetic
 image tests establish pixel routing and lifecycle behavior, not another app's actual focus behavior.
 
@@ -313,7 +324,7 @@ image tests establish pixel routing and lifecycle behavior, not another app's ac
 | Ordinary windows | Check independent-window capture, transparency, the shadow option, cursor setting, clipboard-only output and editor output. |
 | Window timing | A window pick (and a timed window grab) does not wait for the overlay: `CaptureOptions.windowSettleDelay` defaults to 0, the window list read by the freeze is reused while the window's size still matches, and one fresh lookup covers a window that is missing, was resized, or follows a real `windowSettleDelay` wait. Spot-check ten apps (for example Finder, Safari, Terminal, Notes, System Settings, Xcode, a Chromium app, a window with a sheet or popover, a full-screen app and a menu-bar utility): compare each capture with the frozen preview for title-bar active state, focus rings, shadow and corners. Also pick a window and close, move or resize it right after the click, and change displays before the click. Any difference means setting `windowSettleDelay` back to `settleDelay`. Live area grabs (timed area) still wait only what is left of `settleDelay` since the overlay closed. |
 | Timer and entry points | Select an area, reopen a popup during the countdown, and confirm the final image uses the new state. Clicking the menu bar or confirming a URL can dismiss popups before capture starts; preserve URL consent and document this limitation. |
-| Displays and cleanup | Exercise negative display origins, mixed 1x/2x scales, secondary-display selection, Space/Return/Esc, modifiers and snapping. Repeat success, cancellation, denied permission and capture errors; ensure no late panels or retained snapshot buffers. |
+| Displays and cleanup | Exercise negative display origins, mixed 1x/2x scales, secondary-display selection, Space (including holding it during a drag)/Return/Esc, arrow nudging followed by mouse motion, modifiers and snapping. Switch Spaces and change the display layout while selecting. Repeat success, cancellation, denied permission and capture errors; ensure no late panels, observers or retained snapshot buffers, and that the arrow cursor is restored. |
 
 Use optimized cold/warm runs and the overlay signposts described above to compare snapshot acquisition
 and first-presentation costs separately. Do not treat drawing CPU measurements as end-to-end latency.
