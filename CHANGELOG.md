@@ -8,6 +8,8 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-11-10
+
 ### Fixed
 
 - Screenshot selection opens more smoothly: Glint's windows stay visible until the frozen overlay covers them, the frozen desktop is composited separately from the selection controls, and dimming fades in briefly (without animation when Reduce Motion is enabled). Multi-display captures fetch shareable screen content once instead of once per display, reducing setup work before selection appears. ([#92])
@@ -249,7 +251,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/MrAshRhodes/glint/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/MrAshRhodes/glint/compare/v1.6.0...v1.7.0
