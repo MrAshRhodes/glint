@@ -34,14 +34,26 @@ struct FrozenDisplay {
 enum ImageGrabber {
     struct Grab { let image: CGImage; let scale: CGFloat }
 
-    static func grabRect(_ rect: CGRect, display: DisplayInfo, options: CaptureOptions) async throws -> Grab {
-        try await captureWithFallback(allowed: allowsRectFallback(options), capture: {
-            let content = try await WindowEnumerator.shareableContent()
-            guard let scd = content.displays.first(where: { $0.displayID == display.id }) else { throw CaptureError.noDisplay }
+    /// One shareable-content query with the window policy applied, reusable for every display it lists.
+    struct ScreenContent {
+        let content: SCShareableContent
+        let excluded: [SCWindow]
+
+        init(_ content: SCShareableContent, options: CaptureOptions) {
             let me = ProcessInfo.processInfo.processIdentifier
-            let excluded = content.windows.filter {
+            self.content = content
+            excluded = content.windows.filter {
                 options.excludesWindow($0.windowID, pid: $0.owningApplication?.processID, ownPID: me)
             }
+        }
+
+        static func current(options: CaptureOptions) async throws -> ScreenContent {
+            let content = try await WindowEnumerator.shareableContent()
+            return ScreenContent(content, options: options)
+        }
+
+        func grab(_ rect: CGRect, display: DisplayInfo, options: CaptureOptions) async throws -> Grab {
+            guard let scd = content.displays.first(where: { $0.displayID == display.id }) else { throw CaptureError.noDisplay }
             let filter = SCContentFilter(display: scd, excludingWindows: excluded)
             let cfg = SCStreamConfiguration()
             let local = CaptureGeometry.displayLocal(rect, display: display.frame, scale: display.scale)
@@ -52,6 +64,12 @@ enum ImageGrabber {
             cfg.scalesToFit = false
             let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
             return Grab(image: img, scale: display.scale)
+        }
+    }
+
+    static func grabRect(_ rect: CGRect, display: DisplayInfo, options: CaptureOptions) async throws -> Grab {
+        try await captureWithFallback(allowed: allowsRectFallback(options), capture: {
+            try await ScreenContent.current(options: options).grab(rect, display: display, options: options)
         }, fallback: {
             let r = rect.integral
             let args = ["-x", "-R", "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"]
@@ -66,8 +84,30 @@ enum ImageGrabber {
 
     /// All required displays are frozen in memory before focus changes, or the entire capture fails.
     static func freeze(_ displays: [DisplayInfo], options: CaptureOptions) async throws -> [FrozenDisplay] {
-        try await freeze(displays, options: options) { display, options in
-            try await grabDisplay(display, options: options)
+        try await freeze(displays, options: options, content: {
+            try await ScreenContent.current(options: options)
+        }, capture: { display, options, content in
+            try await content.grab(display.frame, display: display, options: options)
+        })
+    }
+
+    /// Fetches the content once for every display: each query is a slow round trip on the way to the overlay.
+    static func freeze<Snapshot>(
+        _ displays: [DisplayInfo], options: CaptureOptions,
+        content: () async throws -> Snapshot,
+        capture: @escaping @Sendable (DisplayInfo, CaptureOptions, Snapshot) async throws -> Grab
+    ) async throws -> [FrozenDisplay] {
+        try Task.checkCancellation()
+        guard !displays.isEmpty else { throw CaptureError.noDisplay }
+        let snapshot = try await content()
+        return try await freeze(displays, options: options) { display, options in
+            do {
+                return try await capture(display, options, snapshot)
+            } catch {
+                // As in captureWithFallback, a cancelled freeze reports cancellation rather than the failed grab.
+                try Task.checkCancellation()
+                throw error
+            }
         }
     }
 

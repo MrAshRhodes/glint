@@ -159,6 +159,51 @@ struct ScreenCapturerTests {
         #expect(fixture.events == ["permission", "displays", "display", "permission", "displays", "rect"])
     }
 
+    @Test func presentationHookReachesOnlyTheNextSelection() async throws {
+        let fixture = try Fixture()
+        let capturer = fixture.capturer()
+        let selections: [@MainActor (ScreenCapturer) async throws -> Void] = [
+            { _ = try await $0.captureArea() },
+            { _ = try await $0.captureWindow() },
+            { _ = try await $0.captureTextOnly() },
+            { _ = try await $0.captureWithTimer(seconds: 0, mode: .area) },
+            { _ = try await $0.captureWithTimer(seconds: 0, mode: .window) }
+        ]
+        for select in selections {
+            var presentations = 0
+            capturer.onSelectionPresented = { presentations += 1 }
+            try await select(capturer)
+            #expect(presentations == 1)
+            #expect(capturer.onSelectionPresented == nil)
+
+            try await select(capturer)
+            #expect(presentations == 1)
+            #expect(fixture.presentationHooks.suffix(2) == [true, false])
+        }
+        #expect(fixture.presentationHooks.count == selections.count * 2)
+    }
+
+    @Test func presentationHookIsConsumedByAFailedSelectionButNotByDirectCaptures() async throws {
+        let fixture = try Fixture()
+        let capturer = fixture.capturer()
+        capturer.lastArea = fixture.area
+        var presentations = 0
+        capturer.onSelectionPresented = { presentations += 1 }
+
+        _ = try await capturer.captureFullscreen(display: fixture.display.id)
+        _ = try await capturer.captureLastArea()
+        #expect(capturer.onSelectionPresented != nil)
+
+        fixture.selectError = CaptureError.cancelled
+        await #expect(throws: CaptureError.self) { try await capturer.captureArea() }
+        #expect(capturer.onSelectionPresented == nil)
+
+        fixture.selectError = nil
+        _ = try await capturer.captureArea()
+        #expect(presentations == 0)
+        #expect(fixture.presentationHooks == [true, false])
+    }
+
     private func pixel(_ image: CGImage) throws -> [UInt8] {
         let context = try #require(CGContext(data: nil, width: image.width, height: image.height,
                                              bitsPerComponent: 8, bytesPerRow: image.width * 4,
@@ -182,8 +227,10 @@ struct ScreenCapturerTests {
         var frozen: [FrozenDisplay]
         var onScreen = true
         var windowError: Error?
+        var selectError: Error?
         var events: [String] = []
         var freezeRequests: [Bool] = []
+        var presentationHooks: [Bool] = []
         var selectionOptions: CaptureOptions?
         var windowOptions: CaptureOptions?
 
@@ -214,10 +261,13 @@ struct ScreenCapturerTests {
             var services = ScreenCapturer.Services()
             services.permission = { self.events.append("permission") }
             services.displays = { self.events.append("displays"); return self.currentDisplays }
-            services.select = { _, _, options, freeze in
+            services.select = { _, _, options, freeze, presented in
                 self.events.append("select")
                 self.freezeRequests.append(freeze)
                 self.selectionOptions = options
+                self.presentationHooks.append(presented != nil)
+                if let error = self.selectError { throw error }
+                presented?()
                 return (self.outcome, self.frozen)
             }
             services.isOnScreen = { _ in self.events.append("isOnScreen"); return self.onScreen }

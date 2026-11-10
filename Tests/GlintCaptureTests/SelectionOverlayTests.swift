@@ -7,14 +7,15 @@ import Testing
 struct SelectionOverlayTests {
     private let size = NSSize(width: 640, height: 480)
 
-    private func view(_ session: SelectionSession, origin: CGPoint = .zero, scale: CGFloat = 1,
-                      background: CGImage? = nil) -> OverlayView {
+    private func view(_ session: SelectionSession, origin: CGPoint = .zero, scale: CGFloat = 1) -> OverlayView {
         OverlayView(frame: NSRect(origin: .zero, size: size), session: session,
-                    screenFrameCG: CGRect(origin: origin, size: size), scale: scale, background: background)
+                    screenFrameCG: CGRect(origin: origin, size: size), scale: scale)
     }
 
-    /// A display-sized frozen screen; `color` receives pixel coordinates with the origin at the top left.
-    private func frozenScreen(scale: CGFloat, color: (Int, Int) -> (UInt8, UInt8, UInt8)) throws -> CGImage {
+    /// A frozen screen of `size` points; `color` receives pixel coordinates with the origin at the top left.
+    private func frozenScreen(size: NSSize? = nil, scale: CGFloat,
+                              color: (Int, Int) -> (UInt8, UInt8, UInt8)) throws -> CGImage {
+        let size = size ?? self.size
         let width = Int(size.width * scale), height = Int(size.height * scale)
         let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                              bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -38,6 +39,8 @@ struct SelectionOverlayTests {
     @MainActor
     private final class Bitmap {
         let context: CGContext
+        let size: NSSize
+        let scale: CGFloat
 
         init(size: NSSize, scale: CGFloat) throws {
             context = try #require(CGContext(data: nil, width: Int(size.width * scale),
@@ -45,6 +48,8 @@ struct SelectionOverlayTests {
                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
             context.scaleBy(x: scale, y: scale)
+            self.size = size
+            self.scale = scale
         }
 
         func paint(_ view: OverlayView, damage: [NSRect]) {
@@ -56,6 +61,15 @@ struct SelectionOverlayTests {
             view.draw(damage.reduce(.null) { $0.union($1) })
             NSGraphicsContext.restoreGraphicsState()
             context.restoreGState()
+        }
+
+        /// What the window server shows: this chrome composited source-over the frozen background layer.
+        func composited(over background: CGImage) throws -> Bitmap {
+            let result = try Bitmap(size: size, scale: scale)
+            let rect = NSRect(origin: .zero, size: size)
+            result.context.draw(background, in: rect)
+            result.context.draw(try #require(context.makeImage()), in: rect)
+            return result
         }
 
         var pixels: Data {
@@ -71,11 +85,17 @@ struct SelectionOverlayTests {
     }
 
     private func expectFullRedrawMatches(_ bitmap: Bitmap, view: OverlayView, scale: CGFloat,
+                                        over background: CGImage? = nil,
                                         sourceLocation: SourceLocation = #_sourceLocation) throws {
         let reference = try Bitmap(size: view.bounds.size, scale: scale)
         reference.paint(view, damage: [view.bounds])
         let differences = zip(bitmap.pixels, reference.pixels).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
         #expect(differences == 0, "Partial redraw must match a clean full redraw", sourceLocation: sourceLocation)
+        guard let background else { return }
+        let shown = try bitmap.composited(over: background).pixels
+        let expected = try reference.composited(over: background).pixels
+        #expect(shown == expected, "Composited partial redraw must match a clean full redraw",
+                sourceLocation: sourceLocation)
     }
 
     @Test func movementOnlyInvalidatesTheAffectedDisplayAndChangedAxes() {
@@ -311,9 +331,10 @@ struct SelectionOverlayTests {
         let session = SelectionSession(mode: .area, lastArea: nil)
         session.cursor = CGPoint(x: 600, y: 400)
         session.selection = CGRect(x: 10, y: 10, width: 60, height: 60)
-        let overlay = view(session, scale: scale, background: frozen)
-        let bitmap = try Bitmap(size: size, scale: scale)
-        bitmap.paint(overlay, damage: overlay.refresh())
+        let overlay = view(session, scale: scale)
+        let chrome = try Bitmap(size: size, scale: scale)
+        chrome.paint(overlay, damage: overlay.refresh())
+        let bitmap = try chrome.composited(over: frozen)
 
         // CG (40, 40) is inside the selection, near the display's top-left corner.
         #expect(bitmap.pixel(at: NSPoint(x: 40, y: size.height - 40), scale: scale) == [255, 0, 0, 255])
@@ -323,10 +344,10 @@ struct SelectionOverlayTests {
         let dimmedBlue = bitmap.pixel(at: NSPoint(x: 300, y: size.height - 300), scale: scale)
         #expect(dimmedBlue[0] == 0 && dimmedBlue[1] == 0 && dimmedBlue[2] > 100 && dimmedBlue[2] < 200)
 
-        let live = try Bitmap(size: size, scale: scale)
-        live.paint(view(session, scale: scale), damage: [NSRect(origin: .zero, size: size)])
-        #expect(live.pixel(at: NSPoint(x: 40, y: size.height - 40), scale: scale) == [0, 0, 0, 0])
-        #expect(live.pixel(at: NSPoint(x: 85, y: size.height - 20), scale: scale)[3] < 255)
+        // The chrome alone leaves the hole clear and only dims elsewhere; without a frozen screen,
+        // the live display shows through.
+        #expect(chrome.pixel(at: NSPoint(x: 40, y: size.height - 40), scale: scale) == [0, 0, 0, 0])
+        #expect(chrome.pixel(at: NSPoint(x: 85, y: size.height - 20), scale: scale)[3] < 255)
     }
 
     @Test(arguments: [CGFloat(1), CGFloat(2)])
@@ -336,7 +357,7 @@ struct SelectionOverlayTests {
         }
         let session = SelectionSession(mode: .area, lastArea: nil)
         session.cursor = CGPoint(x: 130.25, y: 160.75)
-        let overlay = view(session, scale: scale, background: frozen)
+        let overlay = view(session, scale: scale)
         let bitmap = try Bitmap(size: size, scale: scale)
         bitmap.paint(overlay, damage: overlay.refresh())
 
@@ -346,14 +367,14 @@ struct SelectionOverlayTests {
             pending += overlay.refresh()
         }
         bitmap.paint(overlay, damage: pending)
-        try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+        try expectFullRedrawMatches(bitmap, view: overlay, scale: scale, over: frozen)
 
         for selection in [CGRect(x: 130.25, y: 160.75, width: 330.5, height: 220.25),
                           CGRect(x: 2.25, y: 2.75, width: 300, height: 200),
                           CGRect(x: -30.5, y: 450.25, width: 200, height: 100), nil] {
             session.selection = selection
             bitmap.paint(overlay, damage: overlay.refresh())
-            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale, over: frozen)
         }
 
         session.toggleMode()
@@ -361,7 +382,7 @@ struct SelectionOverlayTests {
                       CGRect(x: 600.25, y: 420.75, width: 300, height: 250)] {
             session.hoverWindow = window(frame)
             bitmap.paint(overlay, damage: overlay.refresh())
-            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale)
+            try expectFullRedrawMatches(bitmap, view: overlay, scale: scale, over: frozen)
         }
     }
 
@@ -389,5 +410,121 @@ struct SelectionOverlayTests {
         #expect(panel.styleMask.contains(.nonactivatingPanel))
         #expect(panel.canBecomeKey && !panel.canBecomeMain)
         #expect(!panel.hidesOnDeactivate)
+        #expect(panel.animationBehavior == .none)
+        #expect(panel.firstResponder === panel.overlayView)
+    }
+
+    /// A frozen screen covering `screen`; the layer stretches it to the panel either way.
+    private func frozenScreen(of screen: NSScreen) throws -> CGImage {
+        try frozenScreen(size: screen.frame.size, scale: 1) { _, _ in (20, 140, 60) }
+    }
+
+    @Test func overlayPanelCompositesTheFrozenScreenInALayerBelowTheChrome() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        let frozen = try frozenScreen(of: screen)
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let panel = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height, background: frozen)
+        defer { panel.close() }
+        let container = try #require(panel.contentView)
+        #expect(container.subviews == [panel.backgroundView, panel.overlayView])
+        #expect(panel.backgroundView.frame == container.bounds && panel.overlayView.frame == container.bounds)
+        let containerLayer = try #require(container.layer)
+        let backgroundLayer = try #require(panel.backgroundView.layer)
+        let chromeLayer = try #require(panel.overlayView.layer)
+        // AppKit attaches the subviews' layers when the window first displays, before it is ordered in.
+        panel.displayIfNeeded()
+        let sublayers = containerLayer.sublayers ?? []
+        let backgroundIndex = try #require(sublayers.firstIndex { $0 === backgroundLayer })
+        let chromeIndex = try #require(sublayers.firstIndex { $0 === chromeLayer })
+        #expect(backgroundIndex < chromeIndex)
+        #expect((backgroundLayer.contents as CFTypeRef?) === frozen)
+        #expect(backgroundLayer.contentsGravity == .resize && backgroundLayer.isOpaque)
+        #expect(panel.backgroundView.isOpaque && !panel.overlayView.isOpaque)
+        // Input always reaches the overlay view, never the background.
+        #expect(container.hitTest(NSPoint(x: 20, y: 20)) === panel.overlayView)
+
+        // The chrome is drawn the same with or without the frozen screen: the view never paints it.
+        let plain = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height)
+        defer { plain.close() }
+        session.selection = CGRect(x: 10, y: 10, width: 60, height: 60)
+        let withFrozen = try Bitmap(size: screen.frame.size, scale: 1)
+        let without = try Bitmap(size: screen.frame.size, scale: 1)
+        withFrozen.paint(panel.overlayView, damage: [panel.overlayView.bounds])
+        without.paint(plain.overlayView, damage: [plain.overlayView.bounds])
+        #expect(withFrozen.pixels == without.pixels)
+        #expect(withFrozen.pixel(at: NSPoint(x: 40, y: screen.frame.height - 40), scale: 1) == [0, 0, 0, 0])
+
+        panel.close()
+        #expect(panel.backgroundView.image == nil && backgroundLayer.contents == nil)
+    }
+
+    @Test func aPanelSnapshottedBeforeItIsShownDrawsItsFirstFrameOnce() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.cursor = CGPoint(x: 100, y: 100)
+        let panel = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height)
+        defer { panel.close() }
+        let overlay = panel.overlayView
+        #expect(overlay.refresh() == [overlay.bounds])
+        panel.displayIfNeeded()
+        #expect(!overlay.needsDisplay)
+        // Nothing changed since the first snapshot, so focusing the panel does not redraw it.
+        #expect(overlay.refresh().isEmpty)
+        #expect(!overlay.needsDisplay)
+    }
+
+    @Test func overlayPanelWithoutAFrozenScreenIsTransparentUnderTheChrome() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let panel = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height)
+        defer { panel.close() }
+        #expect(!panel.isOpaque && panel.backgroundColor == .clear)
+        let backgroundLayer = try #require(panel.backgroundView.layer)
+        #expect(backgroundLayer.contents == nil && !backgroundLayer.isOpaque)
+        #expect(!panel.backgroundView.isOpaque)
+    }
+
+    @Test func chromeFadesInOverAnAlreadyOpaqueFrozenScreenUnlessReduceMotionIsOn() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        let frozen = try frozenScreen(of: screen)
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let panel = OverlayPanel(screen: screen, session: session, level: .screenSaver,
+                                 primaryHeight: screen.frame.height, background: frozen)
+        defer { panel.close() }
+        let chromeLayer = try #require(panel.overlayView.layer)
+        let backgroundLayer = try #require(panel.backgroundView.layer)
+
+        panel.revealChrome(reduceMotion: true)
+        #expect(chromeLayer.animation(forKey: OverlayPanel.chromeFadeKey) == nil)
+        #expect(chromeLayer.opacity == 1 && panel.overlayView.alphaValue == 1)
+
+        panel.revealChrome(reduceMotion: false)
+        let fade = try #require(chromeLayer.animation(forKey: OverlayPanel.chromeFadeKey) as? CABasicAnimation)
+        #expect(fade.keyPath == "opacity")
+        #expect((fade.fromValue as? NSNumber)?.doubleValue == 0 && (fade.toValue as? NSNumber)?.doubleValue == 1)
+        #expect(fade.duration == OverlayPanel.chromeFadeDuration && fade.duration <= 0.15)
+        let easeOut = CAMediaTimingFunction(name: .easeOut)
+        for index in 0..<4 {
+            var actual: [Float] = [0, 0], expected: [Float] = [0, 0]
+            fade.timingFunction?.getControlPoint(at: index, values: &actual)
+            easeOut.getControlPoint(at: index, values: &expected)
+            #expect(actual == expected)
+        }
+        // The model value is already opaque, so the chrome stays at full strength once the fade ends.
+        #expect(chromeLayer.opacity == 1 && panel.overlayView.alphaValue == 1)
+        // The frozen screen is never faded: it matches the display, so it is fully opaque from the first frame.
+        #expect(backgroundLayer.animationKeys() == nil && backgroundLayer.opacity == 1)
+        #expect(panel.backgroundView.alphaValue == 1 && (backgroundLayer.contents as CFTypeRef?) === frozen)
+
+        panel.revealChrome(reduceMotion: true)
+        #expect(chromeLayer.animation(forKey: OverlayPanel.chromeFadeKey) == nil)
     }
 }

@@ -7,12 +7,13 @@ public final class ScreenCapturer {
     struct Services {
         var permission: @MainActor () throws -> Void = { try ScreenCapturer.requirePermission() }
         var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
-        var select: @MainActor (OverlayStartMode, CGRect?, CaptureOptions, Bool) async throws -> Selection = {
-            mode, lastArea, options, freeze in
+        var select: @MainActor (OverlayStartMode, CGRect?, CaptureOptions, Bool, (@MainActor () -> Void)?) async throws
+            -> Selection = { mode, lastArea, options, freeze, presented in
             let session = SelectionSession(
                 mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges,
                 freeze: freeze ? { try await ImageGrabber.freeze($0, options: options) } : nil,
-                excludeOwnWindows: options.excludeOwnWindows, excludedWindowIDs: options.excludedWindowIDs)
+                excludeOwnWindows: options.excludeOwnWindows, excludedWindowIDs: options.excludedWindowIDs,
+                onPresented: presented)
             let outcome = try await session.run()
             let frozen = session.takeFrozen()
             try Task.checkCancellation()
@@ -32,6 +33,9 @@ public final class ScreenCapturer {
 
     public static let shared = ScreenCapturer()
     public var options = CaptureOptions()
+    /// Runs once the next selection overlay is on screen and covering the displays, while selection is active.
+    /// The next selection consumes it, whether or not it reaches the screen.
+    public var onSelectionPresented: (@MainActor () -> Void)?
 
     private let lastAreaKey = "glint.lastCaptureArea"
     private let services: Services
@@ -150,7 +154,9 @@ public final class ScreenCapturer {
 
     private func select(_ mode: OverlayStartMode,
                         freeze: Bool = true) async throws -> Selection {
-        let selection = try await services.select(mode, lastArea, options, freeze)
+        let presented = onSelectionPresented
+        onSelectionPresented = nil
+        let selection = try await services.select(mode, lastArea, options, freeze, presented)
         try Task.checkCancellation()
         return (selection.outcome, freeze ? selection.frozen ?? [] : nil)
     }

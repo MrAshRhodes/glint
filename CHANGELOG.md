@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Fixed
+
+- Screenshot selection opens more smoothly: Glint's windows stay visible until the frozen overlay covers them, the frozen desktop is composited separately from the selection controls, and dimming fades in briefly (without animation when Reduce Motion is enabled). Multi-display captures fetch shareable screen content once instead of once per display, reducing setup work before selection appears.
+
 ## [1.8.1] - 2026-11-09
 
 ### Fixed

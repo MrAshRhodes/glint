@@ -168,4 +168,55 @@ struct ImageGrabberTests {
             }
         }
     }
+
+    @Test func freezingQueriesShareableContentOnceForEveryDisplay() async throws {
+        let pixels = image()
+        var fetches = 0
+        var options = CaptureOptions()
+        options.excludedWindowIDs = [99]
+        let frozen = try await ImageGrabber.freeze([display(3), display(1), display(2)], options: options, content: {
+            fetches += 1
+            return fetches
+        }) { _, received, snapshot in
+            #expect(snapshot == 1)
+            #expect(!received.allowScreencaptureFallback)
+            #expect(received.excludedWindowIDs == [99])
+            return ImageGrabber.Grab(image: pixels, scale: 1)
+        }
+        #expect(fetches == 1)
+        #expect(frozen.map(\.display.id) == [3, 1, 2])
+        #expect(frozen.allSatisfy { $0.image === pixels })
+    }
+
+    @Test func freezingWithoutDisplaysNeverQueriesContent() async {
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.freeze([], options: CaptureOptions(), content: {
+                Issue.record("No content should be queried")
+                return 0
+            }) { _, _, _ in
+                Issue.record("No display should be captured")
+                return ImageGrabber.Grab(image: image(), scale: 1)
+            }
+        }
+    }
+
+    @Test func failedContentQueryCapturesNothing() async {
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.freeze([display(1), display(2)], options: CaptureOptions(), content: { () -> Int in
+                throw CaptureError.permissionDenied
+            }) { _, _, _ in
+                Issue.record("No display should be captured")
+                return ImageGrabber.Grab(image: image(), scale: 1)
+            }
+        }
+    }
+
+    @Test func cancelledFreezeReportsCancellationOverGrabFailure() async {
+        await #expect(throws: CancellationError.self) {
+            try await ImageGrabber.freeze([display(1)], options: CaptureOptions(), content: { 0 }) { _, _, _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CaptureError.failed("grab")
+            }
+        }
+    }
 }

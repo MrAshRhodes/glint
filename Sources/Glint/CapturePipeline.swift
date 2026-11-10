@@ -117,14 +117,32 @@ final class CapturePipeline {
         })
         let remember = defaults.object(forKey: ShellKey.rememberArea) as? Bool ?? true
         if !remember { capturer.lastArea = nil }
-        var hidden = prefs.hideWindowsDuringCapture ? hideOwnWindows(windows) : []
+        var canHide = prefs.hideWindowsDuringCapture
+        var hidden: [NSWindow] = []
+        func hideWindows() {
+            guard canHide else { return }
+            canHide = false
+            hidden = hideOwnWindows(windows)
+        }
         func restoreWindows() {
+            canHide = false
             for window in hidden.reversed() { window.orderFront(nil) }
             hidden.removeAll()
+        }
+        // The frozen selection overlay already leaves Glint's windows out, so they're ordered out once the
+        // overlay covers them instead of flashing away before it appears. A timer's live selection is
+        // transparent, so those windows go first, like every capture without a frozen overlay.
+        capturer.onSelectionPresented = nil
+        switch mode {
+        case .area, .areaToClipboard, .window, .text:
+            if canHide { capturer.onSelectionPresented = { hideWindows() } }
+        case .fullscreen, .repeatLast, .timer, .scrolling:
+            hideWindows()
         }
 
         return Task { @MainActor in
             defer {
+                capturer.onSelectionPresented = nil
                 busy = false
                 activeScroll = nil
                 onStatusTitle?(nil)
