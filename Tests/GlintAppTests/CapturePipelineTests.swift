@@ -18,7 +18,7 @@ private func pixelSizeAndDensity(of data: Data) throws -> (width: Int, height: I
 }
 
 @MainActor
-private final class CaptureFixture {
+final class CaptureFixture {
     let suite = "glint.pipeline.tests.\(UUID().uuidString)"
     let directory: URL
     let preferences: AppPreferences

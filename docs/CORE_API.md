@@ -486,8 +486,9 @@ public enum ProjectStore {
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
 `defaultPresetName`, `hotkeys`, `hideDockIcon`, `launchAtLogin` (value only; app registers the login item),
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
-`fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether the editor
-starts from `lastRenderSettings` instead of the default preset; until set, on unless `defaultPresetName` is set),
+`fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether new screenshots, in
+the editor and in automatic export, start from `lastRenderSettings` instead of the default preset; until set, on
+unless `defaultPresetName` is set),
 `keepCopiedImages` (opt-in, off by default: keep copied and dragged composed images for Reopen Last Image; key
 `glint.keepCopiedImages`), `outputRetention` (`OutputRetentionPeriod`, `.forever` by default; stored as a day count
 under `glint.outputRetentionDays`, where an unknown or negative value reads as `.forever`; see Output retention),

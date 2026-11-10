@@ -272,15 +272,10 @@ final class CapturePipeline {
         }
     }
 
+    /// The look a capture is exported with: the same resolution the editor starts from, so Remember settings and the
+    /// default preset apply whether or not the editor opens. A preset requested by name takes precedence.
     func settings(presetName: String? = nil) -> RenderSettings {
-        var s: RenderSettings
-        if let name = presetName ?? prefs.defaultPresetName, let p = presetStore.preset(named: name) {
-            s = p.settings
-        } else {
-            s = presetStore.defaultPreset?.settings ?? .default
-        }
-        s.autoBalance = prefs.autoBalance
-        return s
+        EditorHeadless.initialSettings(preferences: prefs, presetStore: presetStore, presetName: presetName)
     }
 
     private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool) {
