@@ -31,6 +31,14 @@ struct FrozenDisplay {
     }
 }
 
+/// What the capture path reads from a ScreenCaptureKit window, so tests can stand in for `SCWindow`.
+protocol QueriedWindow {
+    var windowID: CGWindowID { get }
+    var frame: CGRect { get }
+}
+
+extension SCWindow: QueriedWindow {}
+
 /// ScreenCaptureKit first, with a subprocess fallback only when it can honor the window policy.
 enum ImageGrabber {
     struct Grab { let image: CGImage; let scale: CGFloat }
@@ -88,12 +96,20 @@ enum ImageGrabber {
     }
 
     /// All required displays are frozen in memory before focus changes, or the entire capture fails.
-    static func freeze(_ displays: [DisplayInfo], options: CaptureOptions) async throws -> [FrozenDisplay] {
-        try await freeze(displays, options: options, content: {
-            try await ScreenContent.current(options: options)
+    /// The windows of that same content query come back too, so a window picked afterwards needs no second query.
+    static func freezeKeepingWindows(
+        _ displays: [DisplayInfo], options: CaptureOptions
+    ) async throws -> (displays: [FrozenDisplay], windows: [CGWindowID: any QueriedWindow]) {
+        var windows: [CGWindowID: any QueriedWindow] = [:]
+        let frozen = try await freeze(displays, options: options, content: {
+            let screenContent = try await ScreenContent.current(options: options)
+            windows = Dictionary(screenContent.content.windows.map { ($0.windowID, $0 as any QueriedWindow) },
+                                 uniquingKeysWith: { first, _ in first })
+            return screenContent
         }, capture: { display, options, content in
             try await content.grab(display.frame, display: display, options: options)
         })
+        return (frozen, windows)
     }
 
     /// Fetches the content once for every display: each query is a slow round trip on the way to the overlay.
@@ -143,33 +159,73 @@ enum ImageGrabber {
         }
     }
 
-    static func grabWindow(_ win: WindowInfo, scale: CGFloat, options: CaptureOptions) async throws -> Grab {
+    /// `known` is the window from the freeze-time content query. It saves the second query when still valid;
+    /// a window the freeze did not list, or that fails to capture, gets one fresh query.
+    static func grabWindow(_ win: WindowInfo, scale: CGFloat, options: CaptureOptions,
+                           known: (any QueriedWindow)? = nil) async throws -> Grab {
         try Task.checkCancellation()
         guard !options.excludesWindow(win.id, pid: win.pid, ownPID: ProcessInfo.processInfo.processIdentifier) else {
             throw CaptureError.windowNotFound
         }
+        let knownWindow = known.flatMap { $0.windowID == win.id ? $0 as? SCWindow : nil }
         return try await captureWithFallback(allowed: options.allowScreencaptureFallback, capture: {
-            let content = try await CaptureSignposts.measure("ShareableContent") {
-                try await WindowEnumerator.shareableContent()
-            }
-            guard let w = content.windows.first(where: { $0.windowID == win.id }) else { throw CaptureError.windowNotFound }
-            let filter = SCContentFilter(desktopIndependentWindow: w)
-            let cfg = SCStreamConfiguration()
-            cfg.width = Int((w.frame.width * scale).rounded())
-            cfg.height = Int((w.frame.height * scale).rounded())
-            cfg.showsCursor = !options.hideCursor
-            cfg.ignoreShadowsSingleWindow = !options.includeWindowShadow
-            cfg.backgroundColor = .clear
-            let img = try await CaptureSignposts.measure("CaptureImage") {
-                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
-            }
-            return Grab(image: img, scale: scale)
+            try await grabResolvingWindow(known: knownWindow, fresh: {
+                let content = try await CaptureSignposts.measure("ShareableContent") {
+                    try await WindowEnumerator.shareableContent()
+                }
+                return content.windows.first { $0.windowID == win.id }
+            }, grab: { w in
+                let filter = SCContentFilter(desktopIndependentWindow: w)
+                let cfg = SCStreamConfiguration()
+                cfg.width = Int((w.frame.width * scale).rounded())
+                cfg.height = Int((w.frame.height * scale).rounded())
+                cfg.showsCursor = !options.hideCursor
+                cfg.ignoreShadowsSingleWindow = !options.includeWindowShadow
+                cfg.backgroundColor = .clear
+                let img = try await CaptureSignposts.measure("CaptureImage") {
+                    try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+                }
+                return Grab(image: img, scale: scale)
+            })
         }, fallback: {
             // -o drops the shadow, -l captures a single window by id.
             let args = ["-x", "-l", "\(win.id)"] + (options.includeWindowShadow ? [] : ["-o"])
                 + (options.hideCursor ? [] : ["-C"])
             return Grab(image: try await runScreencapture(args), scale: scale)
         })
+    }
+
+    /// The freeze-time window only while its size still matches the live window: the grab is sized from it,
+    /// so a window resized since the freeze must come from a fresh query instead.
+    static func reusable(_ known: (any QueriedWindow)?, liveFrame: CGRect?) -> (any QueriedWindow)? {
+        guard let known, let liveFrame,
+              abs(known.frame.width - liveFrame.width) < 0.01,
+              abs(known.frame.height - liveFrame.height) < 0.01 else { return nil }
+        return known
+    }
+
+    /// Grabs with `known` when there is one. If that fails, or there was none, the window is looked up once more:
+    /// a missing window is gone (`windowNotFound`), anything else is retried on what the lookup returns.
+    static func grabResolvingWindow<Window>(
+        known: Window?, fresh: () async throws -> Window?, grab: (Window) async throws -> Grab
+    ) async throws -> Grab {
+        try Task.checkCancellation()
+        if let known {
+            do {
+                return try await grab(known)
+            } catch {
+                try Task.checkCancellation()
+                if isCancellation(error) { throw error }
+            }
+        }
+        guard let window = try await fresh() else { throw CaptureError.windowNotFound }
+        return try await grab(window)
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if case CaptureError.cancelled = error { return true }
+        return false
     }
 
     static func allowsRectFallback(_ options: CaptureOptions) -> Bool {
@@ -187,8 +243,7 @@ enum ImageGrabber {
             return grab
         } catch {
             try Task.checkCancellation()
-            if error is CancellationError { throw error }
-            if case CaptureError.cancelled = error { throw error }
+            if isCancellation(error) { throw error }
             guard allowed else { throw error }
             let grab = try await fallback()
             try Task.checkCancellation()

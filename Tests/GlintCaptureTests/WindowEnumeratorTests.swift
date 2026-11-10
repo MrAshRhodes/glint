@@ -170,6 +170,28 @@ struct WindowEnumeratorTests {
         #expect(result.windows.isEmpty && result.transientWindows.isEmpty && result.snapWindows.isEmpty)
     }
 
+    @Test func onScreenFrameReadsTheLiveBoundsOfTheListedWindowOnly() {
+        let frame = CGRect(x: 40, y: 60, width: 500, height: 300)
+        func listed(_ id: UInt32, onScreen: Bool?, frame: CGRect = frame) -> [String: Any] {
+            var d = entry(id, pid: other, layer: 0, frame: frame)
+            if let onScreen { d[kCGWindowIsOnscreen as String] = onScreen }
+            return d
+        }
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [listed(5, onScreen: true)]) == frame)
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [listed(4, onScreen: true,
+                                                                  frame: CGRect(x: 0, y: 0, width: 9, height: 9)),
+                                                           listed(5, onScreen: true)]) == frame)
+        // Off screen, unflagged, absent or empty all mean the window is gone.
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [listed(5, onScreen: false)]) == nil)
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [listed(5, onScreen: nil)]) == nil)
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [listed(6, onScreen: true)]) == nil)
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: []) == nil)
+
+        var unreadable = listed(5, onScreen: true)
+        unreadable[kCGWindowBounds as String] = nil
+        #expect(WindowEnumerator.onScreenFrame(of: 5, in: [unreadable]) == nil)
+    }
+
     @Test func defaultLevelsExcludeChromeWithoutExcludingPanels() {
         #expect(WindowEnumerator.popUpMenuLevel == Int(CGWindowLevelForKey(.popUpMenuWindow)))
         #expect(WindowEnumerator.screenSaverLevel == Int(CGWindowLevelForKey(.screenSaverWindow)))

@@ -3,26 +3,44 @@ import GlintCore
 
 @MainActor
 public final class ScreenCapturer {
-    typealias Selection = (outcome: SelectionOutcome, frozen: [FrozenDisplay]?)
+    /// What a selection hands to the grab that follows it.
+    struct Selection {
+        var outcome: SelectionOutcome
+        var frozen: [FrozenDisplay]?
+        /// When the overlay went away; nil when unknown, which owes the whole settle delay.
+        var closedAt: ContinuousClock.Instant?
+        /// Windows from the freeze's content query, so a window picked from them needs no second query.
+        var windows: [CGWindowID: any QueriedWindow] = [:]
+    }
 
     struct Services {
         var permission: @MainActor () throws -> Void = { try ScreenCapturer.requirePermission() }
         var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
         var select: @MainActor (OverlayStartMode, CGRect?, CaptureOptions, Bool, (@MainActor () -> Void)?) async throws
             -> Selection = { mode, lastArea, options, freeze, presented in
+            var windows: [CGWindowID: any QueriedWindow] = [:]
+            let capture: (([DisplayInfo]) async throws -> [FrozenDisplay]) = {
+                let frozen = try await ImageGrabber.freezeKeepingWindows($0, options: options)
+                windows = frozen.windows
+                return frozen.displays
+            }
             let session = SelectionSession(
                 mode: mode, lastArea: lastArea, snapToEdges: options.snapToEdges,
-                freeze: freeze ? { try await ImageGrabber.freeze($0, options: options) } : nil,
+                freeze: freeze ? capture : nil,
                 excludeOwnWindows: options.excludeOwnWindows, excludedWindowIDs: options.excludedWindowIDs,
                 onPresented: presented)
             let outcome = try await session.run()
             let frozen = session.takeFrozen()
             try Task.checkCancellation()
-            return (outcome, freeze ? frozen : nil)
+            return Selection(outcome: outcome, frozen: freeze ? frozen : nil, closedAt: session.closedAt,
+                             windows: windows)
         }
-        var isOnScreen: @MainActor (CGWindowID) -> Bool = { WindowEnumerator.isOnScreen($0) }
-        var grabWindow: @MainActor (WindowInfo, CGFloat, CaptureOptions) async throws -> ImageGrabber.Grab = {
-            try await ImageGrabber.grabWindow($0, scale: $1, options: $2)
+        var now: @MainActor () -> ContinuousClock.Instant = { .now }
+        var sleep: @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        var onScreenFrame: @MainActor (CGWindowID) -> CGRect? = { WindowEnumerator.onScreenFrame(of: $0) }
+        var grabWindow: @MainActor (WindowInfo, CGFloat, CaptureOptions, (any QueriedWindow)?) async throws
+            -> ImageGrabber.Grab = {
+            try await ImageGrabber.grabWindow($0, scale: $1, options: $2, known: $3)
         }
         var grabRect: @MainActor (CGRect, DisplayInfo, CaptureOptions) async throws -> ImageGrabber.Grab = {
             try await ImageGrabber.grabRect($0, display: $1, options: $2)
@@ -100,11 +118,11 @@ public final class ScreenCapturer {
     public func captureWithTimer(seconds: Int, mode: TimedCaptureMode,
                                  onTick: ((Int) -> Void)? = nil) async throws -> CaptureResult {
         try await requirePermission()
-        var outcome: SelectionOutcome?
+        var selection: Selection?
         // No freezing: the grab happens live after the countdown, so menus can be opened meanwhile.
         switch mode {
-        case .area: outcome = try await select(.area, freeze: false).outcome
-        case .window: outcome = try await select(.window, freeze: false).outcome
+        case .area: selection = try await select(.area, freeze: false)
+        case .window: selection = try await select(.window, freeze: false)
         case .fullscreen, .lastArea: break
         }
         var remaining = max(seconds, 0)
@@ -114,7 +132,7 @@ public final class ScreenCapturer {
             remaining -= 1
         }
         onTick?(0)
-        if let outcome { return try await grab(outcome, kind: mode == .window ? .window : .area) }
+        if let selection { return try await grab(selection, kind: mode == .window ? .window : .area) }
         return mode == .fullscreen ? try await captureFullscreen() : try await captureLastArea()
     }
 
@@ -157,24 +175,25 @@ public final class ScreenCapturer {
                         freeze: Bool = true) async throws -> Selection {
         let presented = onSelectionPresented
         onSelectionPresented = nil
-        let selection = try await services.select(mode, lastArea, options, freeze, presented)
+        var selection = try await services.select(mode, lastArea, options, freeze, presented)
         try Task.checkCancellation()
-        return (selection.outcome, freeze ? selection.frozen ?? [] : nil)
+        selection.frozen = freeze ? selection.frozen ?? [] : nil
+        return selection
     }
 
     private func interactive(start: OverlayStartMode, kind: CaptureKind) async throws -> CaptureResult {
         try await requirePermission()
         let selection = try await select(start)
         return try await CaptureSignposts.measure("SelectionToImage") {
-            try await grab(selection.outcome, kind: kind, frozen: selection.frozen)
+            try await grab(selection, kind: kind)
         }
     }
 
-    /// A non-nil `frozen` requires the pre-focus pixels, including when a requested display is missing.
-    private func grab(_ outcome: SelectionOutcome, kind: CaptureKind,
-                      frozen: [FrozenDisplay]? = nil) async throws -> CaptureResult {
+    /// A non-nil `selection.frozen` requires the pre-focus pixels, including when a requested display is missing.
+    private func grab(_ selection: Selection, kind: CaptureKind) async throws -> CaptureResult {
         try Task.checkCancellation()
-        switch outcome {
+        let frozen = selection.frozen
+        switch selection.outcome {
         case .area(let r, let displayID):
             if let frozen {
                 let result = try frozenResult(r, kind: kind, frozen: frozen, displayID: displayID)
@@ -182,19 +201,24 @@ public final class ScreenCapturer {
                 return result
             }
             lastArea = r
-            try await settle()
+            try await settle(options.settleDelay, since: selection.closedAt)
             return try await grabArea(r, kind: kind)
         case .window(let w):
             let windowKind: CaptureKind = kind == .textOnly ? .textOnly : .window
-            if let frozen, w.layer != 0 || !services.isOnScreen(w.id) {
-                return try frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w)
+            // The vanished-window probe also reads the live frame, which gates reusing the freeze's window.
+            var liveFrame: CGRect?
+            if let frozen {
+                liveFrame = w.layer == 0 ? services.onScreenFrame(w.id) : nil
+                if liveFrame == nil { return try frozenResult(w.frame, kind: windowKind, frozen: frozen, window: w) }
             }
-            try await settle()
+            let waited = try await settle(options.windowSettleDelay, since: selection.closedAt)
             let displays = services.displays()
             let d = CaptureGeometry.index(containing: CGPoint(x: w.frame.midX, y: w.frame.midY),
                                           in: displays.map(\.frame)).map { displays[$0] }
+            // The window can change during a real wait, after the frame it is checked against was read.
+            let known = waited ? nil : ImageGrabber.reusable(selection.windows[w.id], liveFrame: liveFrame)
             do {
-                let g = try await services.grabWindow(w, d?.scale ?? 2, options)
+                let g = try await services.grabWindow(w, d?.scale ?? 2, options, known)
                 try Task.checkCancellation()
                 return CaptureResult(image: g.image, scale: g.scale, displayID: d?.id ?? CGMainDisplayID(),
                                      rect: w.frame, kind: windowKind, windowInfo: w)
@@ -212,8 +236,14 @@ public final class ScreenCapturer {
         }
     }
 
-    private func settle() async throws {
-        try await Task.sleep(nanoseconds: UInt64(options.settleDelay * 1_000_000_000)) // let overlay vanish
+    /// Waits only for what is left of `delay` since the overlay closed. Returns whether it waited at all.
+    @discardableResult
+    private func settle(_ delay: TimeInterval, since closedAt: ContinuousClock.Instant?) async throws -> Bool {
+        let wait = CaptureSettle.remaining(delay, elapsed: closedAt.map { services.now() - $0 })
+        try Task.checkCancellation()
+        guard wait > .zero else { return false }
+        try await services.sleep(wait)
+        return true
     }
 
     /// Uses only the display geometry captured before focus changed, not a fresh display enumeration.

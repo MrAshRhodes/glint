@@ -43,8 +43,11 @@ public struct CaptureOptions: Sendable {
     public var snapToEdges: Bool = false
     /// For window capture: keep the system drop shadow (false = shadow-free, transparent corners).
     public var includeWindowShadow: Bool = false
-    /// Seconds to wait after the overlay closes before grabbing pixels.
+    /// Seconds to wait after the overlay closes before grabbing display pixels, which could still show its fade-out.
     public var settleDelay: TimeInterval = 0.12
+    /// The same wait before an independent-window grab. That grab renders the window by itself, so the overlay never
+    /// appears in it and nothing needs to settle. Set it to `settleDelay` to restore the old pacing.
+    public var windowSettleDelay: TimeInterval = 0
     /// Permit a subprocess fallback only when it can honor the exclusions. Frozen snapshots never use it.
     public var allowScreencaptureFallback: Bool = true
     public init() {}
@@ -73,6 +76,17 @@ public enum CaptureError: Error, LocalizedError {
         case .noLastArea: return "There is no previous capture area."
         case .failed(let m): return m
         }
+    }
+}
+
+/// How much of a settle delay is still owed once part of it has passed since the overlay closed.
+enum CaptureSettle {
+    /// `elapsed` is nil when the close time is unknown, which owes the whole delay.
+    static func remaining(_ delay: TimeInterval, elapsed: Duration?) -> Duration {
+        guard delay.isFinite, delay > 0 else { return .zero }
+        let owed = Duration.seconds(delay)
+        guard let elapsed else { return owed }
+        return max(owed - max(elapsed, .zero), .zero)
     }
 }
 

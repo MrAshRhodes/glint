@@ -61,6 +61,8 @@ final class SelectionSession {
     private var onPresented: (@MainActor () -> Void)?
     /// Displays grabbed before any overlay was created or took focus; retained until the result is consumed.
     private(set) var frozen: [FrozenDisplay] = []
+    /// When the overlay panels went away, so the grab that follows waits only for what is left of its settle time.
+    private(set) var closedAt: ContinuousClock.Instant?
 
     init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false,
          freeze: (([DisplayInfo]) async throws -> [FrozenDisplay])? = nil,
@@ -286,6 +288,7 @@ final class SelectionSession {
             $0.close()
         }
         panels.removeAll()
+        closedAt = ContinuousClock.now
         windows.removeAll()
         displays.removeAll()
         targets.removeAll()

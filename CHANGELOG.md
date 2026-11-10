@@ -8,9 +8,9 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Capture timing signposts for diagnosing slow captures. The hotkey callback, permission check, screen content query, image grab, render, encode, clipboard write and thumbnail, plus the editor's first preview, copy and drag, are timed in the `Capture` signpost category (subsystem `io.github.mrashrhodes.glint`), so hotkey-to-overlay and mouse-up-to-clipboard latency can be measured in Instruments or with `log stream`. Signposts carry only timings, the trigger and the capture mode, never coordinates, window titles, file paths or image content. ([#96])
+- Window capture no longer waits a fixed 120 ms after you pick a window, and reuses the window list read when the selection opened instead of asking macOS again, so the screenshot is taken sooner. Live area grabs (timed area) wait only what is left of that 120 ms since the selection closed, and a window that closes or cannot be grabbed still falls back to the frozen pixels. ([#101])
 
 ### Fixed
 
@@ -316,6 +316,6 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
-[#96]: https://github.com/MrAshRhodes/glint/issues/96
 [#100]: https://github.com/MrAshRhodes/glint/issues/100
+[#101]: https://github.com/MrAshRhodes/glint/issues/101
 [#108]: https://github.com/MrAshRhodes/glint/issues/108
