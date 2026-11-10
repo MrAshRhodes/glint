@@ -52,8 +52,6 @@ final class PrefsModel: ObservableObject {
 /// takes its title from the selected pane and resizes to fit each pane's content.
 @MainActor
 final class PreferencesWindowController: NSWindowController {
-    static var shared: PreferencesWindowController!
-
     convenience init(prefs: AppPreferences, store: PresetStore, hotkeys: HotkeyController) {
         let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store, hotkeys: hotkeys))
         let window = NSWindow(contentViewController: tabs)
@@ -1349,18 +1347,57 @@ private struct AboutTab: View {
     }
 }
 
+/// Whether Screen Recording is granted and whether macOS kept a stale entry for an older signature, as the
+/// permissions pane shows them. Views change only when one of the two changes, not on every poll.
+final class ScreenRecordingStatus: ObservableObject {
+    @Published private(set) var isGranted: Bool
+    @Published private(set) var isStale: Bool
+    /// A request made from the pane is still waiting on the user, not a stale entry.
+    var requestedHere = false
+
+    private let readGrant: () -> Bool
+    private let needsReauthorization: (Bool) -> Bool
+
+    init(
+        readGrant: @escaping () -> Bool = { ScreenRecordingPermission.refreshGrant() },
+        needsReauthorization: @escaping (Bool) -> Bool = { ScreenRecordingPermission.needsReauthorization(granted: $0) }
+    ) {
+        self.readGrant = readGrant
+        self.needsReauthorization = needsReauthorization
+        let granted = readGrant()
+        isGranted = granted
+        isStale = needsReauthorization(granted)
+    }
+
+    func refresh() {
+        AppPerformance.measure("PermissionPoll", in: AppPerformance.idle) {
+            let granted = readGrant()
+            let stale = !requestedHere && needsReauthorization(granted)
+            if granted != isGranted { isGranted = granted }
+            if stale != isStale { isStale = stale }
+        }
+    }
+}
+
 struct PermissionsPane: View {
     static let reauthorizeTitle = "Re-authorize Screen Recording…"
     static let reauthorizeCaption = "Already switched on in System Settings but captures still fail? This can happen after an update. Glint will clear its old entry and request access again."
     static let accessHint = "Glint needs Screen Recording access to take screenshots. After switching it on, choose Quit & Reopen if macOS asks, or restart Glint yourself."
 
-    @StateObject private var state = Local<Bool>(ScreenRecordingPermission.refreshGrant())
-    @StateObject private var stale = Local<Bool>(ScreenRecordingPermission.needsReauthorization)
-    @StateObject private var requestedHere = Local<Bool>(false)
+    @StateObject private var grant: ScreenRecordingStatus
+    @StateObject private var poller: OnScreenPoller
     @StateObject private var working = Local<Bool>(false)
     @StateObject private var status = Local<String?>(nil)
-    private var granted: Bool { state.value }
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var granted: Bool { grant.isGranted }
+
+    /// Re-reads the grant once a second, but only while the pane is on screen. Tests replace both parameters.
+    init(
+        grant: @autoclosure @escaping () -> ScreenRecordingStatus = ScreenRecordingStatus(),
+        poller: @autoclosure @escaping () -> OnScreenPoller = OnScreenPoller()
+    ) {
+        _grant = StateObject(wrappedValue: grant())
+        _poller = StateObject(wrappedValue: poller())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1383,7 +1420,7 @@ struct PermissionsPane: View {
             }
             .accessibilityElement(children: .combine)
             if !granted {
-                if stale.value {
+                if grant.isStale {
                     VStack(alignment: .leading, spacing: 6) {
                         Button(Self.reauthorizeTitle) { reauthorize() }
                             .buttonStyle(.borderedProminent)
@@ -1396,9 +1433,9 @@ struct PermissionsPane: View {
                 } else {
                     HStack {
                         Button("Request Access") {
-                            requestedHere.value = true
+                            grant.requestedHere = true
                             ScreenRecordingPermission.request()
-                            refresh()
+                            grant.refresh()
                         }
                         Button("Open System Settings") { ScreenRecordingPermission.openSystemSettings() }
                     }
@@ -1409,13 +1446,8 @@ struct PermissionsPane: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onReceive(timer) { _ in refresh() }
-    }
-
-    private func refresh() {
-        state.value = ScreenRecordingPermission.refreshGrant()
-        // A request made from this pane is still waiting on the user, not a stale entry.
-        stale.value = !requestedHere.value && ScreenRecordingPermission.needsReauthorization(granted: state.value)
+        .onReceive(poller.beats) { _ in grant.refresh() }
+        .background(WindowVisibility { poller.setOnScreen($0) })
     }
 
     private func reauthorize() {
@@ -1423,10 +1455,10 @@ struct PermissionsPane: View {
         status.value = nil
         Task { @MainActor in
             let outcome = await ScreenRecordingPermission.reauthorize()
-            if outcome == .requestedAgain { requestedHere.value = true }
+            if outcome == .requestedAgain { grant.requestedHere = true }
             status.value = Self.message(for: outcome)
             working.value = false
-            refresh()
+            grant.refresh()
         }
     }
 
