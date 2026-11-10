@@ -8,14 +8,31 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Added
+
+- Capture/editor/export timing signposts, including hotkey delivery, permission checks, metadata lookup, image acquisition, rendering, encoding, clipboard publication and first preview. These record timings and fixed mode/trigger labels, never screenshot contents, coordinates, window titles or paths. ([#96])
+- Opt-in `Glint --diagnose --timing` reports cold and warm capture-stage timings as JSON. Reading display pixels requires the separate `--allow-screen-capture` flag; plain `--diagnose` is unchanged. A permission-free weekly Performance workflow checks offscreen overlay drawing, synthetic rendering/encoding, output density and colour-profile metadata, retaining timing summaries and failing on gross regressions. ([#97])
+- Hold `Space` while dragging a selection to move the whole rectangle; release it to continue resizing. Before a drag, `Space` still switches between area and window selection, and the hint explains both actions. ([#105])
+
 ### Changed
 
 - Window capture no longer waits a fixed 120 ms after you pick a window, and reuses the window list read when the selection opened instead of asking macOS again, so the screenshot is taken sooner. Live area grabs (timed area) wait only what is left of that 120 ms since the selection closed, and a window that closes or cannot be grabbed still falls back to the frozen pixels. ([#101])
+- Screenshot composition, encoding, thumbnail preparation and file writes move off the main actor. Direct output is copied and shown before disk writes finish, and the editor opens before the optional raw file is saved. Thumbnails use downscaled images on the capture's display; recent-file entries, saved notifications and drag files appear only after a successful write. Quitting waits for pending writes, failures remain visible, and background saves do not overwrite a newly created file. ([#98])
+- Clipboard publication shares an immutable image snapshot with background PNG preparation, makes TIFF only when a consumer requests it, and reuses encoded PNG bytes for saving. Editor Copy renders off-main, and dragging starts with a file promise while rendering and writing continue. Pending clipboard data is handed over on quit; output failures are reported rather than silently publishing an empty result. First-paste and drag-delivery latency still require live measurement. ([#99])
+- Glint prewarms capture metadata, not pixels, after launch and display/session changes when Screen Recording is already allowed. Captures reuse it and retry once with fresh metadata after an acquisition failure. Screen freezing and window enumeration overlap, and shared hint layouts are prepared before the first overlay frame. This does not bypass permission checks or acquire background screenshots. ([#102])
+- The editor's first frame shows a safely positioned capture with the composed preview's crop, orientation and proportions, without delaying the initial render to group later edits. Images awaiting automatic redaction remain covered and unavailable to preview/drag until analysis finishes. `ProvisionalFrame` shares compositor layout and crop rules; `EditorContext.autoRedactionApplied` identifies captures already analysed by the pipeline. ([#109])
+- Editor previews, copies and exports reuse sRGB conversion and annotation baking when only the look changes, with a 256 MB image budget. Background, wallpaper and watermark decoding also moves off-main and uses a separate 256 MB, three-image cache invalidated by file identity and metadata. Annotation edits invalidate baked pixels; redactions remain in every output. Grain backgrounds use equivalent band drawing. `RenderCache`, `ImageFileCache`, the compositor's optional `cache:` argument and `Scripts/benchmark-editor-render.sh` expose and measure this reuse. ([#110])
+- Global shortcuts register before deferred menu/updater setup, and Settings is constructed only when opened. The Permissions pane polls only while visible and publishes only changed values. Launch, Settings, menu and permission-check signposts make the remaining cold/idle costs observable. ([#112])
+- Full-screen and repeat-last-area captures keep existing editor and Settings windows visible, using capture exclusion instead of hide/restore flicker. Interactive, timed and scrolling capture retain their existing visibility behavior. ([#113])
+- Overlay profiling now reports the effective AppKit dirty-region area, bounding area and rectangle count. The CPU benchmark compares disjoint and coalesced clipping; it does not claim a live frame-rate improvement. The screenshot colour policy is documented and regression-tested: raw PNG preserves the supplied profile, composed output is colour-managed in sRGB, and clipboard/encoded output are compared in a common colour space. Live redraw, wide-gamut display appearance and native-tool comparisons remain unmeasured. ([#107], [#111])
 
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
 - Copied screenshots now match the saved file's resolution. The clipboard image carries the same pixel size and density as the saved PNG or TIFF, so apps that honour image resolution paste a Retina capture at the same size as the saved file instead of larger, and the **Scale** export setting applies to copied images as it does to saved ones. ([#100])
+- Changing a global shortcut registers the replacement before releasing the working binding, saves only successful changes, and explains conflicts in its Settings row. Startup registration failures appear in Settings and a **Shortcut Problem…** menu item, with a notification when enabled. Unrelated preference changes no longer re-register every shortcut. ([#103])
+- Busy capture requests beep instead of disappearing silently. Capture, OCR, output and recording failures use a notification when available or an alert and beep otherwise. Screen Recording refusal opens setup, and notification permission is not repeatedly requested after the user has answered. ([#104])
+- Selection crosshairs also work on non-key display panels. Arrow nudges remain effective when mouse movement resumes, and arrows without an active drag move the real pointer within the displays. Space/display-layout changes cancel stale selections, with observers removed when selection ends. ([#105])
 
 ## [1.8.2] - 2026-11-10
 
@@ -316,6 +333,20 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#96]: https://github.com/MrAshRhodes/glint/issues/96
+[#97]: https://github.com/MrAshRhodes/glint/issues/97
+[#98]: https://github.com/MrAshRhodes/glint/issues/98
+[#99]: https://github.com/MrAshRhodes/glint/issues/99
 [#100]: https://github.com/MrAshRhodes/glint/issues/100
 [#101]: https://github.com/MrAshRhodes/glint/issues/101
+[#102]: https://github.com/MrAshRhodes/glint/issues/102
+[#103]: https://github.com/MrAshRhodes/glint/issues/103
+[#104]: https://github.com/MrAshRhodes/glint/issues/104
+[#105]: https://github.com/MrAshRhodes/glint/issues/105
+[#107]: https://github.com/MrAshRhodes/glint/issues/107
 [#108]: https://github.com/MrAshRhodes/glint/issues/108
+[#109]: https://github.com/MrAshRhodes/glint/issues/109
+[#110]: https://github.com/MrAshRhodes/glint/issues/110
+[#111]: https://github.com/MrAshRhodes/glint/issues/111
+[#112]: https://github.com/MrAshRhodes/glint/issues/112
+[#113]: https://github.com/MrAshRhodes/glint/issues/113
