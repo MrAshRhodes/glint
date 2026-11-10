@@ -52,7 +52,7 @@ private func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags) ->
 @Suite("Editor export actions")
 @MainActor
 struct EditorExportTests {
-    @Test func commandCShortcutCopiesImageAndIsConsumed() throws {
+    @Test func commandCShortcutCopiesImageAndIsConsumed() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
@@ -62,11 +62,12 @@ struct EditorExportTests {
         defer { controller.window?.close() }
 
         #expect(controller.handleShortcut(keyEvent("c", modifiers: .command)))
+        await controller.finishExports()
         #expect(copies == 1)
         #expect(controller.model.statusMessage == "Copied to clipboard")
     }
 
-    @Test func modifiedCommandCShortcutIsNotConsumed() throws {
+    @Test func modifiedCommandCShortcutIsNotConsumed() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
@@ -75,10 +76,11 @@ struct EditorExportTests {
         defer { controller.window?.close() }
 
         #expect(!controller.handleShortcut(keyEvent("c", modifiers: [.command, .option])))
+        await controller.finishExports()
         #expect(copies == 0)
     }
 
-    @Test func textFirstResponderBypassesImageCopyShortcut() throws {
+    @Test func textFirstResponderBypassesImageCopyShortcut() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
@@ -91,10 +93,11 @@ struct EditorExportTests {
         #expect(window.makeFirstResponder(textView))
 
         _ = window.performKeyEquivalent(with: keyEvent("c", modifiers: .command))
+        await controller.finishExports()
         #expect(copies == 0)
     }
 
-    @Test func failedCopyKeepsWindowOpenAndDoesNotCallExportCallback() throws {
+    @Test func failedCopyKeepsWindowOpenAndDoesNotCallExportCallback() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var canCopy = false
@@ -108,21 +111,23 @@ struct EditorExportTests {
         controller.onClose = { closes += 1 }
 
         #expect(controller.window?.isVisible == false)
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         #expect(exports == 0 && closes == 0 && beeps == 1)
         #expect(controller.model.statusMessage == "Copy failed")
-        #expect(!controller.copyToClipboard())
+        #expect(await controller.copyToClipboard() == false)
         #expect(exports == 0 && closes == 0)
         let retry = try #require(controller.actions.retryExport)
         canCopy = true
         retry()
+        await controller.finishExports()
         #expect(exports == 1 && closes == 0)
         #expect(controller.actions.retryExport == nil)
         retry()
+        await controller.finishExports()
         #expect(exports == 1)
     }
 
-    @Test func successfulCopyClosesOnlyWhenConfigured() throws {
+    @Test func successfulCopyClosesOnlyWhenConfigured() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let pasteboard = NSPasteboard(name: .init("glint.editor.tests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -134,14 +139,14 @@ struct EditorExportTests {
         controller.onClose = { closes += 1 }
 
         f.preferences.closeAfterCopy = false
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         #expect(exports.count == 1 && exports[0] == nil && closes == 0)
         #expect(controller.model.statusMessage == "Copied to clipboard")
         let data = try #require(pasteboard.data(forType: .png))
         let image = try #require(GlintImageIO.load(data: data))
         #expect(image.width == 100 && image.height == 80)
         f.preferences.closeAfterCopy = true
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         #expect(exports.count == 2 && closes == 1)
     }
 
@@ -181,13 +186,13 @@ struct EditorExportTests {
         #expect(controller.actions.retryExport != nil)
     }
 
-    @Test func closingEditorRemovesEveryDragPayloadButNotOtherFiles() throws {
+    @Test func closingEditorRemovesEveryDragPayloadButNotOtherFiles() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
         let controller = f.controller(services: services)
-        let first = try #require(controller.prepareDragFile())
-        let second = try #require(controller.prepareDragFile())
+        let first = try #require(try await dragFile(from: controller))
+        let second = try #require(try await dragFile(from: controller))
         #expect(first != second)
         #expect(GlintImageIO.load(url: first) != nil && GlintImageIO.load(url: second) != nil)
         let unrelated = services.dragDirectory.appendingPathComponent("keep.png")
@@ -198,7 +203,7 @@ struct EditorExportTests {
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
-    @Test func dragWriteFailureIsVisibleAndReturnsNoPayload() throws {
+    @Test func dragWriteFailureIsVisibleAndDeliversNothing() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
@@ -209,7 +214,7 @@ struct EditorExportTests {
         defer { controller.window?.close() }
         var exports = 0
         controller.onExported = { _ in exports += 1 }
-        #expect(controller.prepareDragFile() == nil)
+        #expect(try await dragFile(from: controller) == nil)
         #expect(controller.model.statusMessage?.hasPrefix("Drag export failed:") == true)
         #expect(beeps == 1 && exports == 0)
         #expect(controller.actions.retryExport != nil)
@@ -224,6 +229,15 @@ struct EditorExportTests {
         return controller
     }
 
+    /// The preview fails the same way and says so in the status line once it lands. Waiting for that first keeps it
+    /// from replacing the message of an export that is already under way.
+    private func settledFailingController(_ f: EditorFixture, services: EditorExportServices) async throws -> EditorWindowController {
+        let controller = failingController(f, services: services)
+        for _ in 0..<500 where controller.model.statusMessage == nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(controller.model.statusMessage == notAppliedMessage)
+        return controller
+    }
+
     @Test func renderFinalThrowsWhenAnnotationsCannotBeBaked() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let model = f.model()
@@ -234,23 +248,23 @@ struct EditorExportTests {
         #expect(try model.renderFinal().width == 100)
     }
 
-    @Test func copyRefusesWhenAnnotationsCannotBeBaked() throws {
+    @Test func copyRefusesWhenAnnotationsCannotBeBaked() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
         var copies = 0, beeps = 0
         services.copy = { _, _, _ in copies += 1; return true }
         services.beep = { beeps += 1 }
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var exports = 0, closes = 0
         controller.onExported = { _ in exports += 1 }
         controller.onClose = { closes += 1 }
 
-        #expect(!controller.copyToClipboard())
+        #expect(await controller.copyToClipboard() == false)
         #expect(copies == 0 && exports == 0 && beeps == 1)
         #expect(controller.model.statusMessage == "Copy failed: \(notAppliedMessage)")
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         #expect(copies == 0 && exports == 0 && closes == 0 && beeps == 2)
     }
 
@@ -275,7 +289,7 @@ struct EditorExportTests {
         #expect(saved.isEmpty)
     }
 
-    @Test func dragRefusesWhenAnnotationsCannotBeBaked() throws {
+    @Test func dragRefusesWhenAnnotationsCannotBeBaked() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
@@ -285,12 +299,12 @@ struct EditorExportTests {
             return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backing)
         }
         services.beep = { beeps += 1 }
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var exports = 0
         controller.onExported = { _ in exports += 1 }
 
-        #expect(controller.prepareDragFile() == nil)
+        #expect(try await dragFile(from: controller) == nil)
         #expect(writes == 0 && exports == 0 && beeps == 1)
         #expect(controller.model.statusMessage == "Drag export failed: \(notAppliedMessage)")
         let dragged = (try? FileManager.default.contentsOfDirectory(atPath: services.dragDirectory.path)) ?? []
@@ -306,7 +320,7 @@ struct EditorExportTests {
     }
 
     @Test(arguments: [false, true])
-    func copyRetryKeepsEditsAndUndoAndRespectsClosePreference(closeAfterCopy: Bool) throws {
+    func copyRetryKeepsEditsAndUndoAndRespectsClosePreference(closeAfterCopy: Bool) async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = closeAfterCopy
         var services = EditorExportServices()
@@ -326,11 +340,13 @@ struct EditorExportTests {
         controller.onExported = { _ in exports += 1 }
         controller.onClose = { closes += 1 }
 
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         let firstRetry = try #require(controller.actions.retryExport)
         firstRetry()
+        await controller.finishExports()
         let secondRetry = try #require(controller.actions.retryExport)
         secondRetry()
+        await controller.finishExports()
         #expect(copies.isEmpty && exports == 0 && closes == 0 && beeps == 3)
         #expect(model.image === f.context.image)
         #expect(model.annotations == [redaction] && model.selection == [redaction.id])
@@ -349,6 +365,7 @@ struct EditorExportTests {
         model.renderer = EditorModel.compositorRenderer
         let finalRetry = try #require(controller.actions.retryExport)
         finalRetry()
+        await controller.finishExports()
         #expect(copies.count == 1 && exports == 1 && closes == (closeAfterCopy ? 1 : 0))
         try expectRedacted(try #require(copies.first), x: 75, y: 60)
         #expect(model.annotations == [expanded] && model.canUndo)
@@ -356,25 +373,27 @@ struct EditorExportTests {
         firstRetry()
         secondRetry()
         finalRetry()
+        await controller.finishExports()
         #expect(copies.count == 1 && exports == 1 && beeps == 3)
     }
 
-    @Test func publicCopyRetryDoesNotCloseEvenWithCloseAfterCopyEnabled() throws {
+    @Test func publicCopyRetryDoesNotCloseEvenWithCloseAfterCopyEnabled() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
         var copies: [CGImage] = []
         services.copy = { image, _, _ in copies.append(image); return true }
         services.beep = {}
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var closes = 0
         controller.onClose = { closes += 1 }
 
-        #expect(!controller.copyToClipboard())
+        #expect(await controller.copyToClipboard() == false)
         let retry = try #require(controller.actions.retryExport)
         controller.model.renderer = EditorModel.compositorRenderer
         retry()
+        await controller.finishExports()
         #expect(copies.count == 1 && closes == 0)
         try expectRedacted(try #require(copies.first))
         #expect(controller.actions.retryExport == nil)
@@ -481,7 +500,7 @@ struct EditorExportTests {
         #expect(shared.count == 1)
     }
 
-    @Test func dragRetryPreparesRedactedPayloadAndRequestsAnotherGesture() throws {
+    @Test func dragRetryPreparesRedactedPayloadAndRequestsAnotherGesture() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
@@ -492,49 +511,53 @@ struct EditorExportTests {
             return saved
         }
         services.beep = { beeps += 1 }
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var exports = 0
         controller.onExported = { _ in exports += 1 }
 
-        #expect(controller.prepareDragFile() == nil)
+        #expect(try await dragFile(from: controller) == nil)
         let firstRetry = try #require(controller.actions.retryExport)
         firstRetry()
+        await controller.finishExports()
         #expect(payloads.isEmpty && exports == 0 && beeps == 2)
         #expect(controller.model.annotations == [redaction])
         controller.model.renderer = EditorModel.compositorRenderer
         let retry = try #require(controller.actions.retryExport)
         retry()
+        await controller.finishExports()
         #expect(payloads.count == 1 && exports == 0)
         let payload = try #require(payloads.first)
         try expectRedacted(try #require(GlintImageIO.load(url: payload)))
         #expect(controller.model.statusMessage == "Drag to share again.")
         #expect(controller.actions.retryExport == nil)
         retry()
+        await controller.finishExports()
         #expect(payloads.count == 1)
 
         // Starting the next drag must render again, not reuse the previously prepared file.
         controller.model.renderer = failingBakeRenderer
-        #expect(controller.prepareDragFile() == nil)
+        #expect(try await dragFile(from: controller) == nil)
         #expect(payloads.count == 1 && exports == 0)
         controller.window?.close()
         #expect(controller.actions.retryExport == nil)
         #expect(payloads.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
     }
 
-    @Test func closingWindowInvalidatesPendingRetry() throws {
+    @Test func closingWindowInvalidatesPendingRetry() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0
         services.copy = { _, _, _ in copies += 1; return true }
         services.beep = {}
-        let controller = failingController(f, services: services)
-        #expect(!controller.copyToClipboard())
+        let controller = try await settledFailingController(f, services: services)
+        #expect(await controller.copyToClipboard() == false)
         let retry = try #require(controller.actions.retryExport)
         controller.window?.close()
         #expect(controller.actions.retryExport == nil)
         controller.model.renderer = EditorModel.compositorRenderer
         retry()
+        await controller.finishExports()
         #expect(copies == 0)
     }
 
@@ -554,7 +577,7 @@ struct EditorExportTests {
         #expect(preview.image.width == 100 && preview.image.height == 80)
     }
 
-    @Test func solidRedactionReachesSaveClipboardAndDragPayloads() throws {
+    @Test func solidRedactionReachesSaveClipboardAndDragPayloads() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let pasteboard = NSPasteboard(name: .init("glint.editor.redaction.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -573,10 +596,10 @@ struct EditorExportTests {
         controller.saveOutput()
         let savedURL = try #require(saved)
         let file = try #require(GlintImageIO.load(url: savedURL))
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         let clipboardData = try #require(pasteboard.data(forType: .png))
         let clipboard = try #require(GlintImageIO.load(data: clipboardData))
-        let dragURL = try #require(controller.prepareDragFile())
+        let dragURL = try #require(try await dragFile(from: controller))
         let dragged = try #require(GlintImageIO.load(url: dragURL))
         for output in [file, clipboard, dragged] {
             let pixels = try #require(PixelBuffer(output))
@@ -630,9 +653,9 @@ struct EditorExportTests {
         controller.onExported = { if let url = $0 { saved = url } }
         controller.saveOutput()
         let savedURL = try #require(saved)
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         let clipboardData = try #require(pasteboard.data(forType: .png))
-        let dragURL = try #require(controller.prepareDragFile())
+        let dragURL = try #require(try await dragFile(from: controller))
         controller.actions.share()
         #expect(matches(try #require(shared)))
         for data in [try Data(contentsOf: savedURL), clipboardData, try Data(contentsOf: dragURL)] {
@@ -655,7 +678,7 @@ struct EditorExportTests {
 
     // MARK: Reporting copied and dragged images
 
-    @Test func copyReportsTheRenderedImageAndBackingScale() throws {
+    @Test func copyReportsTheRenderedImageAndBackingScale() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
@@ -672,7 +695,7 @@ struct EditorExportTests {
         var shared: [SharedImage] = []
         controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
 
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         let event = try #require(shared.first)
         #expect(shared.count == 1 && event.kind == .copied && event.backingScale == 2)
         #expect(densities.count == 1 && densities[0].scale == f.preferences.exportScale && densities[0].backingScale == 2)
@@ -684,7 +707,7 @@ struct EditorExportTests {
     }
 
     @Test(arguments: ExportScale.allCases)
-    func copyAndSaveReceiveTheSameScales(scale: ExportScale) throws {
+    func copyAndSaveReceiveTheSameScales(scale: ExportScale) async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         f.preferences.exportScale = scale
@@ -699,7 +722,7 @@ struct EditorExportTests {
         let controller = f.controller(services: services)
         defer { controller.window?.close() }
 
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         controller.saveOutput()
         #expect(copied.count == 1 && written.count == 1)
         #expect(copied[0].scale == scale && copied[0].backingScale == 2)
@@ -707,7 +730,7 @@ struct EditorExportTests {
     }
 
     @Test(arguments: ExportScale.allCases)
-    func pastedImageHasTheSizeAndDensityOfTheSavedFile(scale: ExportScale) throws {
+    func pastedImageHasTheSizeAndDensityOfTheSavedFile(scale: ExportScale) async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         f.preferences.exportScale = scale
@@ -721,7 +744,7 @@ struct EditorExportTests {
         controller.onExported = { if let url = $0 { saved = url } }
 
         controller.saveOutput()
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         let file = try pixelSizeAndDensity(of: Data(contentsOf: try #require(saved)))
         let png = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .png)))
         let tiff = try pixelSizeAndDensity(of: try #require(pasteboard.data(forType: .tiff)))
@@ -734,7 +757,7 @@ struct EditorExportTests {
         }
     }
 
-    @Test func copyAndCloseReportsTheImageBeforeTheWindowCloses() throws {
+    @Test func copyAndCloseReportsTheImageBeforeTheWindowCloses() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
@@ -744,11 +767,11 @@ struct EditorExportTests {
         controller.onImageShared = { _, kind, _ in events.append("shared \(kind)") }
         controller.onClose = { events.append("closed") }
 
-        controller.copyAndMaybeClose()
+        await controller.copyAndMaybeClose()
         #expect(events == ["shared copied", "closed"])
     }
 
-    @Test func dragReportsTheRenderedImageOnceThePayloadExists() throws {
+    @Test func dragReportsTheRenderedImageOnceThePayloadExists() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let dragDirectory = f.directory.appendingPathComponent("Drag")
         var services = EditorExportServices()
@@ -769,7 +792,7 @@ struct EditorExportTests {
         var exports = 0
         controller.onExported = { _ in exports += 1 }
 
-        let payload = try #require(controller.prepareDragFile())
+        let payload = try #require(try await dragFile(from: controller))
         let event = try #require(shared.first)
         #expect(shared.count == 1 && event.kind == .dragged && event.backingScale == 2 && payloadsPresent == [1])
         #expect(writes.count == 1 && writes[0].url == payload && writes[0].backingScale == event.backingScale)
@@ -787,7 +810,7 @@ struct EditorExportTests {
         #expect(!FileManager.default.fileExists(atPath: f.preferences.historyDirectory.path))
     }
 
-    @Test func nothingIsReportedWhenAnnotationsCannotBeBaked() throws {
+    @Test func nothingIsReportedWhenAnnotationsCannotBeBaked() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = true
         var services = EditorExportServices()
@@ -795,14 +818,14 @@ struct EditorExportTests {
         var copies = 0
         services.copy = { _, _, _ in copies += 1; return true }
         services.beep = {}
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var shared: [SharedImage] = []
         controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
 
-        #expect(!controller.copyToClipboard())
-        controller.copyAndMaybeClose()
-        #expect(controller.prepareDragFile() == nil)
+        #expect(await controller.copyToClipboard() == false)
+        await controller.copyAndMaybeClose()
+        #expect(try await dragFile(from: controller) == nil)
         #expect(copies == 0 && shared.isEmpty)
         #expect(controller.model.statusMessage == "Drag export failed: \(notAppliedMessage)")
 
@@ -810,41 +833,46 @@ struct EditorExportTests {
         controller.model.renderer = EditorModel.compositorRenderer
         let retry = try #require(controller.actions.retryExport)
         retry()
+        await controller.finishExports()
         let event = try #require(shared.first)
         #expect(shared.count == 1 && event.kind == .dragged)
         try expectRedacted(event.image)
         retry()
+        await controller.finishExports()
         #expect(shared.count == 1)
     }
 
-    @Test func retriedCopyIsReportedOnlyOnceItSucceeds() throws {
+    @Test func retriedCopyIsReportedOnlyOnceItSucceeds() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         var services = EditorExportServices()
         var canCopy = false
         services.copy = { _, _, _ in canCopy }
         services.beep = {}
-        let controller = failingController(f, services: services)
+        let controller = try await settledFailingController(f, services: services)
         defer { controller.window?.close() }
         var shared: [SharedImage] = []
         controller.onImageShared = { shared.append(SharedImage(image: $0, kind: $1, backingScale: $2)) }
 
-        #expect(!controller.copyToClipboard())
+        #expect(await controller.copyToClipboard() == false)
         controller.model.renderer = EditorModel.compositorRenderer
         let renderedRetry = try #require(controller.actions.retryExport)
         renderedRetry()
+        await controller.finishExports()
         #expect(shared.isEmpty)
         canCopy = true
         let clipboardRetry = try #require(controller.actions.retryExport)
         clipboardRetry()
+        await controller.finishExports()
         let event = try #require(shared.first)
         #expect(shared.count == 1 && event.kind == .copied && event.backingScale == 2)
         try expectRedacted(event.image)
         clipboardRetry()
+        await controller.finishExports()
         #expect(shared.count == 1)
     }
 
-    @Test func nothingIsReportedWhenTheClipboardOrDragWriteFails() throws {
+    @Test func nothingIsReportedWhenTheClipboardOrDragWriteFails() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
@@ -856,9 +884,9 @@ struct EditorExportTests {
         var shared = 0
         controller.onImageShared = { _, _, _ in shared += 1 }
 
-        #expect(!controller.copyToClipboard())
-        controller.copyAndMaybeClose()
-        #expect(controller.prepareDragFile() == nil)
+        #expect(await controller.copyToClipboard() == false)
+        await controller.copyAndMaybeClose()
+        #expect(try await dragFile(from: controller) == nil)
         controller.saveOutput()
         #expect(shared == 0)
     }

@@ -44,22 +44,38 @@ public enum ExportError: Error, Equatable {
 
 public enum Exporter {
     /// Encodes `image`. `x1`/`x2` resample to 1×/2× the image's point size (pixels / `backingScale`).
+    ///
+    /// A plain PNG of the image that is on the clipboard (`copyToClipboard`) at the same scale and density is the one
+    /// already made for it, so copying and saving a capture encode it once.
     public static func data(for image: CGImage, format: ExportFormat = .plainPNG, scale: ExportScale = .original,
                             backingScale: CGFloat = 1) throws -> Data {
+        if format == .plainPNG, let shared = LazyImageClipboard.sharedPNG(for: image, scale: scale, backingScale: backingScale) {
+            return shared
+        }
+        return try encode(image, format: format, scale: scale, backingScale: backingScale)
+    }
+
+    /// Always encodes, never reusing the clipboard's bytes.
+    static func encode(_ image: CGImage, format: ExportFormat, scale: ExportScale, backingScale: CGFloat) throws -> Data {
         try CaptureSignposts.measure(format.encodeSignpost) {
             try encoded(image, format: format, scale: scale, backingScale: backingScale)
+        }
+    }
+
+    /// Pixels per point the encoded file's density records: the backing scale as captured, or the fixed 1× or 2× of a
+    /// resampled export.
+    static func densityFactor(scale: ExportScale, backingScale: CGFloat) -> CGFloat {
+        switch scale {
+        case .original: return backingScale
+        case .x1: return 1
+        case .x2: return 2
         }
     }
 
     private static func encoded(_ image: CGImage, format: ExportFormat, scale: ExportScale,
                                 backingScale: CGFloat) throws -> Data {
         var output = resampled(image, scale: scale, backingScale: backingScale)
-        let dpiFactor: CGFloat
-        switch scale {
-        case .original: dpiFactor = backingScale
-        case .x1: dpiFactor = 1
-        case .x2: dpiFactor = 2
-        }
+        let dpiFactor = densityFactor(scale: scale, backingScale: backingScale)
         if !format.supportsAlpha { output = flattened(output) }
 
         let data = NSMutableData()
@@ -119,7 +135,14 @@ public enum Exporter {
         }
     }
 
-    /// Puts a PNG (plus TIFF for legacy apps) on the general pasteboard.
+    /// Puts the image on the general pasteboard as a PNG, plus a TIFF for legacy apps, without waiting for either to
+    /// be encoded.
+    ///
+    /// The clipboard is replaced at once with a promise. The PNG is encoded in the background from then on, so it is
+    /// normally ready by the time anything pastes, and `write` and `data(for:)` reuse it for the same image. The TIFF is
+    /// made, from the PNG, only when an app asks for it. So `true` means the clipboard took the promise; an image that
+    /// cannot be encoded (not expected for a bitmap) shows up as an empty paste. Call `flushPendingClipboard()` as the
+    /// app quits so a promise that nothing has collected yet is not lost.
     ///
     /// Pass the same `scale` and `backingScale` as the matching `write`: both representations then have the file's
     /// pixel size and density, so apps that honour image resolution paste it at the saved copy's point size.
@@ -127,16 +150,15 @@ public enum Exporter {
     public static func copyToClipboard(_ image: CGImage, scale: ExportScale = .original, backingScale: CGFloat = 1,
                                        pasteboard: NSPasteboard = .general) -> Bool {
         let signpost = CaptureSignposts.begin("Pasteboard")
-        var copied = false
-        defer { CaptureSignposts.end(signpost, copied ? .completed : .failed) }
-        guard let png = try? data(for: image, format: .plainPNG, scale: scale, backingScale: backingScale) else { return false }
-        pasteboard.clearContents()
-        var ok = pasteboard.setData(png, forType: .png)
-        if let tiff = try? data(for: image, format: .tiff, scale: scale, backingScale: backingScale) {
-            ok = pasteboard.setData(tiff, forType: .tiff) && ok
-        }
-        copied = ok
-        return ok
+        let published = LazyImageClipboard.publish(image, scale: scale, backingScale: backingScale, on: pasteboard)
+        CaptureSignposts.end(signpost, published ? .completed : .failed)
+        return published
+    }
+
+    /// Makes the clipboard's promised representations real, so the image can still be pasted after the app has quit.
+    /// Does nothing when the clipboard has since been replaced or nothing is promised.
+    public static func flushPendingClipboard() {
+        LazyImageClipboard.flushPending()
     }
 
     static func resampled(_ image: CGImage, scale: ExportScale, backingScale: CGFloat) -> CGImage {

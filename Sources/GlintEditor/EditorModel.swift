@@ -462,13 +462,25 @@ final class EditorModel: ObservableObject {
     /// Full-resolution output with annotations visible at the current recording time burned in.
     /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     func renderFinal() throws -> CGImage {
+        try finalRenderer()()
+    }
+
+    /// Takes every input `renderFinal` reads now, so the render can run off the main actor while the editor goes on
+    /// taking edits: nothing changed after this call alters the image it makes. Like `renderFinal` it throws rather
+    /// than returning unredacted pixels.
+    func finalRenderer() -> @Sendable () throws -> CGImage {
+        let image = image, settings = settings, annotations = annotations, scale = backingScale
+        let background = backgroundImage(for: settings), wallpaper = wallpaperImage
         let time = isRecording ? recordingTime : nil
-        if let presentation = exportPresentation {
-            return try presentationRenderer(image, settings, annotations, backingScale, backgroundImage(for: settings),
-                                            wallpaperImage, time, presentation).image
+        let presentation = exportPresentation
+        let renderer = renderer, presentationRenderer = presentationRenderer
+        return {
+            if let presentation {
+                return try presentationRenderer(image, settings, annotations, scale, background, wallpaper, time,
+                                                presentation).image
+            }
+            return try renderer(image, settings, annotations, scale, background, wallpaper, time).image
         }
-        return try renderer(image, settings, annotations, backingScale, backgroundImage(for: settings), wallpaperImage,
-                            time).image
     }
 
     /// A frame update is not an edit: it uses the existing latest-dirty preview queue without undo or preference writes.

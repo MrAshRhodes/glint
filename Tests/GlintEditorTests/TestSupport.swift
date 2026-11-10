@@ -52,3 +52,13 @@ func expectSamePixels(_ actual: CGImage, _ expected: CGImage, sourceLocation: So
     let firstDifference = zip(a.data, e.data).enumerated().first { $0.element.0 != $0.element.1 }?.offset
     #expect(firstDifference == nil, "First differing byte: \(firstDifference ?? -1)", sourceLocation: sourceLocation)
 }
+
+/// Starts a drag out of the share tile, then waits for the render the drag began: the file the drag delivers, or nil
+/// when nothing could be made.
+@MainActor
+func dragFile(from controller: EditorWindowController) async throws -> URL? {
+    let payload = try #require(controller.dragPayload() as? EditorDragPayload)
+    await controller.finishExports()
+    guard case .success(let delivery) = await payload.delivery() else { return nil }
+    return delivery.url
+}

@@ -179,6 +179,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private var presetSaved = false
     private var projectSave: Task<Void, Never>?
     private var isClosed = false
+    /// Copies and drags still rendering; each is kept in step with `finishExports`.
+    private var exportTasks: [UUID: Task<Void, Never>] = [:]
+    /// Counts the copies started in every editor, so a copy that a later one overtook does not replace the clipboard
+    /// the later one filled, whichever editor it came from.
+    private static var copyRequests = 0
+    /// The cache files of drags whose file is still being made, in every editor, so two drags never share one.
+    private static var dragFilesInFlight: Set<URL> = []
 
     public convenience init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore) {
         self.init(context: context, preferences: preferences, presetStore: presetStore, exportServices: EditorExportServices())
@@ -233,7 +240,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         window.delegate = self
         buildUI(in: window)
 
-        actions.copy = { [weak self] in self?.copyAndMaybeClose() }
+        actions.copy = { [weak self] in self?.startCopy(closeAfterSuccess: true) }
         actions.save = { [weak self] in self?.saveOutput() }
         actions.saveAs = { [weak self] in self?.saveAs() }
         actions.share = { [weak self] in self?.share() }
@@ -242,7 +249,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         actions.close = { [weak self] in self?.window?.close() }
         actions.commitEditing = { [weak self] in self?.canvas.endEditing() }
         actions.savePreset = { [weak self] in self?.savePresetAndClose() }
-        actions.dragFileURL = { [weak self] in self?.prepareDragFile() }
+        actions.dragPayload = { [weak self] in self?.dragPayload() }
         actions.selectTool = { [weak self] in self?.selectTool($0) }
         if let recording {
             actions.retryExport = { [weak recording] in recording?.retry() }
@@ -355,35 +362,70 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         window.makeFirstResponder(canvas)
     }
 
-    /// Copies the composed output (annotations burned in) to the clipboard.
+    /// Copies the composed output (annotations burned in) to the clipboard. The image is rendered off the main actor,
+    /// and the clipboard then takes it without waiting for it to be encoded.
     @discardableResult
-    public func copyToClipboard() -> Bool {
-        copyToClipboard(closeAfterSuccess: false)
+    public func copyToClipboard() async -> Bool {
+        guard let copy = beginCopy(closeAfterSuccess: false) else { return false }
+        return await copy()
     }
 
-    private func copyToClipboard(closeAfterSuccess: Bool) -> Bool {
+    /// The copy behind ⌘C and the toolbar button: it also closes the window when that is the preference.
+    func copyAndMaybeClose() async {
+        guard let copy = beginCopy(closeAfterSuccess: true) else { return }
+        _ = await copy()
+    }
+
+    /// Starts a copy nothing waits for, the way a shortcut, a button or a retry does. It holds the controller until it
+    /// is done, so a copy still rendering when the window closes still reaches the clipboard.
+    func startCopy(closeAfterSuccess: Bool) {
+        guard let copy = beginCopy(closeAfterSuccess: closeAfterSuccess) else { return }
+        track { _ = await copy() }
+    }
+
+    /// Does what a copy must do at once (commit the text being typed and take what the editor holds, so later edits
+    /// cannot change the copy) and returns the rest: the render off the main actor, then the clipboard.
+    /// Nil when there is nothing to copy.
+    private func beginCopy(closeAfterSuccess: Bool) -> (() async -> Bool)? {
         canvas.endEditing()
         if let recording {
             playback?.pause()
             recording.copy()
-            return false // A recording export is asynchronous; never report a synchronous still-image success.
+            return nil // A recording export is asynchronous; never report a synchronous still-image success.
         }
+        guard !model.isDesigningPreset else { return nil }
         let signpost = CaptureSignposts.begin("export.copy")
-        var copied = false
-        defer { CaptureSignposts.end(signpost, copied ? .completed : .failed) }
-        let retry: (EditorWindowController) -> Void = { _ = $0.copyToClipboard(closeAfterSuccess: closeAfterSuccess) }
-        guard let image = renderForExport(failure: "Copy failed", retry: retry) else { return false }
-        if exportServices.copy(image, model.preferences.exportScale, model.backingScale) {
-            copied = true
+        Self.copyRequests += 1
+        let request = Self.copyRequests
+        let render = model.finalRenderer()
+        let scale = model.preferences.exportScale, backingScale = model.backingScale
+        let retry: (EditorWindowController) -> Void = { $0.startCopy(closeAfterSuccess: closeAfterSuccess) }
+        return { [self] in
+            var outcome = CaptureSignposts.Outcome.failed
+            defer { CaptureSignposts.end(signpost, outcome) }
+            let image: CGImage
+            do {
+                image = try await BlockingWork.run { _ in try render() }
+            } catch {
+                if request == Self.copyRequests { reportExportFailure("Copy failed: \(error.localizedDescription)", retry: retry) }
+                return false
+            }
+            // A copy started while this one rendered is the one the clipboard should end up with.
+            guard request == Self.copyRequests else {
+                outcome = .cancelled
+                return false
+            }
+            guard exportServices.copy(image, scale, backingScale) else {
+                reportExportFailure("Copy failed", retry: retry)
+                return false
+            }
+            outcome = .completed
             clearRetry()
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)
-            onImageShared?(image, .copied, model.backingScale)
-            if closeAfterSuccess, model.preferences.closeAfterCopy { window?.close() }
+            onImageShared?(image, .copied, backingScale)
+            if closeAfterSuccess, !isClosed, model.preferences.closeAfterCopy { window?.close() }
             return true
-        } else {
-            offerRetry(failure: "Copy failed", retry: retry)
-            return false
         }
     }
 
@@ -425,6 +467,31 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         exportServices.beep()
     }
 
+    /// Shows a failed export with a retry; once the window is gone there is nowhere to show it, so it only beeps.
+    private func reportExportFailure(_ message: String, retry: @escaping (EditorWindowController) -> Void) {
+        guard !isClosed else {
+            exportServices.beep()
+            return
+        }
+        offerRetry(failure: message, retry: retry)
+    }
+
+    // MARK: Exports in flight
+
+    /// Runs `operation` as an export in flight, which `finishExports` waits for.
+    private func track(_ operation: @escaping @MainActor () async -> Void) {
+        let id = UUID()
+        exportTasks[id] = Task { [weak self] in
+            await operation()
+            self?.exportTasks[id] = nil
+        }
+    }
+
+    /// Waits for every copy and drag still rendering, so that its outcome (status, retry, callbacks) is in place.
+    func finishExports() async {
+        while let task = exportTasks.values.first { await task.value }
+    }
+
     private func clearRetry() {
         retryID = nil
         actions.retryExport = nil
@@ -447,10 +514,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         } catch {
             offerRetry(failure: "Save failed: \(error.localizedDescription)", retry: retry)
         }
-    }
-
-    func copyAndMaybeClose() {
-        _ = copyToClipboard(closeAfterSuccess: true)
     }
 
     private func saveAs() {
@@ -561,36 +624,78 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         if let url = model.rawURL { NSWorkspace.shared.open(url) }
     }
 
-    /// Renders the output to a cache file used as the drag-out payload.
-    func prepareDragFile() -> URL? {
+    /// What a drag out of the Share tile carries. The drag starts at once; the image is rendered and written in the
+    /// background (see `EditorDragPayload`) and `dragRendered` reports how that went.
+    func dragPayload() -> NSPasteboardWriting? {
         canvas.endEditing()
         if let recording {
             playback?.pause()
-            return recording.prepareFile()
+            return recording.prepareFile().map { $0 as NSURL }
         }
+        return startDrag(successMessage: "Dragging image to share")
+    }
+
+    @discardableResult
+    private func startDrag(successMessage: String) -> EditorDragPayload? {
+        guard !model.isDesigningPreset, recording == nil else { return nil }
         let signpost = CaptureSignposts.begin("export.drag")
-        var prepared = false
-        defer { CaptureSignposts.end(signpost, prepared ? .completed : .failed) }
-        let dir = exportServices.dragDirectory
-        let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
-        let retry: (EditorWindowController) -> Void = { controller in
-            if controller.prepareDragFile() != nil {
-                controller.model.statusMessage = "Drag to share again."
-            }
+        let render = model.finalRenderer()
+        let write = exportServices.write
+        let scale = model.preferences.exportScale, backingScale = model.backingScale
+        let url = reserveDragFile()
+        let payload = EditorDragPayload(fileName: url.lastPathComponent) {
+            let image = try render()
+            _ = try write(image, url, .plainPNG, scale, backingScale)
+            return EditorDragPayload.Delivery(url: url, image: image)
         }
-        guard let image = renderForExport(failure: "Drag export failed", retry: retry) else { return nil }
-        let url = FileNaming.uniqueURL(directory: dir, baseName: name, ext: "png")
-        do {
-            _ = try exportServices.write(image, url, .plainPNG, model.preferences.exportScale, model.backingScale)
-            dragFiles.insert(url)
-            prepared = true
+        // Holds the controller until the file is made, so a window closed meanwhile still has it removed.
+        track {
+            self.dragRendered(await payload.delivery(), for: payload, url: url, backingScale: backingScale,
+                              signpost: signpost, successMessage: successMessage)
+        }
+        return payload
+    }
+
+    /// The cache file a drag will write: not on disk, and not taken by a drag whose file is still being made, in this
+    /// editor or any other.
+    private func reserveDragFile() -> URL {
+        let directory = exportServices.dragDirectory
+        let name = FileNaming.fileName(template: model.preferences.outputPaths.fileNameTemplate)
+        var url = FileNaming.uniqueURL(directory: directory, baseName: name, ext: "png")
+        var n = 2
+        while Self.dragFilesInFlight.contains(url) {
+            url = FileNaming.uniqueURL(directory: directory, baseName: "\(name)-\(n)", ext: "png")
+            n += 1
+        }
+        dragFiles.insert(url)
+        Self.dragFilesInFlight.insert(url)
+        return url
+    }
+
+    private func dragRendered(_ outcome: Result<EditorDragPayload.Delivery, Error>, for payload: EditorDragPayload,
+                              url: URL, backingScale: CGFloat, signpost: CaptureSignposts.Interval?,
+                              successMessage: String) {
+        Self.dragFilesInFlight.remove(url)
+        switch outcome {
+        case .success(let delivery):
+            CaptureSignposts.end(signpost, .completed)
+            // The window's own clean-up ran before this file existed. A destination may still be about to read it,
+            // so it goes when the drag lets go of the payload rather than now.
+            guard !isClosed else {
+                dragFiles.remove(url)
+                payload.removeFileWhenReleased = url
+                return
+            }
             clearRetry()
-            model.statusMessage = "Dragging image to share"
-            onImageShared?(image, .dragged, model.backingScale)
-            return url
-        } catch {
-            offerRetry(failure: "Drag export failed: \(error.localizedDescription)", retry: retry)
-            return nil
+            model.statusMessage = successMessage
+            onImageShared?(delivery.image, .dragged, backingScale)
+        case .failure(let error):
+            CaptureSignposts.end(signpost, .failed)
+            dragFiles.remove(url)
+            try? FileManager.default.removeItem(at: url)
+            reportExportFailure("Drag export failed: \(error.localizedDescription)") {
+                $0.startDrag(successMessage: "Drag to share again.")
+            }
         }
     }
 
@@ -642,7 +747,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         if model.isDesigningPreset { return handleDesignerShortcut(event, flags: flags, key: key) }
         if flags == .command {
             switch key {
-            case "c": copyAndMaybeClose()
+            case "c": startCopy(closeAfterSuccess: true)
             case "s": saveOutput()
             case "z": model.undoManager.undo()
             case "w": window?.close()
