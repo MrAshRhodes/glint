@@ -227,7 +227,7 @@ struct PresetDesignerTests {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0, writes = 0
-        services.copy = { _ in copies += 1; return true }
+        services.copy = { _, _, _ in copies += 1; return true }
         services.write = { _, url, _, _, _ in writes += 1; return url }
         let controller = f.designController(f.design(), services: services)
         defer { controller.window?.close() }

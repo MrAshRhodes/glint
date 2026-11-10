@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
 @testable import GlintCore
 
@@ -100,6 +101,64 @@ struct ExportAndPrefsTests {
         let data = try #require(pb.data(forType: .png))
         #expect(GlintImageIO.load(data: data)?.height == 9)
         pb.releaseGlobally()
+    }
+
+    /// Pixel size and the density ImageIO recorded for the first image in `data`.
+    private func properties(of data: Data) throws -> (width: Int, height: Int, dpiX: Double, dpiY: Double) {
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        return (try #require(props[kCGImagePropertyPixelWidth] as? Int),
+                try #require(props[kCGImagePropertyPixelHeight] as? Int),
+                try #require(props[kCGImagePropertyDPIWidth] as? Double),
+                try #require(props[kCGImagePropertyDPIHeight] as? Double))
+    }
+
+    /// A pasted capture must be the same size as the file saved with it: same pixels and same density, so a
+    /// DPI-aware app places both at the same point size. The Scale setting applies to both.
+    @Test(arguments: [1, 2, 3] as [CGFloat], ExportScale.allCases)
+    func clipboardImagesMatchTheSavedFile(backingScale: CGFloat, scale: ExportScale) throws {
+        let image = TestImages.framed(width: 120, height: 60, margins: EdgeMargins(top: 4, left: 4, bottom: 4, right: 4))
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
+        defer { pb.releaseGlobally() }
+        #expect(Exporter.copyToClipboard(image, scale: scale, backingScale: backingScale, pasteboard: pb))
+        let savedPNG = try Exporter.write(image, to: dir.appendingPathComponent("saved.png"),
+                                          scale: scale, backingScale: backingScale)
+        let savedTIFF = try Exporter.write(image, to: dir.appendingPathComponent("saved.tiff"), format: .tiff,
+                                           scale: scale, backingScale: backingScale)
+
+        let pointsPerPixel: CGFloat
+        switch scale {
+        case .original: pointsPerPixel = 1
+        case .x1: pointsPerPixel = 1 / backingScale
+        case .x2: pointsPerPixel = 2 / backingScale
+        }
+        let density = 72 * (scale == .original ? backingScale : (scale == .x1 ? 1 : 2))
+        let width = Int((120 * pointsPerPixel).rounded()), height = Int((60 * pointsPerPixel).rounded())
+
+        let clipboard = [(NSPasteboard.PasteboardType.png, savedPNG), (.tiff, savedTIFF)]
+        for (type, file) in clipboard {
+            let pasted = try properties(of: #require(pb.data(forType: type)))
+            let saved = try properties(of: Data(contentsOf: file))
+            #expect(pasted.width == width && pasted.height == height, "\(type.rawValue) size")
+            #expect(pasted.width == saved.width && pasted.height == saved.height, "\(type.rawValue) vs file size")
+            #expect(abs(pasted.dpiX - density) < 0.1 && abs(pasted.dpiY - density) < 0.1,
+                    "\(type.rawValue) density \(pasted.dpiX)×\(pasted.dpiY), expected \(density)")
+            #expect(abs(pasted.dpiX - saved.dpiX) < 0.01 && abs(pasted.dpiY - saved.dpiY) < 0.01,
+                    "\(type.rawValue) vs file density")
+        }
+        let pastedPNG = try #require(pb.data(forType: .png))
+        let pastedImage = try #require(GlintImageIO.load(data: pastedPNG))
+        let savedImage = try #require(GlintImageIO.load(url: savedPNG))
+        try expectSamePixels(pastedImage, savedImage)
+    }
+
+    @Test func clipboardDefaultsToOneXDensity() throws {
+        let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
+        defer { pb.releaseGlobally() }
+        #expect(Exporter.copyToClipboard(TestImages.solid(12, 9, .red), pasteboard: pb))
+        let pasted = try properties(of: #require(pb.data(forType: .png)))
+        #expect(pasted.width == 12 && pasted.height == 9 && abs(pasted.dpiX - 72) < 0.1)
     }
 
     @Test func preferencesDefaultsAndRoundTrip() throws {

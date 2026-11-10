@@ -197,7 +197,8 @@ Annotation case names and their serialized representations are unchanged.
 - `ExportFormat`: `.png(interlaced:)` (`.plainPNG`), `.jpeg(quality:)`, `.heic(quality:)`, `.tiff`; `.fileExtension`.
   `ExportScale`: `.original, .x1, .x2` (relative to the image's backing scale).
 - `Exporter.data(for:format:scale:backingScale:) throws -> Data`, `Exporter.write(_:to:format:scale:backingScale:)`,
-  `Exporter.copyToClipboard(_ image: CGImage)` (PNG on `NSPasteboard`).
+  `Exporter.copyToClipboard(_:scale:backingScale:pasteboard:)` (PNG + TIFF on `NSPasteboard`; pass the same `scale` and
+  `backingScale` as the matching `write` and the pasted image has the saved file's pixel size and density).
 - `OutputPaths(historyDirectory:, saveDirectory:, fileNameTemplate:)`: `rawURL(date:)`, `outputURL(date:)`,
   `saveURL(date:format:)`, `FileNaming.fileName(template:date:uuid:)` (`{datetime}` = `yyyy-MM-dd-HH.mm.ss`,
   `{uuid}`), `FileNaming.uniqueURL(directory:baseName:ext:)` (collision → `-2`, `-3`…). Default template
