@@ -54,13 +54,14 @@ public enum Compositor {
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
     /// `annotationTime` is in source-recording seconds; `nil` draws every annotation for screenshots.
     /// `presentation` adds a recording's pointer effects and zoom at `annotationTime`; it is ignored without one.
+    /// `cache` lets repeated renders of one capture share work that its look doesn't change; it never alters pixels.
     public static func render(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                               backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
                               wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil,
-                              presentation: Presentation? = nil) throws -> CGImage {
+                              presentation: Presentation? = nil, cache: RenderCache? = nil) throws -> CGImage {
         try renderDetailed(image: image, settings: settings, annotations: annotations,
                            backingScale: backingScale, backgroundImage: backgroundImage, wallpaper: wallpaper,
-                           annotationTime: annotationTime, presentation: presentation).image
+                           annotationTime: annotationTime, presentation: presentation, cache: cache).image
     }
 
     /// Throws `RenderError.annotationsNotApplied` instead of returning unannotated pixels.
@@ -69,17 +70,20 @@ public enum Compositor {
     public static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                       backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
                                       wallpaper: CGImage? = nil, annotationTime: TimeInterval? = nil,
-                                      presentation: Presentation? = nil) throws -> RenderResult {
+                                      presentation: Presentation? = nil, cache: RenderCache? = nil) throws -> RenderResult {
         try renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: backingScale,
                            backgroundImage: backgroundImage, wallpaper: wallpaper, bake: defaultBaker,
-                           annotationTime: annotationTime, presentation: presentation)
+                           annotationTime: annotationTime, presentation: presentation, cache: cache)
     }
 
     static func renderDetailed(image: CGImage, settings: RenderSettings, annotations: [Annotation] = [],
                                backingScale: CGFloat = 1, backgroundImage: CGImage? = nil,
                                wallpaper: CGImage? = nil, bake: Baker, annotationTime: TimeInterval? = nil,
-                               presentation: Presentation? = nil) throws -> RenderResult {
-        let original = image.glintSRGB()
+                               presentation: Presentation? = nil, cache: RenderCache? = nil) throws -> RenderResult {
+        let files = cache?.images
+        // Recording frames change the source or the visible annotations every time, so nothing would be reused.
+        let cache = annotationTime == nil ? cache : nil
+        let original = cache?.normalised(image) ?? image.glintSRGB()
         let imageBounds = CGRect(origin: .zero, size: original.pixelSize)
         // The single place recording time selects annotations, so preview, MP4 and GIF frames stay identical.
         let visibleAnnotations = annotationTime.map { time in
@@ -121,7 +125,17 @@ public enum Compositor {
             overflow = FrameInsets(top: base.minY - expanded.minY, left: base.minX - expanded.minX,
                                    bottom: expanded.maxY - base.maxY, right: expanded.maxX - base.maxX)
         } else if region != nil || !visibleAnnotations.isEmpty {
-            if let baked = bake(source, visibleAnnotations, region, border?.color ?? .clear) {
+            let fill = border?.color ?? .clear
+            let layers: AnnotationRenderer.BakedLayers?
+            if let cache {
+                // `source` is the capture's own sRGB copy here: a cache is only set for untimed renders.
+                layers = cache.baked(of: image, annotations: visibleAnnotations, region: region, fill: fill) {
+                    bake(source, visibleAnnotations, region, fill)
+                }
+            } else {
+                layers = bake(source, visibleAnnotations, region, fill)
+            }
+            if let baked = layers {
                 content = baked.base
                 foreground = baked.foreground
                 contentRegion = base
@@ -166,7 +180,7 @@ public enum Compositor {
             BackgroundRenderer.fill(.image(path: "", fit: .fill), in: ctx, size: layout.canvasSize, scale: k, image: wallpaper)
         } else {
             var bgImage = backgroundImage
-            if bgImage == nil, case .image(let path, _) = settings.background { bgImage = GlintImageIO.load(url: URL(fileURLWithPath: path)) }
+            if bgImage == nil, case .image(let path, _) = settings.background { bgImage = loadImage(atPath: path, cache: files) }
             BackgroundRenderer.fill(settings.background, in: ctx, size: layout.canvasSize, scale: k, image: bgImage)
         }
 
@@ -189,7 +203,9 @@ public enum Compositor {
         }
 
         // 6. watermark
-        if settings.watermark.enabled { drawWatermark(settings.watermark, in: ctx, canvas: layout.canvasSize, factor: k) }
+        if settings.watermark.enabled {
+            drawWatermark(settings.watermark, in: ctx, canvas: layout.canvasSize, factor: k, files: files)
+        }
 
         guard let rendered = ctx.makeImage() else {
             if foreground != nil || zoom != nil { throw RenderError.annotationsNotApplied }
@@ -482,7 +498,15 @@ public enum Compositor {
 
     // MARK: Watermark
 
-    private static func drawWatermark(_ wm: WatermarkSettings, in ctx: CGContext, canvas: CGSize, factor k: CGFloat) {
+    /// The image file at `path`, decoded again only when `cache` doesn't hold this revision of it.
+    private static func loadImage(atPath path: String, cache: ImageFileCache?) -> CGImage? {
+        let url = URL(fileURLWithPath: path)
+        guard let cache else { return GlintImageIO.load(url: url) }
+        return cache.image(at: url)
+    }
+
+    private static func drawWatermark(_ wm: WatermarkSettings, in ctx: CGContext, canvas: CGSize, factor k: CGFloat,
+                                      files: ImageFileCache?) {
         let margin = 14 * k
         let alpha = CGFloat(min(max(wm.opacity, 0), 1))
         func origin(_ size: CGSize) -> CGPoint {
@@ -513,7 +537,7 @@ public enum Compositor {
             TextDrawing.draw(shadowLines, font: font, topLeft: CGPoint(x: o.x + k, y: o.y + size.height - k), in: ctx, flipped: false)
             TextDrawing.draw(lines, font: font, topLeft: CGPoint(x: o.x, y: o.y + size.height), in: ctx, flipped: false)
         case .image:
-            guard let path = wm.imagePath, let img = GlintImageIO.load(url: URL(fileURLWithPath: path)) else { return }
+            guard let path = wm.imagePath, let img = loadImage(atPath: path, cache: files) else { return }
             let h = CGFloat(wm.size) * k
             let size = CGSize(width: h * CGFloat(img.width) / CGFloat(img.height), height: h)
             let o = origin(size)

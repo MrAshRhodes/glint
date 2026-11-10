@@ -203,6 +203,33 @@ Provisional reference-host budgets (targets, **not** measured native performance
 ≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
 displays is recorded here: that needs the live capture UI and has not been measured yet.
 
+### Profiling the editor render
+
+Every preview, copy and export of a capture renders it again, so the editor keeps what a change of look doesn't
+touch: `RenderCache` holds the capture's sRGB copy and the capture with its annotations burned in, and
+`ImageFileCache` holds decoded background, wallpaper and watermark images until their files change. A bounded,
+permission-free CPU comparison also works with Command Line Tools:
+
+```sh
+Scripts/benchmark-editor-render.sh compare origin/main  # interleaved: that revision's GlintCore vs. the working tree
+Scripts/benchmark-editor-render.sh baseline HEAD        # one side only, from immutable git sources
+Scripts/benchmark-editor-render.sh current              # one side only, a snapshot of the working tree
+```
+
+The `swiftc -O` harness compiles each variant's `Sources/GlintCore` with `Scripts/EditorRenderBenchmark.swift` into one
+module and runs every scenario in a fresh process on a synthetic capture that is never shown (`SIZE`, default
+`5120x2880`; `SOURCE=p3|srgb`, default `p3`): a padding drag with 0, 12 or 40 annotations, a shadow drag and an
+annotation drag with 12, a padding drag with a magnifier among the annotations (its lens snapshot is never cached, so
+that case always bakes again), a cycle through every background kind including the desktop wallpaper, a
+full-resolution export right after a preview, and a `stages` run that times conversion, annotation baking,
+composition, file decoding and stand-ins for the thumbnail and the present step separately. `ROUNDS=1..30`
+(default 5) and `FRAMES=2..500` (default 24) bound the run; the first frame of each process is reported apart from
+the warm ones, with peak memory. Each run keeps a manifest (host, toolchain, load average before and after, source
+hashes), the raw `samples.jsonl` and a percentile `summary.json` under `.build/benchmark/editor-render-*`. The numbers
+are offscreen CPU time and memory on one host, **not** main-thread stalls, frame pacing, window-server presentation
+or input latency. Run comparisons with other builds and heavy background work stopped, and check the live editor by
+hand.
+
 ## Command Line Tools only
 
 Glint builds without Xcode, with a few differences:

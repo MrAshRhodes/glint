@@ -95,10 +95,15 @@ public enum GlintBitmap {
 public extension CGImage {
     var pixelSize: CGSize { CGSize(width: width, height: height) }
 
+    /// Already an sRGB 8-bit premultiplied bitmap, which `glintSRGB()` returns as it is.
+    var isGlintSRGB: Bool {
+        guard let cs = colorSpace, cs.name == CGColorSpace.sRGB, bitsPerComponent == 8 else { return false }
+        return alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst
+    }
+
     /// Redraws into an sRGB RGBA8 premultiplied bitmap.
     func glintSRGB() -> CGImage {
-        if let cs = colorSpace, cs.name == CGColorSpace.sRGB, bitsPerComponent == 8,
-           alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst { return self }
+        if isGlintSRGB { return self }
         guard let ctx = GlintBitmap.makeContext(width: width, height: height) else { return self }
         ctx.draw(self, in: CGRect(x: 0, y: 0, width: width, height: height))
         return ctx.makeImage() ?? self

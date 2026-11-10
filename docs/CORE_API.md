@@ -9,7 +9,7 @@ crop rects). Units for `RenderSettings` lengths are *points*; the compositor mul
 - `RGBAColor(r,g,b,a)` (0…1) · `RGBAColor(hex:"#RRGGBB[AA]")?` · `.hexString` · `.cgColor` · `.nsColor` ·
   `RGBAColor.white/.black/.red/.clear`.
 - `ColorSpaces.sRGB`; `GlintImageIO.load(url:) -> CGImage?` (EXIF-orientation applied), `GlintImageIO.load(data:)`,
-  `CGImage.glintSRGB() -> CGImage` (convert), `GlintBitmap.makeContext(width:height:)`,
+  `CGImage.glintSRGB() -> CGImage` (convert; returns the image itself when `isGlintSRGB`), `GlintBitmap.makeContext(width:height:)`,
   `CGImage.glintCropped(to: CGRect)`.
 
 ## Models
@@ -92,6 +92,22 @@ drag the **Drag to share** tile again to choose a destination. Capture auto-reda
 Retries do not recapture the screen, repeat a raw-history save, or create a raw recovery file. This is
 in-memory recovery, not protection against quitting or a crash. The CLI still exits with an error;
 its input file is unchanged.
+
+Rendering one capture repeatedly (an editor's previews, copies and exports) can share its look-independent work.
+Pass one `RenderCache()` as the final `cache:` argument of `render`/`renderDetailed` and it keeps the capture's sRGB copy
+and the capture with its annotations burned in, so a change of only the background, shadow, padding, window frame,
+rotation, tilt, watermark or output scale composes without converting or baking again. The burned-in image is replaced
+when the capture, the annotations, the auto-balance crop or its fill change. A cache holds at most `maxBytes`
+(default 256 MB) of pixels, is safe to use from several threads at once, never keeps a failed bake (so a failure still
+throws `annotationsNotApplied`), is bypassed for recording frames (`annotationTime`), and does not keep a bake that
+includes a magnifier (its lens holds further full-size images), which is burned in again each time. Pixels are
+identical with or without a cache. `cache.images` is an `ImageFileCache` (`image(at:variant:load:)`, usable on its own): it
+keeps the decoded `.image` background and image watermark files, at most `capacity` (default 3) of them within
+`maxBytes`, until the file is written to or replaced (its modification or change time, size or identity changes), and
+never keeps a file that failed to load. `variant` names how a file is decoded, so two decodes of one file that can
+differ are kept apart.
+`DesktopWallpaper.currentURL()` finds the wallpaper file without decoding it and `DesktopWallpaper.load(url:using:)`
+decodes it through an `ImageFileCache`, so an editor can read it off the main thread.
 
 `ProvisionalFrame(image:settings:annotations:backingScale:maxPixels:)` is the editor's first frame: where a capture
 sits in the composed preview, worked out without composing anything. It shares `Compositor.layout` and the

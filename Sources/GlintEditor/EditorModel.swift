@@ -211,10 +211,16 @@ final class EditorModel: ObservableObject {
     /// Desired preview size in device pixels (set by the canvas).
     var previewTarget = CGSize(width: 1800, height: 1200)
 
-    private var backgroundCache: [String: CGImage] = [:]
+    /// Keeps what a preview, copy or export repeats for this capture, so a change that doesn't touch it doesn't redo it.
+    let renderCache: RenderCache
     private let recognizeText: (CGImage) async throws -> [RecognizedLine]
-    private let wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError>
+    /// Replaces the default wallpaper lookup, which decodes the file off the main thread. Tests inject one.
+    private let wallpaperProvider: (@MainActor () -> Result<CGImage, DesktopWallpaperError>)?
+    private let wallpaperURL: @MainActor () -> URL?
     private var wallpaperImage: CGImage?
+    /// The wallpaper being decoded off the main thread, and the request that identifies its result.
+    private var wallpaperLoad: (request: Int, url: URL?)?
+    private var wallpaperRequests = 0
     private var rendering = false
     /// `editor.open`: from this model's creation to its first finished preview.
     private var openSignpost: CaptureSignposts.Interval?
@@ -238,8 +244,16 @@ final class EditorModel: ObservableObject {
         try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations, backingScale: scale,
                                       backgroundImage: background, wallpaper: wallpaper, annotationTime: time)
     }
+    /// `compositorRenderer` that reuses `cache` between renders of the same capture; pixels are identical.
+    static func cachedRenderer(_ cache: RenderCache) -> Renderer {
+        { image, settings, annotations, scale, background, wallpaper, time in
+            try Compositor.renderDetailed(image: image, settings: settings, annotations: annotations,
+                                          backingScale: scale, backgroundImage: background, wallpaper: wallpaper,
+                                          annotationTime: time, cache: cache)
+        }
+    }
     /// Composes previews and final output; replaceable so tests can force render failures.
-    var renderer: Renderer = EditorModel.compositorRenderer
+    var renderer: Renderer
 
     typealias PresentationRenderer = @Sendable (_ image: CGImage, _ settings: RenderSettings,
                                                 _ annotations: [Annotation], _ backingScale: CGFloat,
@@ -272,8 +286,12 @@ final class EditorModel: ObservableObject {
 
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
-         wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
+         wallpaperProvider: (@MainActor () -> Result<CGImage, DesktopWallpaperError>)? = nil,
+         wallpaperURL: @escaping @MainActor () -> URL? = { DesktopWallpaper.currentURL() }) {
         openSignpost = CaptureSignposts.begin("editor.open")
+        let cache = RenderCache()
+        self.renderCache = cache
+        self.renderer = EditorModel.cachedRenderer(cache)
         self.image = context.image
         self.isRecording = context.isRecording
         self.backingScale = max(context.backingScale, 1)
@@ -288,6 +306,7 @@ final class EditorModel: ObservableObject {
         self.designName = design?.name ?? ""
         self.recognizeText = recognizeText
         self.wallpaperProvider = wallpaperProvider
+        self.wallpaperURL = wallpaperURL
         var initialSettings = design?.settings ?? context.restored?.settings
             ?? (context.isComposed ? .passThrough : EditorHeadless.initialSettings(preferences: preferences, presetStore: presetStore))
         if context.isRecording { initialSettings.autoBalance = false }
@@ -388,11 +407,46 @@ final class EditorModel: ObservableObject {
     private func refreshWallpaper() {
         wallpaperImage = nil
         wallpaperProblem = nil
+        wallpaperLoad = nil
         guard settings.usesDesktopWallpaper else { return }
-        switch wallpaperProvider() {
+        if let wallpaperProvider {
+            apply(wallpaperProvider())
+            return
+        }
+        // A large wallpaper takes long enough to decode that doing it here would stall the window, so it is read off
+        // the main thread. Previews wait for it; an export that needs it sooner decodes it itself.
+        wallpaperRequests += 1
+        let request = wallpaperRequests, url = wallpaperURL(), files = renderCache.images
+        wallpaperLoad = (request, url)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = DesktopWallpaper.load(url: url, using: files)
+            await self?.finishWallpaper(result, request: request)
+        }
+    }
+
+    private func apply(_ wallpaper: Result<CGImage, DesktopWallpaperError>) {
+        switch wallpaper {
         case .success(let image): wallpaperImage = image
         case .failure(let error): wallpaperProblem = error.localizedDescription
         }
+    }
+
+    /// A result for a wallpaper that was switched off, requested again or already decoded for an export is ignored.
+    private func finishWallpaper(_ result: Result<CGImage, DesktopWallpaperError>, request: Int) {
+        guard wallpaperLoad?.request == request else { return }
+        wallpaperLoad = nil
+        apply(result)
+        dirty = true
+        kick()
+    }
+
+    /// Decodes a wallpaper that is still loading now, from the cache if the other thread just finished it, so an
+    /// export never falls back to the plain background.
+    private func resolveWallpaperNow() {
+        guard let pending = wallpaperLoad else { return }
+        wallpaperLoad = nil
+        apply(DesktopWallpaper.load(url: pending.url, using: renderCache.images))
+        requestRender()
     }
 
     func chooseBackground(_ background: BackgroundStyle) {
@@ -473,21 +527,23 @@ final class EditorModel: ObservableObject {
         return max(0.05, min(1, fit))
     }
 
-    private func backgroundImage(for settings: RenderSettings) -> CGImage? {
+    private func backgroundURL(for settings: RenderSettings) -> URL? {
         guard case .image(let path, _) = settings.background else { return nil }
-        if let cached = backgroundCache[path] { return cached }
-        let loaded = GlintImageIO.load(url: URL(fileURLWithPath: path))
-        if let loaded { backgroundCache[path] = loaded }
-        return loaded
+        return URL(fileURLWithPath: path)
+    }
+
+    /// The background image file, decoded again only when the file changed. Previews read it off the main thread.
+    private func backgroundImage(for settings: RenderSettings) -> CGImage? {
+        backgroundURL(for: settings).flatMap { renderCache.images.image(at: $0) }
     }
 
     private func kick() {
-        guard !rendering, dirty, !awaitsRedaction else { return }
+        guard !rendering, dirty, !awaitsRedaction, wallpaperLoad == nil else { return }
         dirty = false
         rendering = true
         var s = settings
         s.outputScale = settings.outputScale * Double(previewScale())
-        let bg = backgroundImage(for: settings)
+        let backgroundFile = backgroundURL(for: settings), files = renderCache.images
         let wallpaper = wallpaperImage
         let img = image, scale = backingScale
         let anns = annotations.filter { $0.id != editingID }
@@ -495,6 +551,7 @@ final class EditorModel: ObservableObject {
         let renderer = self.renderer
         let activePresentation = previewPresentation, renderPresentation = self.presentationRenderer
         Task.detached(priority: .userInitiated) { [weak self] in
+            let bg = backgroundFile.flatMap { files.image(at: $0) }
             let r: RenderResult
             do {
                 r = try CaptureSignposts.measure("editor.render") {
@@ -550,6 +607,7 @@ final class EditorModel: ObservableObject {
     /// Full-resolution output with annotations visible at the current recording time burned in.
     /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
     func renderFinal() throws -> CGImage {
+        resolveWallpaperNow()
         let time = isRecording ? recordingTime : nil
         if let presentation = exportPresentation {
             return try presentationRenderer(image, settings, annotations, backingScale, backgroundImage(for: settings),
@@ -569,6 +627,7 @@ final class EditorModel: ObservableObject {
 
     /// Capture every rendering input now; subsequent edits or wallpaper changes cannot alter an in-flight clip.
     func recordingFrameRenderer() -> RecordingExporter.FrameRenderer {
+        resolveWallpaperNow()
         let settings = settings, annotations = annotations, scale = backingScale
         let background = backgroundImage(for: settings), wallpaper = wallpaperImage
         let presentation = exportPresentation
