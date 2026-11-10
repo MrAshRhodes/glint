@@ -142,17 +142,24 @@ struct CaptureWindowLifecycleTests {
         let content = NSView()
         editor.contentView = content
         var observed: CaptureOptions?
+        var hook: (@MainActor () -> Void)?
         let pipeline = f.pipeline {
             $0.captureWindows = { [editor] }
             $0.capture = { capturer, mode, _ in
                 observed = capturer.options
+                hook = capturer.onSelectionPresented
                 #expect(mode == .area)
+                // Glint's windows stay up until the selection overlay covers them.
+                #expect(editor.isVisible)
+                capturer.onSelectionPresented?()
                 #expect(editor.isVisible == !hide)
                 throw CaptureError.cancelled
             }
         }
         try await #require(pipeline.start(.area)).value
         #expect(observed?.excludeOwnWindows == hide)
+        #expect((hook != nil) == hide)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
         #expect(editor.isVisible)
         #expect(editor.contentView === content)
         #expect(editor.restorationCount == (hide ? 1 : 0))
@@ -168,15 +175,20 @@ struct CaptureWindowLifecycleTests {
         let utility = window(); defer { utility.close() }
         utility.identifier = QuickAccessPanel.windowIdentifier
         var options: CaptureOptions?
+        var hooks: [Bool] = []
+        var stalePresentations = 0
+        ScreenCapturer.shared.onSelectionPresented = { stalePresentations += 1 }
         let pipeline = f.pipeline {
             $0.captureWindows = { [editor, utility] }
             $0.capture = { capturer, selectedMode, _ in
                 #expect(selectedMode == mode)
                 options = capturer.options
+                hooks.append(capturer.onSelectionPresented != nil)
                 throw CaptureError.cancelled
             }
             $0.captureText = { capturer in
                 options = capturer.options
+                hooks.append(capturer.onSelectionPresented != nil)
                 throw CaptureError.cancelled
             }
         }
@@ -185,6 +197,9 @@ struct CaptureWindowLifecycleTests {
         #expect(!received.excludeOwnWindows)
         #expect(received.excludedWindowIDs == [CGWindowID(utility.windowNumber)])
         #expect(editor.isVisible && editor.restorationCount == 0)
+        // The preference is off, so no hook is installed and a stale one is dropped.
+        #expect(hooks == [false] && stalePresentations == 0)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
     }
 
     @Test(arguments: [0, 1, 2, 3])
@@ -195,7 +210,9 @@ struct CaptureWindowLifecycleTests {
         let pipeline = f.pipeline {
             $0.captureWindows = { [editor] }
             $0.permissionDenied = { permissionPrompts += 1 }
-            $0.capture = { _, _, _ in
+            $0.capture = { capturer, _, _ in
+                #expect(editor.isVisible)
+                capturer.onSelectionPresented?()
                 #expect(!editor.isVisible)
                 switch outcome {
                 case 1: throw CaptureError.failed("Synthetic acquisition failure")
@@ -210,6 +227,7 @@ struct CaptureWindowLifecycleTests {
         }
         try await #require(pipeline.start(.areaToClipboard)).value
         #expect(editor.isVisible && editor.restorationCount == 1)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
         #expect(!pipeline.isBusy)
         #expect(permissionPrompts == (outcome == 2 ? 1 : 0))
         #expect(f.copies == (outcome == 0 ? 1 : 0))
@@ -222,13 +240,15 @@ struct CaptureWindowLifecycleTests {
         var continuation: CheckedContinuation<CaptureResult, Never>?
         let pipeline = f.pipeline {
             $0.captureWindows = { [editor] }
-            $0.capture = { _, _, _ in
-                await withCheckedContinuation { continuation = $0 }
+            $0.capture = { capturer, _, _ in
+                capturer.onSelectionPresented?()
+                return await withCheckedContinuation { continuation = $0 }
             }
         }
         let task = try #require(pipeline.start(.areaToClipboard))
         for _ in 0..<100 where continuation == nil { await Task.yield() }
         let pending = try #require(continuation)
+        #expect(!editor.isVisible)
         task.cancel()
         pending.resume(returning: CaptureResult(image: f.image, scale: 1, displayID: 1,
                                                rect: CGRect(x: 0, y: 0, width: 100, height: 40),
@@ -275,7 +295,12 @@ struct CaptureWindowLifecycleTests {
         let pipeline = f.pipeline {
             $0.captureWindows = { windows }
             $0.presentEditor = { $0.window?.orderFront(nil) }
-            $0.capture = { _, _, _ in throw CaptureError.cancelled }
+            $0.capture = { capturer, _, _ in
+                #expect(windows.allSatisfy { $0.isVisible })
+                capturer.onSelectionPresented?()
+                #expect(windows.allSatisfy { $0.isVisible == !hide })
+                throw CaptureError.cancelled
+            }
         }
         let editor = pipeline.openEditor(image: f.image, scale: 1, rawURL: nil, source: "Capture test")
         let window = try #require(editor.window)
@@ -296,6 +321,147 @@ struct CaptureWindowLifecycleTests {
         #expect(editor.model.annotations.isEmpty)
         editor.model.undoManager.redo()
         #expect(editor.model.annotations == [annotation])
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.area, .areaToClipboard, .window, .text])
+    func selectionOverlayHidesTheEditorOnlyOnceItIsPresented(mode: CapturePipeline.Mode) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.saveOutput = false
+        let editor = window(); defer { editor.close() }
+        var visibleAfterCapture: [Bool] = []
+        func present(_ capturer: ScreenCapturer) {
+            #expect(editor.isVisible)
+            let presented = capturer.onSelectionPresented
+            #expect(presented != nil)
+            capturer.onSelectionPresented = nil
+            presented?()
+            // A repeated callback must not lose track of the hidden editor.
+            presented?()
+            #expect(!editor.isVisible)
+        }
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { capturer, _, _ in
+                present(capturer)
+                return CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                     rect: CGRect(x: 0, y: 0, width: 100, height: 40), kind: .area, windowInfo: nil)
+            }
+            $0.captureText = { capturer in
+                present(capturer)
+                return f.image
+            }
+            $0.copy = { _ in visibleAfterCapture.append(editor.isVisible); return true }
+            $0.recognize = { _, _ in visibleAfterCapture.append(editor.isVisible); return [] }
+        }
+        try await #require(pipeline.start(mode)).value
+        #expect(visibleAfterCapture == [true])
+        #expect(editor.isVisible && editor.restorationCount == 1)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
+        #expect(!pipeline.isBusy)
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.area, .areaToClipboard, .window, .text], [0, 1, 2, 3])
+    func selectionEndingBeforeItIsPresentedNeverHidesTheEditor(mode: CapturePipeline.Mode, outcome: Int) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var permissionPrompts = 0
+        var hooks: [Bool] = []
+        func failure(_ capturer: ScreenCapturer) -> Error {
+            hooks.append(capturer.onSelectionPresented != nil)
+            #expect(editor.isVisible)
+            switch outcome {
+            case 1: return CaptureError.failed("Synthetic freeze failure")
+            case 2: return CaptureError.permissionDenied
+            case 3: return CancellationError()
+            default: return CaptureError.cancelled
+            }
+        }
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.permissionDenied = { permissionPrompts += 1 }
+            $0.capture = { capturer, _, _ in throw failure(capturer) }
+            $0.captureText = { capturer in throw failure(capturer) }
+        }
+        try await #require(pipeline.start(mode)).value
+        #expect(hooks == [true])
+        #expect(editor.isVisible && editor.restorationCount == 0)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
+        #expect(permissionPrompts == (outcome == 2 ? 1 : 0))
+        #expect(!pipeline.isBusy)
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.areaToClipboard, .text], [false, true])
+    func presentationAfterRestorationNeverHidesTheEditorAgain(mode: CapturePipeline.Mode,
+                                                               presentedDuringSelection: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var late: (@MainActor () -> Void)?
+        func select(_ capturer: ScreenCapturer) {
+            late = capturer.onSelectionPresented
+            if presentedDuringSelection { late?() }
+        }
+        func presentLate() {
+            late?()
+            #expect(editor.isVisible)
+        }
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { capturer, _, _ in
+                select(capturer)
+                return CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                     rect: CGRect(x: 0, y: 0, width: 100, height: 40), kind: .area, windowInfo: nil)
+            }
+            $0.captureText = { capturer in
+                select(capturer)
+                return f.image
+            }
+            $0.copy = { _ in presentLate(); return true }
+            $0.recognize = { _, _ in presentLate(); return [] }
+        }
+        try await #require(pipeline.start(mode)).value
+        #expect(late != nil)
+        presentLate()
+        #expect(editor.restorationCount == (presentedDuringSelection ? 1 : 0))
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast, .timer(3)])
+    func capturesWithoutAFrozenOverlayHideUpFront(mode: CapturePipeline.Mode) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var stalePresentations = 0
+        ScreenCapturer.shared.onSelectionPresented = { stalePresentations += 1 }
+        var hooks: [Bool] = []
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { capturer, _, _ in
+                hooks.append(capturer.onSelectionPresented != nil)
+                #expect(!editor.isVisible)
+                throw CaptureError.cancelled
+            }
+        }
+        try await #require(pipeline.start(mode)).value
+        #expect(hooks == [false] && stalePresentations == 0)
+        #expect(editor.isVisible && editor.restorationCount == 1)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
+    }
+
+    @Test func scrollingCaptureHidesUpFrontWithoutAPresentationHook() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        let capture = FakeScrollingCapture(image: f.image)
+        f.scrolling = capture
+        var stalePresentations = 0
+        ScreenCapturer.shared.onSelectionPresented = { stalePresentations += 1 }
+        let pipeline = f.pipeline { $0.captureWindows = { [editor] } }
+
+        let task = try #require(pipeline.start(.scrolling))
+        #expect(!editor.isVisible)
+        #expect(ScreenCapturer.shared.onSelectionPresented == nil)
+        for _ in 0..<100 where !capture.isRunning { await Task.yield() }
+        capture.cancel()
+        await task.value
+        #expect(stalePresentations == 0)
+        #expect(editor.isVisible && editor.restorationCount == 1)
     }
 }
 

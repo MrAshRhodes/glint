@@ -57,13 +57,15 @@ final class SelectionSession {
     private let excludeOwnWindows: Bool
     private let excludedWindowIDs: Set<CGWindowID>
     private let services: Services
+    /// Runs once, after the overlay first drew and while the selection is still active.
+    private var onPresented: (@MainActor () -> Void)?
     /// Displays grabbed before any overlay was created or took focus; retained until the result is consumed.
     private(set) var frozen: [FrozenDisplay] = []
 
     init(mode: OverlayStartMode, lastArea: CGRect?, snapToEdges: Bool = false,
          freeze: (([DisplayInfo]) async throws -> [FrozenDisplay])? = nil,
          excludeOwnWindows: Bool = true, excludedWindowIDs: Set<CGWindowID> = [],
-         services: Services = Services()) {
+         services: Services = Services(), onPresented: (@MainActor () -> Void)? = nil) {
         self.mode = mode == .area ? .area : .window
         self.lastArea = lastArea
         self.snapToEdges = snapToEdges
@@ -72,6 +74,7 @@ final class SelectionSession {
         self.excludeOwnWindows = excludeOwnWindows
         self.excludedWindowIDs = excludedWindowIDs
         self.services = services
+        self.onPresented = onPresented
     }
 
     func run() async throws -> SelectionOutcome {
@@ -138,6 +141,8 @@ final class SelectionSession {
 
     private func presentOverlay() {
         let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        updateHover()
         for screen in NSScreen.screens {
             let id = WindowEnumerator.displayID(of: screen)
             let background = frozen.first { $0.display.id == id }?.image
@@ -146,22 +151,32 @@ final class SelectionSession {
                              background: background)
             }
             panels.append(panel)
+            // Take the first snapshot and start the chrome fade before ordering in, so the panel draws its first
+            // frame once, with this state, and the chrome never shows at full strength before fading.
+            panel.overlayView.refresh()
+            panel.revealChrome(reduceMotion: reduceMotion)
             panel.orderFrontRegardless()
         }
         guard !panels.isEmpty else { finish(.failure(CaptureError.noDisplay)); return }
         if let panel = panels.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? panels.first {
             OverlayFocus.makeKey(panel)
         }
-        updateHover()
         refresh()
         NSCursor.crosshair.set()
     }
 
-    func refresh() { panels.forEach { ($0.contentView as? OverlayView)?.refresh() } }
+    func refresh() { panels.forEach { $0.overlayView.refresh() } }
 
     fileprivate func didDraw() {
         OverlayPerformance.end("OverlayFirstDraw", firstDrawInterval)
         firstDrawInterval = nil
+        guard isRunning, let hook = onPresented else { return }
+        onPresented = nil
+        // Wait for this draw to be committed, so whatever the hook changes stays hidden under the overlay.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isRunning else { return }
+            hook()
+        }
     }
 
     private func updateHover() {
@@ -254,6 +269,7 @@ final class SelectionSession {
     private func finish(_ result: Result<SelectionOutcome, Error>) {
         guard isRunning else { return }
         isRunning = false
+        onPresented = nil
         let c = continuation
         continuation = nil
         if case .failure(let error) = result {
@@ -263,7 +279,7 @@ final class SelectionSession {
         OverlayPerformance.end("OverlayFirstDraw", firstDrawInterval, cancelled: true)
         firstDrawInterval = nil
         panels.forEach {
-            ($0.contentView as? OverlayView)?.cancelPendingDraw()
+            $0.overlayView.cancelPendingDraw()
             $0.orderOut(nil)
             $0.close()
         }
@@ -299,12 +315,26 @@ enum OverlayFocus {
 }
 
 final class OverlayPanel: NSPanel {
+    /// Draws the dim, selection and labels. It is transparent and sits above `backgroundView`.
+    let overlayView: OverlayView
+    /// Shows the frozen display, if any, as layer contents composited by the window server.
+    let backgroundView: FrozenBackgroundView
+
+    static let chromeFadeKey = "chromeFade"
+    static let chromeFadeDuration: CFTimeInterval = 0.12
+
     init(screen: NSScreen, session: SelectionSession, level: NSWindow.Level, primaryHeight: CGFloat,
          background: CGImage? = nil) {
+        let bounds = NSRect(origin: .zero, size: screen.frame.size)
+        overlayView = OverlayView(frame: bounds, session: session,
+                                  screenFrameCG: CaptureGeometry.appKitToCG(screen.frame, primaryHeight: primaryHeight),
+                                  scale: screen.backingScaleFactor)
+        backgroundView = FrozenBackgroundView(frame: bounds, image: background)
         super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         self.level = level
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        animationBehavior = .none
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
@@ -314,23 +344,76 @@ final class OverlayPanel: NSPanel {
         acceptsMouseMovedEvents = true
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
-        let v = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), session: session,
-                            screenFrameCG: CaptureGeometry.appKitToCG(screen.frame, primaryHeight: primaryHeight),
-                            scale: screen.backingScaleFactor, background: background)
-        contentView = v
+        let container = NSView(frame: bounds)
+        container.wantsLayer = true
+        for view in [backgroundView, overlayView] as [NSView] {
+            view.wantsLayer = true
+            view.autoresizingMask = [.width, .height]
+            container.addSubview(view)
+        }
+        contentView = container
+        initialFirstResponder = overlayView
+        makeFirstResponder(overlayView)
         setFrame(screen.frame, display: false)
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Fades the chrome in over the frozen background. The background is opaque from the first frame and
+    /// matches the screen, so nothing visibly pops in. Core Animation animates only the overlay layer's
+    /// opacity: the view is not redrawn, and it handles input throughout.
+    func revealChrome(reduceMotion: Bool) {
+        guard let layer = overlayView.layer else { return }
+        layer.removeAnimation(forKey: Self.chromeFadeKey)
+        guard !reduceMotion else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = Self.chromeFadeDuration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(fade, forKey: Self.chromeFadeKey)
+    }
+
+    override func close() {
+        super.close()
+        backgroundView.image = nil
+    }
+}
+
+/// The display as it looked before the overlay appeared (see `FrozenDisplay`). It is layer contents, so the
+/// GPU composites it under the chrome instead of the overlay drawing every pixel of it on the CPU.
+final class FrozenBackgroundView: NSView {
+    var image: CGImage? {
+        didSet { updateLayer() }
+    }
+
+    init(frame: NSRect, image: CGImage?) {
+        self.image = image
+        super.init(frame: frame)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        updateLayer()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+    override var isOpaque: Bool { image != nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.contents = image
+        layer.contentsGravity = .resize
+        layer.isOpaque = image != nil
+    }
 }
 
 final class OverlayView: NSView {
     private unowned let session: SelectionSession
     private let screenFrameCG: CGRect
     private let scale: CGFloat
-    /// The display as it looked before the overlay appeared, painted under the dim (see `FrozenDisplay`).
-    private let background: CGImage?
     private var lastSnapshot: Snapshot?
     private var detailLayout: TextLayout?
     private var pendingDrawInterval: OSSignpostIntervalState?
@@ -439,11 +522,10 @@ final class OverlayView: NSView {
         }
     }
 
-    init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat, background: CGImage? = nil) {
+    init(frame: NSRect, session: SelectionSession, screenFrameCG: CGRect, scale: CGFloat) {
         self.session = session
         self.screenFrameCG = screenFrameCG
         self.scale = scale
-        self.background = background
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: .zero,
                                        options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited],
@@ -679,10 +761,10 @@ final class OverlayView: NSView {
         context.saveGState()
         defer { context.restoreGState() }
         context.clip(to: dirtyRect)
-        // The panel is transparent. Repainting source-over without clearing would accumulate dimming
-        // and leave old selection holes/crosshairs behind during partial or overlapping redraws.
+        // The view is transparent over the frozen background layer. Repainting source-over without clearing
+        // would accumulate dimming and leave old selection holes/crosshairs behind during partial or
+        // overlapping redraws.
         context.clear(dirtyRect)
-        if let background { context.draw(background, in: bounds) }
         context.setFillColor(Palette.dim)
         context.fill(Self.subtract(bounds, excluding: snapshot.hole))
 

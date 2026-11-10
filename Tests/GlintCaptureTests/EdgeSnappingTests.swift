@@ -359,7 +359,7 @@ struct SnappingSelectionTests {
         defer { panel.close() }
         #expect(!panel.isMovable)
 
-        let view = try #require(panel.contentView as? OverlayView)
+        let view = panel.overlayView
         func moved(_ flags: NSEvent.ModifierFlags) throws -> NSEvent {
             try #require(NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 20, y: 20),
                                             modifierFlags: flags, timestamp: 0, windowNumber: panel.windowNumber,
