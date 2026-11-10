@@ -8,11 +8,14 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-10
+
 ### Added
 
 - Capture/editor/export timing signposts, including hotkey delivery, permission checks, metadata lookup, image acquisition, rendering, encoding, clipboard publication and first preview. These record timings and fixed mode/trigger labels, never screenshot contents, coordinates, window titles or paths. ([#96])
 - Opt-in `Glint --diagnose --timing` reports cold and warm capture-stage timings as JSON. Reading display pixels requires the separate `--allow-screen-capture` flag; plain `--diagnose` is unchanged. A permission-free weekly Performance workflow checks offscreen overlay drawing, synthetic rendering/encoding, output density and colour-profile metadata, retaining timing summaries and failing on gross regressions. ([#97])
 - Hold `Space` while dragging a selection to move the whole rectangle; release it to continue resizing. Before a drag, `Space` still switches between area and window selection, and the hint explains both actions. ([#105])
+- `Scripts/capture-latency.cjs` turns a `log stream --signpost` trace into p50/p95 hotkey latency per scenario (first capture of a process, warm, after 60 s of quiet, and after a named marker such as a wake or display change), split into key event → callback → main actor → first overlay frame. It reports durations and counts only; CONTRIBUTING.md explains how to collect an idle/wake trace. No live trace has been recorded yet. ([#106])
 
 ### Changed
 
@@ -20,11 +23,13 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 - Screenshot composition, encoding, thumbnail preparation and file writes move off the main actor. Direct output is copied and shown before disk writes finish, and the editor opens before the optional raw file is saved. Thumbnails use downscaled images on the capture's display; recent-file entries, saved notifications and drag files appear only after a successful write. Quitting waits for pending writes, failures remain visible, and background saves do not overwrite a newly created file. ([#98])
 - Clipboard publication shares an immutable image snapshot with background PNG preparation, makes TIFF only when a consumer requests it, and reuses encoded PNG bytes for saving. Editor Copy renders off-main, and dragging starts with a file promise while rendering and writing continue. Pending clipboard data is handed over on quit; output failures are reported rather than silently publishing an empty result. First-paste and drag-delivery latency still require live measurement. ([#99])
 - Glint prewarms capture metadata, not pixels, after launch and display/session changes when Screen Recording is already allowed. Captures reuse it and retry once with fresh metadata after an acquisition failure. Screen freezing and window enumeration overlap, and shared hint layouts are prepared before the first overlay frame. This does not bypass permission checks or acquire background screenshots. ([#102])
-- The editor's first frame shows a safely positioned capture with the composed preview's crop, orientation and proportions, without delaying the initial render to group later edits. Images awaiting automatic redaction remain covered and unavailable to preview/drag until analysis finishes. `ProvisionalFrame` shares compositor layout and crop rules; `EditorContext.autoRedactionApplied` identifies captures already analysed by the pipeline. ([#109])
+- The editor's first frame shows a safely positioned capture with the composed preview's crop, orientation and proportions, without delaying the initial render to group later edits. Images awaiting automatic redaction remain covered and unavailable to preview/drag until analysis finishes. `ProvisionalFrame` shares compositor layout and crop rules. ([#109])
 - Editor previews, copies and exports reuse sRGB conversion and annotation baking when only the look changes, with a 256 MB image budget. Background, wallpaper and watermark decoding also moves off-main and uses a separate 256 MB, three-image cache invalidated by file identity and metadata. Annotation edits invalidate baked pixels; redactions remain in every output. Grain backgrounds use equivalent band drawing. `RenderCache`, `ImageFileCache`, the compositor's optional `cache:` argument and `Scripts/benchmark-editor-render.sh` expose and measure this reuse. ([#110])
 - Global shortcuts register before deferred menu/updater setup, and Settings is constructed only when opened. The Permissions pane polls only while visible and publishes only changed values. Launch, Settings, menu and permission-check signposts make the remaining cold/idle costs observable. ([#112])
 - Full-screen and repeat-last-area captures keep existing editor and Settings windows visible, using capture exclusion instead of hide/restore flicker. Interactive, timed and scrolling capture retain their existing visibility behavior. ([#113])
 - Overlay profiling now reports the effective AppKit dirty-region area, bounding area and rectangle count. The CPU benchmark compares disjoint and coalesced clipping; it does not claim a live frame-rate improvement. The screenshot colour policy is documented and regression-tested: raw PNG preserves the supplied profile, composed output is colour-managed in sRGB, and clipboard/encoded output are compared in a common colour space. Live redraw, wide-gamut display appearance and native-tool comparisons remain unmeasured. ([#107], [#111])
+- Automatic redaction reads a capture's text once: the editor that opens a capture, or the one opened from a direct export's **Edit** action, reuses the pipeline's read instead of reading the already-redacted pixels again, unless the detection settings differ or that read did not finish. Redacting again with other categories, or **Detect Text**, reuses text already read from the same image. Covers use the same 3-point margin everywhere (6 px on a Retina capture), clipped at the image edge. ([#114])
+- While the editor is still checking a capture for sensitive information, Copy, Save, Share and drag-out refuse with a retry instead of exporting pixels that may not be covered yet; closing the editor drops a read still running. GlintCore adds `RedactionAnalysis`, `RedactionPolicy`, `AutoRedactOptions`/`AutoRedact.analyse` and `TextRecognizer.statistics` (also a `Recognize` signpost); `EditorContext.redaction` describes what the pipeline already redacted, and `EditorHeadless.render` throws when text recognition fails instead of returning unredacted pixels. ([#114])
 
 ### Fixed
 
@@ -277,7 +282,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.8.2...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/MrAshRhodes/glint/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/MrAshRhodes/glint/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MrAshRhodes/glint/compare/v1.7.0...v1.8.0
@@ -343,6 +349,7 @@ First public release.
 [#103]: https://github.com/MrAshRhodes/glint/issues/103
 [#104]: https://github.com/MrAshRhodes/glint/issues/104
 [#105]: https://github.com/MrAshRhodes/glint/issues/105
+[#106]: https://github.com/MrAshRhodes/glint/issues/106
 [#107]: https://github.com/MrAshRhodes/glint/issues/107
 [#108]: https://github.com/MrAshRhodes/glint/issues/108
 [#109]: https://github.com/MrAshRhodes/glint/issues/109
@@ -350,3 +357,4 @@ First public release.
 [#111]: https://github.com/MrAshRhodes/glint/issues/111
 [#112]: https://github.com/MrAshRhodes/glint/issues/112
 [#113]: https://github.com/MrAshRhodes/glint/issues/113
+[#114]: https://github.com/MrAshRhodes/glint/issues/114
