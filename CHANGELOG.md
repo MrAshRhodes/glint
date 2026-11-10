@@ -12,6 +12,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 - Window capture no longer waits a fixed 120 ms after you pick a window, and reuses the window list read when the selection opened instead of asking macOS again, so the screenshot is taken sooner. Live area grabs (timed area) wait only what is left of that 120 ms since the selection closed, and a window that closes or cannot be grabbed still falls back to the frozen pixels. ([#101])
 
+### Fixed
+
+- Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
+
 ## [1.8.2] - 2026-11-10
 
 ### Fixed
@@ -312,3 +316,4 @@ First public release.
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
 [#101]: https://github.com/MrAshRhodes/glint/issues/101
+[#108]: https://github.com/MrAshRhodes/glint/issues/108

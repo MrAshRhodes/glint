@@ -96,4 +96,96 @@ struct RememberSettingsTests {
         #expect(reloaded.preset(named: "Roomy")?.settings.padding == 64)
         #expect(reloaded.preset(named: preset.name)?.settings.padding == 12)
     }
+
+    struct Precedence: Sendable, CustomTestStringConvertible {
+        enum DefaultPreset: Sendable {
+            case named, missing, unnamed
+        }
+
+        let remember: Bool
+        let saved: Bool
+        let defaultPreset: DefaultPreset
+
+        /// Saved settings are 31, the named default preset 12 and the store's default preset 7.
+        var expectedPadding: Double {
+            if remember && saved { return 31 }
+            return defaultPreset == .named ? 12 : 7
+        }
+
+        var testDescription: String {
+            "Remember settings \(remember ? "on" : "off"), \(saved ? "saved settings" : "nothing saved"), "
+                + "default preset \(defaultPreset)"
+        }
+
+        static let all = [true, false].flatMap { remember in
+            [true, false].flatMap { saved in
+                [DefaultPreset.named, .missing, .unnamed].map { Precedence(remember: remember, saved: saved, defaultPreset: $0) }
+            }
+        }
+    }
+
+    @Test(arguments: Precedence.all)
+    func initialSettingsPreferRememberedThenTheNamedDefaultThenTheStoreDefault(_ scenario: Precedence) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let named = f.presets.add(name: "House style", settings: RenderSettings(padding: 12))
+        let storeDefault = f.presets.add(name: "Store default", settings: RenderSettings(padding: 7))
+        f.presets.setDefault(id: storeDefault.id)
+        switch scenario.defaultPreset {
+        case .named: f.preferences.defaultPresetName = named.name
+        case .missing: f.preferences.defaultPresetName = "Deleted preset"
+        case .unnamed: f.preferences.defaultPresetName = nil
+        }
+        f.preferences.rememberSettings = scenario.remember
+        f.preferences.lastRenderSettings = scenario.saved ? RenderSettings(padding: 31) : nil
+
+        let settings = EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets)
+        #expect(settings.padding == scenario.expectedPadding)
+        #expect(f.model().settings == settings)
+    }
+
+    @Test func withoutAPresetStoreItFallsBackToRememberedSettingsThenTheBuiltInDefault() throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.preferences.rememberSettings = true
+        f.preferences.lastRenderSettings = RenderSettings(padding: 31)
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences).padding == 31)
+
+        f.preferences.lastRenderSettings = nil
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences).padding == RenderSettings.default.padding)
+    }
+
+    @Test(arguments: [true, false])
+    func autoBalanceAlwaysFollowsPreferences(enabled: Bool) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        let preset = f.presets.add(name: "House style", settings: RenderSettings(padding: 12, autoBalance: !enabled))
+        f.presets.setDefault(id: preset.id)
+        f.preferences.autoBalance = enabled
+
+        f.preferences.rememberSettings = false
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets).autoBalance == enabled)
+        #expect(f.model().settings.autoBalance == enabled)
+
+        f.preferences.rememberSettings = true
+        f.preferences.lastRenderSettings = RenderSettings(padding: 31, autoBalance: !enabled)
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets).autoBalance == enabled)
+        #expect(f.model().settings.autoBalance == enabled)
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets,
+                                               presetName: preset.name).autoBalance == enabled)
+    }
+
+    @Test(arguments: [true, false])
+    func anExplicitPresetOverridesRememberedSettingsAndAMissingOneFallsBack(remember: Bool) throws {
+        let f = try EditorFixture(); defer { f.cleanUp() }
+        f.presets.add(name: "Explicit", settings: RenderSettings(padding: 5))
+        f.preferences.rememberSettings = remember
+        f.preferences.lastRenderSettings = RenderSettings(padding: 31)
+
+        let ordinary = EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets)
+        #expect(ordinary.padding == (remember ? 31 : f.presets.defaultPreset?.settings.padding))
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets,
+                                               presetName: "Explicit").padding == 5)
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetStore: f.presets,
+                                               presetName: "Deleted preset") == ordinary)
+        #expect(EditorHeadless.initialSettings(preferences: f.preferences, presetName: "Explicit").padding
+                == (remember ? 31 : RenderSettings.default.padding))
+    }
 }

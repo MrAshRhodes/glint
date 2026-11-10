@@ -8,7 +8,7 @@ import Testing
 private enum TestFailure: Error { case write, recognition }
 
 @MainActor
-private final class CaptureFixture {
+final class CaptureFixture {
     let suite = "glint.pipeline.tests.\(UUID().uuidString)"
     let directory: URL
     let preferences: AppPreferences
