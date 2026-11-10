@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import GlintCore
 import SwiftUI
 
 /// Modifier mask using Carbon values (usable directly with RegisterEventHotKey).
@@ -132,7 +133,13 @@ public final class HotkeyCenter {
                                        nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
             if st == noErr, hk.signature == HotkeyCenter.signature {
                 let n = hk.id
-                DispatchQueue.main.async { MainActor.assumeIsolated { HotkeyCenter.shared.fire(numeric: n) } }
+                // Carbon's clock, the one GetEventTime reports in, so the age needs no conversion.
+                let queueDelay = CaptureSignposts.beginQueueDelay(
+                    eventAgeSeconds: GetCurrentEventTime() - GetEventTime(event))
+                DispatchQueue.main.async {
+                    CaptureSignposts.end(queueDelay)
+                    MainActor.assumeIsolated { HotkeyCenter.shared.fire(numeric: n) }
+                }
             }
             return noErr
         }, 1, &spec, nil, &handlerRef)

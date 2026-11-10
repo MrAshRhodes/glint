@@ -96,19 +96,36 @@ final class CapturePipeline {
         retention = services.retention(prefs)
     }
 
-    enum Mode: Equatable { case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int) }
+    enum Mode: Equatable {
+        case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int)
+
+        /// The signpost label: the mode alone, without a timer's delay.
+        var signpostLabel: String {
+            switch self {
+            case .area: "area"
+            case .window: "window"
+            case .fullscreen: "fullscreen"
+            case .repeatLast: "repeatLast"
+            case .text: "text"
+            case .areaToClipboard: "areaToClipboard"
+            case .scrolling: "scrolling"
+            case .timer: "timer"
+            }
+        }
+    }
 
     // MARK: capture entry
 
     /// Starts a capture. While a scrolling capture runs, starting another one finishes it instead.
     @discardableResult
-    func start(_ mode: Mode) -> Task<Void, Never>? {
+    func start(_ mode: Mode, trigger: CaptureSignposts.Trigger = .menu) -> Task<Void, Never>? {
         if mode == .scrolling, let activeScroll {
             activeScroll.finish()
             return nil
         }
         guard !isBusy else { return nil }
         busy = true
+        let signpost = CaptureSignposts.beginCapture(trigger: trigger, mode: mode.signpostLabel)
         let capturer = ScreenCapturer.shared
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
@@ -144,12 +161,14 @@ final class CapturePipeline {
         }
 
         return Task { @MainActor in
+            var outcome = CaptureSignposts.Outcome.completed
             defer {
                 capturer.onSelectionPresented = nil
                 busy = false
                 activeScroll = nil
                 onStatusTitle?(nil)
                 restoreWindows()
+                CaptureSignposts.end(signpost, outcome == .completed && Task.isCancelled ? .cancelled : outcome)
             }
             do {
                 try Task.checkCancellation()
@@ -179,11 +198,15 @@ final class CapturePipeline {
                 }
             } catch CaptureError.cancelled {
                 // user pressed Esc
+                outcome = .cancelled
             } catch is CancellationError {
                 // The capture task was cancelled before it produced an output.
+                outcome = .cancelled
             } catch CaptureError.permissionDenied {
+                outcome = .failed
                 services.permissionDenied()
             } catch {
+                outcome = .failed
                 services.notify("Capture failed", error.localizedDescription, nil)
             }
         }
@@ -230,7 +253,9 @@ final class CapturePipeline {
         var rawURL = existingRaw
         if saveRaw, prefs.saveRaw, let url = prefs.outputPaths.rawURL() {
             do {
-                rawURL = try services.write(image, url, .plainPNG, .original, scale)
+                rawURL = try CaptureSignposts.measure("RawWrite") {
+                    try services.write(image, url, .plainPNG, .original, scale)
+                }
             } catch {
                 services.notify("Raw screenshot not saved", error.localizedDescription, nil)
             }
@@ -294,7 +319,9 @@ final class CapturePipeline {
         let rendered: CGImage
         while true {
             do {
-                rendered = try services.render(image, settings, scale, wallpaper)
+                rendered = try CaptureSignposts.measure("Render") {
+                    try services.render(image, settings, scale, wallpaper)
+                }
                 break
             } catch {
                 services.notify("Screenshot not exported", error.localizedDescription, nil)
@@ -308,7 +335,9 @@ final class CapturePipeline {
             let format = prefs.exportFormat
             let url = prefs.outputPaths.outputURL(format: format) ?? prefs.outputPaths.saveURL(format: format)
             do {
-                saved = try services.write(rendered, url, format, exportScale, scale)
+                saved = try CaptureSignposts.measure("OutputWrite") {
+                    try services.write(rendered, url, format, exportScale, scale)
+                }
             } catch {
                 failures.append("Save failed: \(error.localizedDescription)")
             }

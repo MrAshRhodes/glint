@@ -216,6 +216,8 @@ final class EditorModel: ObservableObject {
     private let wallpaperProvider: @MainActor () -> Result<CGImage, DesktopWallpaperError>
     private var wallpaperImage: CGImage?
     private var rendering = false
+    /// `editor.open`: from this model's creation to its first finished preview.
+    private var openSignpost: CaptureSignposts.Interval?
     private var dirty = false
     private var scheduled = false
     /// Cleared once the first composed preview exists or the first render fails.
@@ -271,6 +273,7 @@ final class EditorModel: ObservableObject {
     init(context: EditorContext, preferences: AppPreferences, presetStore: PresetStore, design: PresetDesign? = nil,
          recognizeText: @escaping (CGImage) async throws -> [RecognizedLine] = { try await TextRecognizer.recognize(in: $0) },
          wallpaperProvider: @escaping @MainActor () -> Result<CGImage, DesktopWallpaperError> = { DesktopWallpaper.current() }) {
+        openSignpost = CaptureSignposts.begin("editor.open")
         self.image = context.image
         self.isRecording = context.isRecording
         self.backingScale = max(context.backingScale, 1)
@@ -306,6 +309,8 @@ final class EditorModel: ObservableObject {
         requestInitialRender()
         if automaticallyRedacts { Task { await self.runInitialAutoRedact() } }
     }
+
+    deinit { CaptureSignposts.end(openSignpost, .cancelled) }
 
     // MARK: State helpers
 
@@ -492,10 +497,11 @@ final class EditorModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             let r: RenderResult
             do {
-                if let activePresentation {
-                    r = try renderPresentation(img, s, anns, scale, bg, wallpaper, time, activePresentation)
-                } else {
-                    r = try renderer(img, s, anns, scale, bg, wallpaper, time)
+                r = try CaptureSignposts.measure("editor.render") {
+                    if let activePresentation {
+                        return try renderPresentation(img, s, anns, scale, bg, wallpaper, time, activePresentation)
+                    }
+                    return try renderer(img, s, anns, scale, bg, wallpaper, time)
                 }
             } catch {
                 // Fail closed: never fall back to unannotated pixels; keep the last good preview.
@@ -510,6 +516,8 @@ final class EditorModel: ObservableObject {
     }
 
     private func finishRender(_ p: Preview) {
+        CaptureSignposts.end(openSignpost)
+        openSignpost = nil
         preview = p
         providesProvisional = false
         if provisional != nil { provisional = nil }
@@ -519,6 +527,8 @@ final class EditorModel: ObservableObject {
     }
 
     private func failRender(_ message: String) {
+        CaptureSignposts.end(openSignpost, .failed)
+        openSignpost = nil
         statusMessage = message
         if preview == nil {
             providesProvisional = false
