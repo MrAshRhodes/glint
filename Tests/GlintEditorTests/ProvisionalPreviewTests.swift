@@ -166,11 +166,11 @@ struct ProvisionalPreviewTests {
     }
 
     private func makeModel(_ f: EditorFixture, look: RenderSettings = framedLook, image: CGImage? = nil,
-                       autoRedactionApplied: Bool = false, restored: EditorRestoreState? = nil,
+                       analysis: RedactionAnalysis = .notRequested, restored: EditorRestoreState? = nil,
                        recognizer: RecognizerGate? = nil) throws -> EditorModel {
         f.preferences.lastRenderSettings = look
         let context = EditorContext(image: try image ?? redCapture(), backingScale: 2, rawURL: nil, source: "test",
-                                    restored: restored, autoRedactionApplied: autoRedactionApplied)
+                                    restored: restored, redaction: analysis)
         guard let recognizer else {
             return EditorModel(context: context, preferences: f.preferences, presetStore: f.presets)
         }
@@ -341,17 +341,17 @@ struct ProvisionalPreviewTests {
         f.preferences.autoRedact = true
         let gate = RenderGate(); defer { gate.open() }
         let recognizer = RecognizerGate()
-        let model = try makeModel(f, autoRedactionApplied: true, recognizer: recognizer)
+        let finished = RedactionAnalysis.noMatches(RedactionAnalysis.Settings(detector: f.preferences.autoRedactOptions))
+        let model = try makeModel(f, analysis: finished, recognizer: recognizer)
         model.renderer = gate.renderer
         let canvas = CanvasView(model: model)
 
         #expect(!model.awaitsRedaction && model.provisional != nil)
         #expect(try CanvasSnapshot(canvas).redBounds != nil)
         #expect(await eventually { gate.renders == 1 }, "Its first render starts without waiting for the editor's own pass")
-        #expect(recognizer.calls <= 1)
         gate.open()
         #expect(await eventually { model.preview != nil })
-        recognizer.respond(.success([]))
+        #expect(recognizer.calls == 0, "The finished analysis is reused: the capture is not read again")
     }
 
     @Test func aReopenedImageIsNeverHeldBack() throws {

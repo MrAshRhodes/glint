@@ -928,10 +928,12 @@ struct CapturePipelineTests {
         f.preferences.autoRedact = autoRedact
         f.preferences.openEditorAfterCapture = true
         f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
-        var opened: [(editor: EditorWindowController, holdsBack: Bool, showsCapture: Bool)] = []
+        var opened: [(editor: EditorWindowController, holdsBack: Bool, showsCapture: Bool, analysis: RedactionAnalysis)] = []
         // Looks at the editor as it is presented, before anything it starts asynchronously has run.
         let pipeline = f.pipeline {
-            $0.presentEditor = { opened.append(($0, $0.model.awaitsRedaction, $0.model.provisional != nil)) }
+            $0.presentEditor = {
+                opened.append(($0, $0.model.awaitsRedaction, $0.model.provisional != nil, $0.model.redactionAnalysis))
+            }
         }
         await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
 
@@ -944,6 +946,163 @@ struct CapturePipelineTests {
         let expected: UInt8 = autoRedact ? 0 : 255
         #expect(pixels.pixel(50, 20) == (expected, expected, expected, 255))
         #expect(f.recognizedImages.count == (autoRedact ? 1 : 0))
+
+        let analysis: RedactionAnalysis = autoRedact ? foundEmail(f) : .notRequested
+        #expect(first.analysis == analysis, "The editor starts from what the pipeline found")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(first.editor.model.redactionAnalysis == analysis, "It never started a pass of its own")
+        #expect(!first.editor.model.isBusy)
+    }
+
+    @Test func editingADirectExportDoesNotReadItsCaptureAgain() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.defaults.set(true, forKey: ShellKey.quickAccess)
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var edit: (() -> Void)?
+        var editors: [EditorWindowController] = []
+        let pipeline = f.pipeline {
+            $0.showQuickAccess = { _, _, onEdit in edit = onEdit }
+            $0.presentEditor = { editors.append($0) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        #expect(f.writes.count == 1 && editors.isEmpty)
+        #expect(f.recognizedImages.count == 1)
+
+        let pressEdit = try #require(edit)
+        pressEdit()
+        let editor = try #require(editors.first)
+        defer { editor.window?.close() }
+        #expect(!editor.model.awaitsRedaction, "The exported capture was redacted, so the editor shows it at once")
+        #expect(editor.model.redactionAnalysis == foundEmail(f))
+        #expect(try #require(PixelBuffer(editor.model.image)).pixel(50, 20) == (0, 0, 0, 255))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(editor.model.redactionAnalysis == foundEmail(f) && !editor.model.isBusy)
+        #expect(f.recognizedImages.count == 1, "Neither the pipeline nor the editor read the capture a second time")
+    }
+
+    @Test func anEditorWithOtherSettingsThanTheExportReadsTheCaptureItself() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.defaults.set(true, forKey: ShellKey.quickAccess)
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var edit: (() -> Void)?
+        var opened: [(editor: EditorWindowController, holdsBack: Bool, analysis: RedactionAnalysis)] = []
+        let pipeline = f.pipeline {
+            $0.showQuickAccess = { _, _, onEdit in edit = onEdit }
+            $0.presentEditor = { opened.append(($0, $0.model.awaitsRedaction, $0.model.redactionAnalysis)) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+
+        f.preferences.autoRedactOptions = .all
+        let pressEdit = try #require(edit)
+        pressEdit()
+        let first = try #require(opened.first)
+        defer { first.editor.window?.close() }
+        #expect(first.holdsBack && first.analysis == .pending, "What was found with other categories is not an answer")
+    }
+
+    @Test(arguments: [false, true])
+    func theRawFileIsTheCaptureAsTakenBeforeAnyRedaction(opensEditor: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.saveRaw = true
+        f.preferences.openEditorAfterCapture = opensEditor
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var rawWhenReading: CGImage?
+        var editors: [EditorWindowController] = []
+        let pipeline = f.pipeline {
+            let read = $0.recognize
+            $0.recognize = { image, options in
+                rawWhenReading = f.writes.first.flatMap { GlintImageIO.load(url: $0.url) }
+                return try await read(image, options)
+            }
+            $0.presentEditor = { editors.append($0) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: true)
+
+        let rawWrite = try #require(f.writes.first)
+        #expect(rawWrite.url.deletingLastPathComponent().lastPathComponent == "Raw")
+        let raw = try #require(rawWhenReading, "The raw file is on disk before the text is read")
+        #expect(try #require(PixelBuffer(raw)).pixel(50, 20) == (255, 255, 255, 255), "It holds the original pixels")
+
+        if opensEditor {
+            let editor = try #require(editors.first)
+            defer { editor.window?.close() }
+            #expect(editor.model.rawURL == rawWrite.url, "The editor is told where the unredacted original is")
+            #expect(try #require(PixelBuffer(editor.model.image)).pixel(50, 20) == (0, 0, 0, 255))
+        } else {
+            let exportedURL = try #require(f.recent.first)
+            let exported = try #require(GlintImageIO.load(url: exportedURL))
+            #expect(try #require(PixelBuffer(exported)).pixel(50, 20) == (0, 0, 0, 255), "The export is redacted")
+        }
+        #expect(f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }.count == 1)
+    }
+
+    // MARK: One policy at every scale
+
+    /// What a pass finds in the fixture's one address with the fixture's settings.
+    private func foundEmail(_ f: CaptureFixture) -> RedactionAnalysis {
+        .matches(.init(count: 1, byCategory: [.email: 1]), .init(detector: f.preferences.autoRedactOptions))
+    }
+
+    /// A white capture of 100 × 40 points taken at `scale`.
+    private func capture(scale: CGFloat) throws -> CGImage {
+        let context = try #require(GlintBitmap.makeContext(width: Int(100 * scale), height: Int(40 * scale)))
+        context.setFillColor(RGBAColor.white.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 100 * scale, height: 40 * scale))
+        return try #require(context.makeImage())
+    }
+
+    private func covers(_ annotations: [Annotation]) -> [CGRect] {
+        annotations.compactMap { annotation in
+            guard case .redact(let rect) = annotation.kind else { return nil }
+            return rect
+        }
+    }
+
+    @Test(arguments: [CGFloat(1), 2])
+    func theEditorAndThePipelineCoverTheSameRegionAtEveryScale(scale: CGFloat) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.openEditorAfterCapture = true
+        let image = try capture(scale: scale)
+        // Text laid out in points: one match in the top-left corner and one running past the right edge, so
+        // both covers are clipped by the image.
+        let lines = [
+            RecognizedLine(text: "test@example.com",
+                           box: CGRect(x: 0, y: 1 * scale, width: 60 * scale, height: 10 * scale)),
+            RecognizedLine(text: "123-45-6789",
+                           box: CGRect(x: 70 * scale, y: 20 * scale, width: 40 * scale, height: 10 * scale)),
+        ]
+        f.lines = lines
+        var baked: [Annotation] = []
+        var editors: [EditorWindowController] = []
+        let pipeline = f.pipeline {
+            $0.bake = { image, annotations in
+                baked = annotations
+                return AnnotationRenderer.bake(source: image, annotations: annotations)
+            }
+            $0.presentEditor = { editors.append($0) }
+        }
+        await pipeline.handle(image: image, scale: scale, source: "test", rawURL: nil, saveRaw: false)
+        let piped = try #require(editors.first)
+        defer { piped.window?.close() }
+
+        let context = EditorContext(image: image, backingScale: scale, rawURL: nil, source: "test")
+        let own = EditorModel(context: context, preferences: f.preferences, presetStore: f.presets,
+                              recognizeText: { _ in lines })
+        defer { own.close() }
+        for _ in 0..<500 where own.awaitsRedaction { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(!own.awaitsRedaction)
+
+        let expected = [CGRect(x: 0, y: 0, width: 63, height: 14), CGRect(x: 67, y: 17, width: 33, height: 16)]
+        let inPoints = covers(baked).map {
+            CGRect(x: $0.minX / scale, y: $0.minY / scale, width: $0.width / scale, height: $0.height / scale)
+        }
+        #expect(inPoints == expected, "The pipeline covers the same logical region at 1× and 2×, up to the edges")
+        #expect(covers(own.annotations) == covers(baked), "The editor's own pass covers exactly what the pipeline did")
+        #expect(own.redactionAnalysis == piped.model.redactionAnalysis, "And finds exactly what the pipeline found")
     }
 }
 

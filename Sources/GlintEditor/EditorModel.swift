@@ -88,6 +88,19 @@ enum TextSizeVariant: Double, CaseIterable {
 
 enum ZOrderMove { case forward, backward, front, back }
 
+/// Why the editor refuses to produce output.
+enum EditorError: LocalizedError, Equatable {
+    /// The first automatic redaction pass has not finished, so the pixels may still hold what it is about to cover.
+    case redactionPending
+
+    var errorDescription: String? {
+        switch self {
+        case .redactionPending:
+            return "Glint is still checking this capture for sensitive information. Try again in a moment."
+        }
+    }
+}
+
 struct Preview {
     var image: CGImage
     var layout: RenderLayout
@@ -195,6 +208,10 @@ final class EditorModel: ObservableObject {
     /// The editor is still running automatic redaction on a capture that hasn't been redacted yet, so nothing drawn
     /// from its pixels is shown or published until that pass finishes.
     @Published private(set) var awaitsRedaction = false
+    /// What automatic redaction found in this capture: the capture pipeline's finished answer when the editor reused
+    /// it, otherwise the editor's own pass. `pending` while a pass runs, `failed` when recognition failed, and
+    /// `cancelled` once the editor closed mid-pass.
+    @Published private(set) var redactionAnalysis: RedactionAnalysis = .notRequested
     @Published private(set) var wallpaperProblem: String?
     @Published var presets: [Preset] = []
     @Published var statusMessage: String?
@@ -236,6 +253,15 @@ final class EditorModel: ObservableObject {
     private var styleCoalesceKey: String?
     private var styleEditDate = Date.distantPast
     private var autoRedactIDs: Set<UUID> = []
+    /// The latest automatic redaction pass, and the one that applies its result: a pass that finds a newer one, or a
+    /// closed editor, when its recognition returns discards what it read.
+    private var redactionGeneration = 0
+    /// The pass started when the editor opened, kept so closing the editor can cancel it.
+    private var redactionPass: Task<Void, Never>?
+    private var isClosed = false
+    /// The text last read from `image`, so redacting again (with other categories) or Detect Text doesn't read the
+    /// same pixels twice.
+    private var recognition: (image: CGImage, lines: [RecognizedLine])?
 
     typealias Renderer = @Sendable (_ image: CGImage, _ settings: RenderSettings, _ annotations: [Annotation],
                                     _ backingScale: CGFloat, _ backgroundImage: CGImage?,
@@ -321,12 +347,21 @@ final class EditorModel: ObservableObject {
         self.presets = presetStore.presets
         self.designMakeDefault = designIsDefault
         if design == nil, let restored = context.restored { self.annotations = restored.annotations }
-        awaitsRedaction = automaticallyRedacts && !context.autoRedactionApplied
+        let reusesRedaction = automaticallyRedacts
+            && context.redaction.isReusable(for: RedactionAnalysis.Settings(detector: redactOptions))
+        awaitsRedaction = automaticallyRedacts && !reusesRedaction
+        if awaitsRedaction {
+            redactionAnalysis = .pending
+        } else {
+            // Nothing is running here, so a `pending` handed in has no pass to finish it.
+            redactionAnalysis = context.redaction.isPending ? .notRequested : context.redaction
+            if reusesRedaction { lastRedactSummary = context.redaction.summary }
+        }
         providesProvisional = design == nil && !isRecording
         refreshProvisional()
         refreshWallpaper()
         requestInitialRender()
-        if automaticallyRedacts { Task { await self.runInitialAutoRedact() } }
+        if awaitsRedaction { redactionPass = Task { [weak self] in await self?.runInitialAutoRedact() } }
     }
 
     deinit { CaptureSignposts.end(openSignpost, .cancelled) }
@@ -494,7 +529,6 @@ final class EditorModel: ObservableObject {
     }
 
     private func runInitialAutoRedact() async {
-        defer { releaseRedactionHold() }
         await runAutoRedact(announce: false)
     }
 
@@ -505,6 +539,19 @@ final class EditorModel: ObservableObject {
         refreshProvisional()
         dirty = true
         kick()
+    }
+
+    /// Ends this editor's automatic redaction for good. A pass still running is cancelled and what it reads is
+    /// discarded, so it can never be applied to a capture that is no longer on screen; the analysis is `cancelled`
+    /// and, if the first pass had not finished, the capture stays held back so nothing unredacted is drawn or exported.
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        redactionGeneration += 1
+        redactionPass?.cancel()
+        redactionPass = nil
+        if redactionAnalysis.isPending { redactionAnalysis = .cancelled }
+        isBusy = false
     }
 
     private func mark(_ milestone: EditorMilestone) {
@@ -605,8 +652,10 @@ final class EditorModel: ObservableObject {
     }
 
     /// Full-resolution output with annotations visible at the current recording time burned in.
-    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
+    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels, and throws
+    /// `EditorError.redactionPending` while the first automatic redaction pass has not finished.
     func renderFinal() throws -> CGImage {
+        guard !awaitsRedaction else { throw EditorError.redactionPending }
         resolveWallpaperNow()
         let time = isRecording ? recordingTime : nil
         if let presentation = exportPresentation {
@@ -1128,38 +1177,60 @@ final class EditorModel: ObservableObject {
             lastRedactSummary = "Automatic redaction is unavailable for recordings. Manual annotations stay fixed across the whole clip; review every frame before sharing."
             return
         }
+        guard !isClosed else { return }
+        redactionGeneration += 1
+        let pass = redactionGeneration
+        let source = image
+        redactionAnalysis = .pending
         isBusy = true
-        defer { isBusy = false }
+        defer { if pass == redactionGeneration { isBusy = false } }
         preferences.autoRedactOptions = redactOptions
-        guard let lines = try? await recognizeText(image) else {
-            lastRedactSummary = "Text recognition failed."
+        let lines: [RecognizedLine]
+        do {
+            lines = try await recognizedLines(in: source)
+        } catch {
+            guard isCurrent(pass, reading: source) else { return }
+            redactionAnalysis = .failed("Text recognition failed.")
+            lastRedactSummary = redactionAnalysis.summary
+            releaseRedactionHold()
             return
         }
+        guard isCurrent(pass, reading: source) else { return }
         ocrLines = lines
-        var options = AutoRedactOptions(detector: redactOptions, color: redactColor,
-                                        padding: 3 * pixelScale)
-        options.recognizer = TextRecognizer.Options()
-        let findings = SensitiveInfoDetector(options: redactOptions).findings(in: lines)
-        var made = AutoRedact.annotations(for: lines, options: options, imageSize: image.pixelSize)
+        let options = AutoRedactOptions(detector: redactOptions, color: redactColor, backingScale: backingScale)
+        let outcome = AutoRedact.analyse(lines, options: options, imageSize: source.pixelSize)
+        var made = outcome.annotations
         var z = nextZ()
         for i in made.indices { made[i].z = z; z += 1 }
-        var counts: [SensitiveCategory: Int] = [:]
-        for f in findings { counts[f.category, default: 0] += 1 }
-        let summary = counts.sorted { $0.key.rawValue < $1.key.rawValue }
-            .map { "\($0.key.displayName) ×\($0.value)" }.joined(separator: ", ")
-        lastRedactSummary = made.isEmpty ? "No sensitive information found." : "Redacted \(made.count): \(summary)"
+        redactionAnalysis = outcome.analysis
+        lastRedactSummary = outcome.analysis.summary
 
         var all = annotations.filter { !autoRedactIDs.contains($0.id) }
         all.append(contentsOf: made)
         autoRedactIDs = Set(made.map(\.id))
         setAnnotations(all, actionName: "Auto-Redact")
+        releaseRedactionHold()
         if announce, made.isEmpty { NSSound.beep() }
+    }
+
+    /// True while `pass` is still the latest automatic redaction and this editor still shows `source`; a result for
+    /// anything else must not be applied.
+    private func isCurrent(_ pass: Int, reading source: CGImage) -> Bool {
+        pass == redactionGeneration && !isClosed && image === source
+    }
+
+    /// The text of `source`, read once: asking again for the same pixels returns what was read.
+    private func recognizedLines(in source: CGImage) async throws -> [RecognizedLine] {
+        if let held = recognition, held.image === source { return held.lines }
+        let lines = try await recognizeText(source)
+        recognition = (source, lines)
+        return lines
     }
 
     func detectText() async {
         isBusy = true
         defer { isBusy = false }
-        ocrLines = (try? await TextRecognizer.recognize(in: image)) ?? []
+        ocrLines = (try? await recognizedLines(in: image)) ?? []
         statusMessage = ocrLines.isEmpty ? "No text detected." : "Detected \(ocrLines.count) lines."
     }
 

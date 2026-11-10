@@ -118,8 +118,11 @@ preview could differ from the capture beyond that: any annotation (redactions ar
 over `maxPixels` (40 million). As in the renderer, only captures of up to `AutoBalance.maxPixels` are scanned for an
 auto-balance border, and only those are normalised to sRGB first, so a large capture costs nothing extra.
 The editor draws the frame until its first composed preview exists, and holds the capture back, drawing neither
-frame nor preview, while its own automatic redaction pass is pending, unless
-`EditorContext.autoRedactionApplied` says the capture pipeline already burned the redactions in.
+frame nor preview, while its own automatic redaction pass is pending, unless `EditorContext.redaction` is a finished
+`RedactionAnalysis` taken with the editor's settings: the capture pipeline already burned the redactions in and read
+the text, so the editor draws at once and does not read it again (see "OCR / redaction").
+While that first pass is pending, `EditorModel.renderFinal()` throws `EditorError.redactionPending` (Copy, Save, Share
+and drag-out report it with a retry), so nothing unredacted is published.
 
 ## Annotations
 `Annotation(id,z,kind,style,visibleRange: AnnotationTiming? = nil)`; `AnnotationKind`: `.arrow(from,to) .line(from,to) .rectangle(CGRect)
@@ -206,14 +209,40 @@ are local to the editor session; automatic redaction remains plain opaque Solid.
   `rect(for: Range<String.Index>)`).
   Images taller than 4,096 px are read in 4,096 px bands with a 256 px overlap; boxes are mapped back to the
   full image and lines repeated in an overlap are removed, so OCR and auto-redaction cover tall scrolling captures.
+  `TextRecognizer.statistics` (`passes`, `failures`, `seconds`, `inFlight`) counts recognition passes in the
+  process: one per `recognize`/`recognizeSync` call, however many bands. It only grows and other work adds to it, so
+  read it before and after an action and subtract. Each pass is also a `Recognize` signpost interval (see
+  CONTRIBUTING.md). `TextRecognizer.Options` is `Equatable`.
 - `SensitiveCategory` (`email, phone, creditCard, ipAddress, apiKey, ssn, url, macAddress, custom`),
   `SensitiveInfoOptions(categories:, customWords:, caseSensitive:)` (+ `.default`, `.all`),
   `SensitiveInfoDetector(options:).matches(in: String) -> [SensitiveMatch]`,
   `.findings(in: [RecognizedLine]) -> [SensitiveFinding]` (rect + category), `Luhn.isValid(_:)`.
-- `AutoRedactOptions(detector:, color:, padding:, recognizer:)`;
-  `AutoRedact.run(_ image:, options:) async -> [Annotation]`; `AutoRedact.annotations(for lines:, options:)`.
+- `AutoRedactOptions(detector:, color:, padding:, recognizer:)` and `AutoRedactOptions(detector:, color:,
+  backingScale:, recognizer:)`, which takes its padding from `RedactionPolicy`;
+  `AutoRedact.run(_ image:, options:) async -> [Annotation]` (an OCR failure yields no annotations, so it is not for
+  output that must not leak); `AutoRedact.annotations(for lines:, options:)`;
+  `AutoRedact.analyse(_ lines:, options:, imageSize:) -> (annotations:, analysis:)`.
   Automatic redaction always generates solid `.redact` annotations, independent of the manual mode.
   Detection is a first pass, not a guarantee; review the exported image before sharing.
+- `RedactionPolicy` is how recognised text becomes covered pixels, shared by the capture pipeline, the editor and
+  `EditorHeadless`: Vision's normalised boxes (origin bottom-left) become image pixels with a top-left origin
+  (`x * width`, `(1 - maxY) * height`); a match grows by `RedactionPolicy.padding(backingScale:)`, which is
+  `paddingPoints` (3) logical points, so 3 px at 1× and 6 px at 2×; the result is clipped to the image and dropped when
+  nothing is left. A capture is therefore covered identically whichever of them redacts it.
+- `RedactionAnalysis` (`notRequested`, `pending`, `noMatches(Settings)`, `matches(Findings, Settings)`,
+  `failed(String)`, `cancelled`) is the state of one capture's automatic redaction. `Settings` is the detector options
+  plus the recogniser options (not the colour or padding); `Findings` has counts only, never the recognised text.
+  `isReusable(for:)` is true only for a finished answer (`noMatches`/`matches`) with equal settings. The capture
+  pipeline reads the text once and passes its finished analysis to the editor in `EditorContext.redaction`, both when
+  it opens the editor itself and when a direct export's thumbnail offers Edit, so the editor reuses it instead of
+  reading the already-redacted pixels again. A `pending`, `failed`, `cancelled` or `notRequested` analysis, or one taken
+  with other settings, is not reused and the editor runs its own pass, holding the capture back until it finishes.
+  `EditorModel` keeps the latest analysis as `redactionAnalysis` and discards the result of a pass that was
+  superseded, or that finishes after the editor closed (`EditorModel.close()`, called when its window closes, which
+  leaves it `cancelled`).
+  `EditorHeadless.render` follows the same rules and now throws when recognition fails instead of returning
+  unredacted pixels. The raw file, when saved, is written from the original capture before any redaction and is
+  unchanged by it.
 
 API migration: `AutoRedactOptions.style` and its initializer argument have been removed. Remove `style:`
 from automatic-redaction calls. Explicit `.blur` annotations are manual obfuscation;
@@ -244,7 +273,8 @@ is limited to a trigger, a mode label and durations: never coordinates, window t
 - `beginCapture(trigger:mode:)` (`CaptureTotal`, with `Trigger` `.hotkey`, `.menu`, `.url`, `.timer`) and
   `beginQueueDelay(eventAgeSeconds:)` (`QueueDelay`) record the only metadata beyond a name.
 - `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` and `Exporter.copyToClipboard`
-  emits `Pasteboard`, so every caller is timed without changing its signature.
+  emits `Pasteboard`, so every caller is timed without changing its signature. `TextRecognizer.recognizeSync` emits
+  `Recognize`, one interval per recognition pass.
 
 ## Output retention (`OutputRetention.swift`)
 Opt-in keeping of the composed images a user copied or dragged, plus age-based cleanup of the images Glint itself

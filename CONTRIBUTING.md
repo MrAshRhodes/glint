@@ -145,6 +145,7 @@ revisions, displays and input path when comparing.
 | `CaptureImage` | One ScreenCaptureKit screenshot call. |
 | `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
 | `RawWrite` | Writing the raw screenshot. |
+| `Recognize` | One text-recognition pass over an image: automatic redaction, Detect Text or Capture Text. A capture is recognised once per set of redaction settings, so a capture that is redacted and then edited shows one interval, not two. |
 | `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
 | `OutputWrite` | Saving a direct export, including its encode. |
 | `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite`, `Pasteboard` and `export.drag`. |

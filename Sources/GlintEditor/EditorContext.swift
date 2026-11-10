@@ -16,13 +16,16 @@ public struct EditorContext {
     /// remembered settings and auto-redaction are not applied, and changes made in the session are not
     /// remembered for the next capture.
     public let restored: EditorRestoreState?
-    /// True when `image` already has automatic redaction burned in, as the capture pipeline does before it opens
-    /// the editor. The editor can then draw it at once instead of holding it back until its own redaction pass has
-    /// finished, because that pass has nothing left to hide.
-    public let autoRedactionApplied: Bool
+    /// What automatic redaction already did to `image`. The capture pipeline burns it in before it opens the editor
+    /// and hands over its finished analysis (`noMatches` or `matches`): the editor then reuses that instead of
+    /// reading the text again, and draws the image at once because a second pass would have nothing left to hide.
+    /// Anything else (the default `notRequested`, a failed or cancelled analysis, one taken with other settings)
+    /// leaves the editor to run its own pass, holding the image back until it has finished.
+    public let redaction: RedactionAnalysis
 
     public init(image: CGImage, backingScale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                isRecording: Bool = false, restored: EditorRestoreState? = nil, autoRedactionApplied: Bool = false) {
+                isRecording: Bool = false, restored: EditorRestoreState? = nil,
+                redaction: RedactionAnalysis = .notRequested) {
         self.image = image
         self.backingScale = backingScale
         self.rawURL = rawURL
@@ -30,7 +33,7 @@ public struct EditorContext {
         self.isComposed = isComposed
         self.isRecording = isRecording
         self.restored = restored
-        self.autoRedactionApplied = autoRedactionApplied
+        self.redaction = redaction
     }
 
     var windowTitle: String {
@@ -88,8 +91,10 @@ public enum EditorHeadless {
     }
 
     /// Composes the capture with the current preferences (and auto-redaction when enabled). An already-composed
-    /// image is returned as it is: it is neither styled nor auto-redacted a second time.
-    /// Throws (e.g. `RenderError.annotationsNotApplied`) rather than returning unredacted pixels.
+    /// image is returned as it is: it is neither styled nor auto-redacted a second time, and neither is one whose
+    /// `context.redaction` already finished with these settings.
+    /// Throws (e.g. `RenderError.annotationsNotApplied`, or the recogniser's error) rather than returning unredacted
+    /// pixels.
     @MainActor
     public static func render(context: EditorContext, preferences: AppPreferences,
                               recognizeText: (CGImage) throws -> [RecognizedLine] = { try TextRecognizer.recognizeSync(in: $0) },
@@ -107,10 +112,13 @@ public enum EditorHeadless {
             }
         }
         var annotations: [Annotation] = []
-        if preferences.autoRedact, !context.isComposed, !context.isRecording, let lines = try? recognizeText(context.image) {
-            var options = AutoRedactOptions(detector: preferences.autoRedactOptions, color: preferences.redactColor)
-            options.padding = 3 * Double(context.backingScale)
-            annotations = AutoRedact.annotations(for: lines, options: options, imageSize: context.image.pixelSize)
+        if preferences.autoRedact, !context.isComposed, !context.isRecording {
+            let options = AutoRedactOptions(detector: preferences.autoRedactOptions, color: preferences.redactColor,
+                                            backingScale: context.backingScale)
+            if !context.redaction.isReusable(for: options.settings) {
+                let lines = try recognizeText(context.image)
+                annotations = AutoRedact.analyse(lines, options: options, imageSize: context.image.pixelSize).annotations
+            }
         }
         return try Compositor.render(image: context.image, settings: settings, annotations: annotations,
                                  backingScale: context.backingScale, wallpaper: wallpaper)

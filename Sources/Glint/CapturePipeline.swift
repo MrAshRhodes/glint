@@ -42,6 +42,9 @@ final class CapturePipeline {
             NSApp.activate(ignoringOtherApps: true)
             $0.showEditor()
         }
+        /// Shows the thumbnail of a direct export, with the action that opens its editor. `nil` shows the real
+        /// quick-access panel, which has nothing to click in a test.
+        var showQuickAccess: (@MainActor (_ image: CGImage, _ file: URL?, _ onEdit: @escaping () -> Void) -> Void)?
         var screenScale: @MainActor () -> CGFloat = { NSScreen.main?.backingScaleFactor ?? 2 }
         var captureWindows: @MainActor () -> [NSWindow] = { NSApp.orderedWindows }
         var capture: @MainActor (ScreenCapturer, Mode, @escaping (Int) -> Void) async throws -> CaptureResult = {
@@ -254,7 +257,7 @@ final class CapturePipeline {
     func handle(image: CGImage, scale: CGFloat, source: String?, rawURL existingRaw: URL?,
                 saveRaw: Bool, clipboardOnly: Bool = false) async {
         let redactionOptions = prefs.autoRedact
-            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, padding: 3)
+            ? AutoRedactOptions(detector: prefs.autoRedactOptions, color: prefs.redactColor, backingScale: scale)
             : nil
         services.sound()
         var rawURL = existingRaw
@@ -268,13 +271,17 @@ final class CapturePipeline {
             }
         }
         var working = image
+        // What the editor and a direct export's Edit action are told, so neither reads the same text again.
+        var redaction = RedactionAnalysis.notRequested
         if let opts = redactionOptions {
             let redactions: [Annotation]
             while true {
                 do {
                     let lines = try await services.recognize(image, opts.recognizer)
                     guard !Task.isCancelled else { return }
-                    redactions = AutoRedact.annotations(for: lines, options: opts, imageSize: image.pixelSize)
+                    let outcome = AutoRedact.analyse(lines, options: opts, imageSize: image.pixelSize)
+                    redactions = outcome.annotations
+                    redaction = outcome.analysis
                     break
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -298,11 +305,10 @@ final class CapturePipeline {
         // A cancelled capture task must not publish output that finished late.
         guard !Task.isCancelled else { return }
         if prefs.openEditorAfterCapture && !clipboardOnly {
-            openEditor(image: working, scale: scale, rawURL: rawURL, source: source,
-                       autoRedactionApplied: redactionOptions != nil)
+            openEditor(image: working, scale: scale, rawURL: rawURL, source: source, redaction: redaction)
         } else {
             exportDirectly(image: working, scale: scale, rawURL: rawURL, source: source, clipboardOnly: clipboardOnly,
-                           autoRedactionApplied: redactionOptions != nil)
+                           redaction: redaction)
         }
     }
 
@@ -313,7 +319,7 @@ final class CapturePipeline {
     }
 
     private func exportDirectly(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, clipboardOnly: Bool,
-                                autoRedactionApplied: Bool = false) {
+                                redaction: RedactionAnalysis = .notRequested) {
         let settings = settings()
         var wallpaper: CGImage?
         var wallpaperProblem: String?
@@ -378,12 +384,16 @@ final class CapturePipeline {
             services.notify(title, message, saved)
         }
         if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
-            quickAccess.show(image: rendered, fileURL: saved, onEdit: { [weak self] in
-                self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source,
-                                 autoRedactionApplied: autoRedactionApplied)
-            }, onDragOut: { [weak self] in
-                self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: saved)
-            })
+            let edit: () -> Void = { [weak self] in
+                self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source, redaction: redaction)
+            }
+            if let show = services.showQuickAccess {
+                show(rendered, saved, edit)
+            } else {
+                quickAccess.show(image: rendered, fileURL: saved, onEdit: edit, onDragOut: { [weak self] in
+                    self?.quickAccessDragStarted(image: rendered, backingScale: scale, savedFile: saved)
+                })
+            }
         }
     }
 
@@ -480,9 +490,10 @@ final class CapturePipeline {
 
     @discardableResult
     func openEditor(image: CGImage, scale: CGFloat, rawURL: URL?, source: String?, isComposed: Bool = false,
-                    restored: EditorRestoreState? = nil, autoRedactionApplied: Bool = false) -> EditorWindowController {
+                    restored: EditorRestoreState? = nil,
+                    redaction: RedactionAnalysis = .notRequested) -> EditorWindowController {
         let context = EditorContext(image: image, backingScale: scale, rawURL: rawURL, source: source, isComposed: isComposed,
-                                    restored: restored, autoRedactionApplied: autoRedactionApplied)
+                                    restored: restored, redaction: redaction)
         let controller = EditorWindowController(context: context, preferences: prefs, presetStore: presetStore)
         editors.append(controller)
         controller.onClose = { [weak self, weak controller] in
