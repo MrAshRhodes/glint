@@ -218,6 +218,20 @@ is limited to a trigger, a mode label and durations: never coordinates, window t
 - `Exporter.data(for:…)` emits `EncodePNG`/`EncodeJPEG`/`EncodeHEIC`/`EncodeTIFF` and `Exporter.copyToClipboard`
   emits `Pasteboard`, so every caller is timed without changing its signature.
 
+## Timing statistics and the export fixture (`TimingStatistics.swift`, `ExportTiming.swift`)
+What `Glint --diagnose --timing` and the CI performance guard share; CONTRIBUTING.md ("Timing diagnostics and the
+performance guard") says how they are used. Neither type reads the screen.
+- `TimingStatistics.summarize(_ samplesMs: [Double]) -> TimingSummary?`: nearest-rank percentiles (the method
+  `Scripts/benchmark-overlay.sh` uses) over the finite samples, `nil` when none remain. `TimingSummary` holds `count`,
+  `minMs`, `p50Ms`, `p95Ms`, `maxMs` (milliseconds, rounded to 0.01) and `p95Reliable`, which is false below
+  `TimingStatistics.reliableP95Count` (20) samples, where p95 is only the maximum. It encodes as `count`, `min_ms`,
+  `p50_ms`, `p95_ms`, `max_ms` and `p95_reliable`. `TimingStatistics.milliseconds(_ duration: Duration) -> Double`.
+- `ExportTiming.syntheticFrame(width:height:) -> CGImage?`: a deterministic frame (gradient desktop, a window with text,
+  a block of photo-like noise), 2880 × 1800 by default (`syntheticWidth`, `syntheticHeight`: a 1440 × 900-point
+  display at 2×); `nil` when the size cannot be drawn. `ExportTiming.renderAndEncode(_:backingScale:settings:) throws
+  -> Data` is one export as a file or the clipboard gets it: `Compositor.render` with the default look, then
+  `Exporter.data` as a plain PNG at the capture's density (`backingScale` × 72 dpi).
+
 ## Output retention (`OutputRetention.swift`)
 Opt-in keeping of the composed images a user copied or dragged, plus age-based cleanup of the images Glint itself
 saved to `Output/`. It backs **Reopen Last Image** and **Keep screenshots in Output for**. Nothing is written,

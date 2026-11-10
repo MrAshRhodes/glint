@@ -97,12 +97,24 @@ Reopen Glint afterward. `brew update` refreshes Homebrew's package list; only `b
 Glint.app/Contents/MacOS/Glint --render in.png out.png --preset "Social 16:9" --scale 2
 Glint.app/Contents/MacOS/Glint --list-presets
 Glint.app/Contents/MacOS/Glint --diagnose
+Glint.app/Contents/MacOS/Glint --diagnose --timing
 ```
 
 `--diagnose` checks Screen Recording permission without requesting access and prints only permission state,
 aggregate display/window/application counts, and fixed status messages. It does not print window titles,
 app identities, process/window/display identifiers, or per-display details. Review reports before sharing:
 aggregate counts still describe your desktop activity.
+
+`--diagnose --timing` also prints JSON with the cold and warm timings of the capture-to-export stages, each with its
+sample count, p50 and p95 in milliseconds: the ScreenCaptureKit content query (`shareable_content`), one display grab
+(`display_grab`), the window list behind snapping (`selection_snapshot`), and the styled render plus PNG encode
+(`render_and_encode`). A **cold** timing is a stage's first run in a freshly launched Glint process, one process per
+run, so the operating system's caches are not reset; a **warm** timing is a repeat in one process after one discarded
+warm-up. `--timing-iterations N` sets the warm repeats (20 to 1000, default 50) and `--timing-cold-runs N` the fresh
+processes (0 to 100, default 20). Glint reads display pixels only when you add `--allow-screen-capture`; without it
+`display_grab` is skipped and `render_and_encode` works on a generated 2880 × 1800 frame. Stages that need Screen
+Recording permission are skipped when it is not granted, and the command never requests it. The report contains
+durations, counts and fixed strings only, with no window titles, display names, error text or pixels.
 
 ## Build from source
 

@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+// The standalone harness never freezes or crops a display; keep acquisition dependencies out of its build.
+struct FrozenDisplay {
+    let display: DisplayInfo
+    let image: CGImage
+}
+
 private struct Sample: Codable {
     let scenario: String
     let round: Int

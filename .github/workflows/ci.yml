@@ -47,6 +47,9 @@ jobs:
       - name: Test the update feed generator
         run: node --test .github/scripts/appcast.test.cjs
 
+      - name: Test the performance guard
+        run: node --test .github/scripts/perf-guard.test.cjs
+
       - name: Check the changelog
         run: |
           node --test .github/scripts/changelog.test.cjs

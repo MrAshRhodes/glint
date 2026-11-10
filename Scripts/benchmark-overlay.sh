@@ -32,17 +32,17 @@ mkdir -p "$run/source" "$run/module-cache" "$run/compiler-tmp"
 # Keep compiler intermediates inside this worktree, too.
 export TMPDIR="$PWD/$run/compiler-tmp"
 sources=()
-for name in CaptureTypes SelectionOverlay WindowEnumerator OverlayPerformance; do
+for name in CaptureTypes SelectionOverlay WindowEnumerator OverlayPerformance EdgeSnapping; do
   path="Sources/GlintCapture/$name.swift"
   if [[ "$variant" == baseline ]]; then
     if ! git cat-file -e "$revision:$path" 2>/dev/null; then
-      if [[ "$name" == OverlayPerformance ]]; then continue; fi
+      if [[ "$name" == OverlayPerformance || "$name" == EdgeSnapping ]]; then continue; fi
       echo "Missing baseline source: $path" >&2
       exit 1
     fi
     git show "$revision:$path" > "$run/source/$name.swift"
   else
-    if [[ ! -f "$path" && "$name" == OverlayPerformance ]]; then continue; fi
+    if [[ ! -f "$path" && ( "$name" == OverlayPerformance || "$name" == EdgeSnapping ) ]]; then continue; fi
     cp "$path" "$run/source/$name.swift"
   fi
   sources+=("$run/source/$name.swift")
