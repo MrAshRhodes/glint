@@ -132,15 +132,16 @@ final class CapturePipeline {
             for window in hidden.reversed() { window.orderFront(nil) }
             hidden.removeAll()
         }
-        // The frozen selection overlay already leaves Glint's windows out, so they're ordered out once the
-        // overlay covers them instead of flashing away before it appears. A timer's live selection is
-        // transparent, so those windows go first, like every capture without a frozen overlay.
+        // Frozen selection hides windows only after covering them. Live timer/scrolling selection still
+        // needs them out of the way; noninteractive captures rely on the ScreenCaptureKit exclusion.
         capturer.onSelectionPresented = nil
         switch mode {
         case .area, .areaToClipboard, .window, .text:
             if canHide { capturer.onSelectionPresented = { hideWindows() } }
-        case .fullscreen, .repeatLast, .timer, .scrolling:
+        case .timer, .scrolling:
             hideWindows()
+        case .fullscreen, .repeatLast:
+            break
         }
 
         return Task { @MainActor in

@@ -129,10 +129,16 @@ final class CaptureFixture {
 @MainActor
 private final class CaptureTestWindow: NSWindow {
     var restorationCount = 0
+    var hideCount = 0
 
     override func orderFront(_ sender: Any?) {
         restorationCount += 1
         super.orderFront(sender)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        hideCount += 1
+        super.orderOut(sender)
     }
 }
 
@@ -440,8 +446,85 @@ struct CaptureWindowLifecycleTests {
         #expect(editor.restorationCount == (presentedDuringSelection ? 1 : 0))
     }
 
-    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast, .timer(3)])
-    func capturesWithoutAFrozenOverlayHideUpFront(mode: CapturePipeline.Mode) async throws {
+    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast], [0, 1, 2, 3, 4, 5])
+    func noninteractiveCapturesNeverReorderExistingWindows(mode: CapturePipeline.Mode, outcome: Int) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.saveOutput = false
+        let editor = window(); defer { editor.close() }
+        let settings = window(); defer { settings.close() }
+        let hidden = window(); defer { hidden.close() }
+        hidden.orderOut(nil)
+        hidden.hideCount = 0
+        let visible: [NSWindow] = [settings, editor]
+        let initialOrder = NSApp.orderedWindows.filter { visible.contains($0) }
+        let initialKeyWindow = NSApp.keyWindow
+        var permissionPrompts = 0
+        var stalePresentations = 0
+        ScreenCapturer.shared.onSelectionPresented = { stalePresentations += 1 }
+        func checkWindows() {
+            #expect(visible.allSatisfy { $0.isVisible })
+            #expect(!hidden.isVisible)
+            #expect(NSApp.orderedWindows.filter { visible.contains($0) } == initialOrder)
+            #expect(NSApp.keyWindow === initialKeyWindow)
+            #expect([editor, settings, hidden].allSatisfy { $0.hideCount == 0 && $0.restorationCount == 0 })
+        }
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [settings, editor, hidden] }
+            $0.permissionDenied = { permissionPrompts += 1 }
+            $0.capture = { capturer, selectedMode, _ in
+                #expect(selectedMode == mode)
+                #expect(capturer.options.excludeOwnWindows)
+                #expect(capturer.onSelectionPresented == nil)
+                checkWindows()
+                switch outcome {
+                case 1: throw CaptureError.failed("Synthetic acquisition failure")
+                case 2: throw CaptureError.permissionDenied
+                case 3: throw CancellationError()
+                case 4: throw CaptureError.cancelled
+                case 5: throw CaptureError.noLastArea
+                default:
+                    return CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                         rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                         kind: mode == .fullscreen ? .fullscreen : .lastArea, windowInfo: nil)
+                }
+            }
+        }
+        let task = try #require(pipeline.start(mode))
+        checkWindows()
+        await task.value
+        checkWindows()
+        #expect(stalePresentations == 0 && ScreenCapturer.shared.onSelectionPresented == nil)
+        #expect(!pipeline.isBusy)
+        #expect(permissionPrompts == (outcome == 2 ? 1 : 0))
+        #expect(f.notifications.filter { $0.title == "Capture failed" }.count == ([1, 5].contains(outcome) ? 1 : 0))
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast])
+    func cancellingNoninteractiveCaptureDiscardsLatePixelsWithoutReorderingWindows(mode: CapturePipeline.Mode) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var continuation: CheckedContinuation<CaptureResult, Never>?
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { _, _, _ in
+                return await withCheckedContinuation { continuation = $0 }
+            }
+        }
+        let task = try #require(pipeline.start(mode))
+        for _ in 0..<100 where continuation == nil { await Task.yield() }
+        let pending = try #require(continuation)
+        #expect(editor.isVisible && editor.hideCount == 0)
+        task.cancel()
+        pending.resume(returning: CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                               rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                               kind: .fullscreen, windowInfo: nil))
+        await task.value
+        #expect(editor.isVisible && editor.hideCount == 0 && editor.restorationCount == 0)
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
+    }
+
+    @Test func timedCaptureStillHidesWindowsUpFront() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         let editor = window(); defer { editor.close() }
         var stalePresentations = 0
@@ -455,7 +538,7 @@ struct CaptureWindowLifecycleTests {
                 throw CaptureError.cancelled
             }
         }
-        try await #require(pipeline.start(mode)).value
+        try await #require(pipeline.start(.timer(3))).value
         #expect(hooks == [false] && stalePresentations == 0)
         #expect(editor.isVisible && editor.restorationCount == 1)
         #expect(ScreenCapturer.shared.onSelectionPresented == nil)
