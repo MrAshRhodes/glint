@@ -302,6 +302,12 @@ public final class AppPreferences {
 
     public func hotkey(for action: HotkeyAction) -> KeyCombo { hotkeys[action] ?? action.defaultCombo }
 
+    /// The other action that already uses `combo`, so a duplicate can be refused before it is saved.
+    public func hotkeyConflict(for combo: KeyCombo, assigning action: HotkeyAction) -> HotkeyAction? {
+        let current = hotkeys
+        return HotkeyAction.allCases.first { $0 != action && current[$0] == combo }
+    }
+
     public func setHotkey(_ combo: KeyCombo, for action: HotkeyAction) {
         var all = hotkeys
         all[action] = combo

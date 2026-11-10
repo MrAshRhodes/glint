@@ -240,6 +240,32 @@ Provisional reference-host budgets (targets, **not** measured native performance
 ≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
 displays is recorded here: that needs the live capture UI and has not been measured yet.
 
+### Profiling launch and idle work
+
+Work done at launch and while idle is marked with signposts in subsystem `io.github.mrashrhodes.glint`.
+Nothing is recorded unless a collector is attached, and the signposts carry no paths, shortcuts or captured
+content. Category `Launch` has the intervals `HotkeySync` (registering the global shortcuts), `UpdaterSetup`,
+`SettingsWindowBuild` (the first time Settings opens; launch does not build it), `StatusMenuBuild` (each time
+the menu bar menu opens) and `RecentItems` (the Open Recent lookup inside it), and the events
+`HotkeysRegistered` and `LaunchFinished`, which report the milliseconds since the process started. Category
+`IdleWork` has `PermissionPoll`, one Screen Recording check, which runs only while the Permissions pane is
+on screen.
+
+```sh
+mkdir -p .build/launch-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 60 \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Launch" OR category == "IdleWork")' \
+  > .build/launch-traces/cold.ndjson
+```
+
+Start the collector before launching the build you are measuring, and pair begin/end records as for the
+overlay above. `HotkeysRegistered` marks when the shortcuts were registered. It is not the time until a
+shortcut press works, which the signposts do not measure: time that with a live launch-and-press trace. Keep
+cold launches (a new process) apart from warm ones, compare the same revisions, hardware and permission
+state, and report sample counts. To check idle work, collect for a few minutes with Settings never opened,
+then with the Permissions pane open and then closed or on another tab: `PermissionPoll` should appear only
+while the pane is on screen.
+
 ## Command Line Tools only
 
 Glint builds without Xcode, with a few differences:
