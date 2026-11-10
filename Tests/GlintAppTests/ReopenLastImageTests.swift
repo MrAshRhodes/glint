@@ -226,7 +226,7 @@ private final class ReopenFixture {
 
     func makePipeline() -> CapturePipeline {
         var services = CapturePipeline.Services()
-        services.copy = { [self] image in
+        services.copy = { [self] image, _, _ in
             copies.append(image)
             return copySucceeds
         }

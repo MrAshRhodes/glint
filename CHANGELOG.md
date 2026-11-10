@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Fixed
+
+- Copied screenshots now match the saved file's resolution. The clipboard image carries the same pixel size and density as the saved PNG or TIFF, so apps that honour image resolution paste a Retina capture at the same size as the saved file instead of larger, and the **Scale** export setting applies to copied images as it does to saved ones. ([#100])
+
 ## [1.8.2] - 2026-11-10
 
 ### Fixed
@@ -307,3 +311,4 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#100]: https://github.com/MrAshRhodes/glint/issues/100
