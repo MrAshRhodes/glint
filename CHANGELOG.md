@@ -11,6 +11,7 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
+- Dropped shortcuts and capture failures now give feedback. Pressing a capture shortcut or choosing a capture from the menu while another capture is still in progress, or while a recording is running, beeps instead of doing nothing, and so does the recording shortcut while a recording is finishing. A failed capture, text recognition, screenshot export, raw-screenshot save or recording is always reported: with a notification when one can be shown, otherwise (notifications off in Glint or in macOS, or Glint in front, where macOS shows no banners) with a beep and an alert. When macOS refuses a screenshot for lack of Screen Recording access, Glint now opens its setup window, as it does for recordings, instead of showing a generic “Capture failed”. Glint also asks macOS for notification permission only until you have answered, rather than on every notification. ([#104])
 
 ## [1.8.2] - 2026-11-10
 
@@ -311,4 +312,5 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#104]: https://github.com/MrAshRhodes/glint/issues/104
 [#108]: https://github.com/MrAshRhodes/glint/issues/108

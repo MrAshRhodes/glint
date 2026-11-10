@@ -33,15 +33,24 @@ enum Notifier {
 
     static func post(title: String, body: String, fileURL: URL? = nil) {
         guard AppPreferences.shared.notificationsEnabled, usable else { return }
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert]) { granted, _ in
-            guard granted else { return }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            if let fileURL { content.userInfo = ["file": fileURL.path] }
-            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        Task { @MainActor in
+            guard await NotificationPermission.system.isGranted() else { return }
+            add(title: title, body: body, fileURL: fileURL)
         }
+    }
+
+    /// For failures the user must not miss: a notification when one will be shown, otherwise a beep and an alert.
+    static func postFailure(title: String, body: String, fileURL: URL? = nil) {
+        guard usable else { return }
+        Task { @MainActor in await FailureFeedback.system.report(title: title, message: body, fileURL: fileURL) }
+    }
+
+    static func add(title: String, body: String, fileURL: URL? = nil) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if let fileURL { content.userInfo = ["file": fileURL.path] }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
     static func playSound() {
