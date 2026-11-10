@@ -4,7 +4,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct EditorExportServices {
-    var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+    /// Copies the finished image with the export scale and backing scale a saved copy would use.
+    var copy: (CGImage, ExportScale, CGFloat) -> Bool = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2) }
     var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
         try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
     }
@@ -364,7 +365,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         }
         let retry: (EditorWindowController) -> Void = { _ = $0.copyToClipboard(closeAfterSuccess: closeAfterSuccess) }
         guard let image = renderForExport(failure: "Copy failed", retry: retry) else { return false }
-        if exportServices.copy(image) {
+        if exportServices.copy(image, model.preferences.exportScale, model.backingScale) {
             clearRetry()
             model.statusMessage = "Copied to clipboard"
             onExported?(nil)

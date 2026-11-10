@@ -10,12 +10,12 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ### Changed
 
-- The editor shows your capture as soon as it opens: its first frame places the capture where the composed preview will put it, with the same crop, orientation and proportions, instead of leaving the canvas empty until the preview has been rendered, and the first render no longer waits out the short delay that groups later changes. With **Auto-redact** on, an image the editor still has to scan itself (such as one from **Open Image…**) stays behind "Checking for sensitive information…" until the scan is done, so nothing unredacted is drawn, previewed or offered for dragging in the meantime; captures Glint already redacted on the way in show at once. If the first render fails, the editor shows the error and leaves no placeholder behind. ([#109])
-- GlintCore API: `ProvisionalFrame` works out where a capture sits in the composed layout, and `Compositor.layout` and the auto-balance crop are shared with the renderer so the two cannot disagree. GlintEditor's `EditorContext` gains `autoRedactionApplied` for captures that already carry their redactions. ([#109])
+- Window capture no longer waits a fixed 120 ms after you pick a window, and reuses the window list read when the selection opened instead of asking macOS again, so the screenshot is taken sooner. Live area grabs (timed area) wait only what is left of that 120 ms since the selection closed, and a window that closes or cannot be grabbed still falls back to the frozen pixels. ([#101])
 
 ### Fixed
 
 - Screenshots exported without opening the editor (**Open editor after capture** off, and clipboard-only captures) now start from the same look as the editor: your last-used settings when **Remember settings** is on, otherwise the default preset. They used to ignore Remember settings and always used the default preset. Auto-balance still follows Preferences. ([#108])
+- Copied screenshots now match the saved file's resolution. The clipboard image carries the same pixel size and density as the saved PNG or TIFF, so apps that honour image resolution paste a Retina capture at the same size as the saved file instead of larger, and the **Scale** export setting applies to copied images as it does to saved ones. ([#100])
 
 ## [1.8.2] - 2026-11-10
 
@@ -316,5 +316,6 @@ First public release.
 [#81]: https://github.com/MrAshRhodes/glint/issues/81
 [#88]: https://github.com/MrAshRhodes/glint/issues/88
 [#92]: https://github.com/MrAshRhodes/glint/issues/92
+[#100]: https://github.com/MrAshRhodes/glint/issues/100
+[#101]: https://github.com/MrAshRhodes/glint/issues/101
 [#108]: https://github.com/MrAshRhodes/glint/issues/108
-[#109]: https://github.com/MrAshRhodes/glint/issues/109

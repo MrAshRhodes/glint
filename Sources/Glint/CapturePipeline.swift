@@ -11,7 +11,10 @@ final class CapturePipeline {
         var write: (CGImage, URL, ExportFormat, ExportScale, CGFloat) throws -> URL = {
             try Exporter.write($0, to: $1, format: $2, scale: $3, backingScale: $4)
         }
-        var copy: (CGImage) -> Bool = { Exporter.copyToClipboard($0) }
+        /// Copies the finished image with the export scale and backing scale a saved copy would use.
+        var copy: (CGImage, ExportScale, CGFloat) -> Bool = {
+            Exporter.copyToClipboard($0, scale: $1, backingScale: $2)
+        }
         var copyText: @MainActor (String) -> Void = {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString($0, forType: .string)
@@ -312,7 +315,7 @@ final class CapturePipeline {
         }
         var copied = false
         if prefs.copyToClipboardAfterCapture || clipboardOnly || prefs.openEditorAfterCapture == false && saved == nil {
-            copied = services.copy(rendered)
+            copied = services.copy(rendered, exportScale, scale)
             if !copied { failures.append("Copy to clipboard failed.") }
         }
         if let saved { services.addRecent(saved) }

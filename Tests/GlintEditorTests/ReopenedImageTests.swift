@@ -178,7 +178,7 @@ struct ReopenedImageTests {
         f.rememberLook()
         var services = EditorExportServices()
         var copies: [CGImage] = []
-        services.copy = { copies.append($0); return true }
+        services.copy = { image, _, _ in copies.append(image); return true }
         services.dragDirectory = f.directory.appendingPathComponent("Drag")
         services.beep = {}
         let controller = f.composedController(f.composed(), services: services)
