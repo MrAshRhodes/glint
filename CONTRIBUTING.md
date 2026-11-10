@@ -36,6 +36,46 @@ Every SwiftPM call goes through `Scripts/swiftw.sh`. With Xcode installed it is 
 
 `make test` and CI run the suite with `--no-parallel`, one test at a time. Many tests open real AppKit windows, which all share the one main thread. Run together on a small machine such as a 3-core CI runner, they queue behind each other and their timed waits expire although nothing is wrong. Pass the same flag when you call `swift test` yourself.
 
+### Screenshot colour policy
+
+Raw screenshot PNGs keep the `CGImage` profile returned by ScreenCaptureKit (or the
+permitted `screencapture` fallback). Glint does not override the platform's still
+capture colour space or merely relabel its pixels. The frozen-region copy preserves
+a supported source output space. This preserves supplied Display P3 data; it does
+not promise that every OS/display capture API returns Display P3. A native capture
+comparison is required to establish that for a particular machine.
+
+The editor loader and compositor convert into premultiplied RGBA8 sRGB with Core
+Graphics colour management. Composed PNG/TIFF therefore retain sRGB and alpha;
+JPEG is flattened onto white in sRGB before encoding. Colours outside sRGB may
+clip during that intentional conversion; raw history is the uncomposed alternative.
+The low-level export API keeps the input profile at original size for PNG/TIFF,
+but a size-changing resample uses the same sRGB bitmap policy as the compositor.
+A scale option that needs no resize leaves the profile unchanged. Clipboard PNG
+and TIFF use the same encoding policy as equivalent files, including scale and
+backing-scale inputs. Pasting into an app that ignores profiles is outside Glint's
+control. Scrolling capture/stitching and recording explicitly use sRGB.
+
+`ColourPolicyTests` covers equivalent in-gamut sRGB/Display P3 patches, neutral
+gradients, saturated P3 input, alpha edges, composition, original/resized export,
+and private-pasteboard representations. Comparisons are in a common colour-managed
+sRGB space, not between differently tagged RGB bytes. The deterministic RGBA8
+in-gamut patch tolerance is 3/255 per channel (5/255 for quality-1 JPEG patch
+centres, away from compression boundaries); neutral gradients allow 1/255.
+These are regression tolerances for the synthetic pipeline, not perceptual
+thresholds or proof of display fidelity. Repeated normalization must not convert
+an already-normalized bitmap again. DPI/logical-size tests are separate from
+colour checks.
+
+Live acceptance for #111 still requires displaying the sRGB and Display P3 charts
+on a wide-gamut display, recording the OS/display/profile configuration, and
+comparing native SDR captures with Glint raw files, composed PNG/JPEG, and pasted
+images in a colour-managed viewer. Record profile tags and common-space in-gamut
+errors separately from intentional out-of-gamut clipping. Check translucent edges
+over both light and dark backgrounds. HDR/extended-range capture and display
+tone mapping are outside this initial SDR policy and are not validated by these
+8-bit fixtures.
+
 ### Profiling the capture overlay
 
 Use an optimized build (`make app`, not `CONFIG=debug`). On a Mac with full Xcode,

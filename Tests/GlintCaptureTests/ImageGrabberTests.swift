@@ -16,6 +16,20 @@ struct ImageGrabberTests {
                     scale: 1, name: "Display \(id)", isMain: id == 1)
     }
 
+    @Test func detachingACropPreservesTheProvidedWideGamutProfile() throws {
+        let p3 = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+        let ctx = try #require(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                                        space: p3, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(try #require(CGColor(colorSpace: p3, components: [1, 0, 0, 0.5])))
+        ctx.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        let source = try #require(ctx.makeImage())
+        let frozen = FrozenDisplay(display: display(1), image: source)
+        let crop = try #require(frozen.crop(CGRect(x: 1, y: 1, width: 2, height: 2)))
+        #expect(crop.grab.image.width == 2 && crop.grab.image.height == 2)
+        #expect(crop.grab.image.colorSpace?.name == CGColorSpace.displayP3)
+        #expect(crop.grab.image.alphaInfo == .premultipliedFirst)
+    }
+
     @Test func ownWindowPolicyDefaultsToExclusionButAllowsSelfCapture() {
         var options = CaptureOptions()
         #expect(options.excludeOwnWindows)

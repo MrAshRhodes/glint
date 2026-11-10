@@ -67,6 +67,8 @@ enum ImageGrabber {
             guard let scd = content.displays.first(where: { $0.displayID == display.id }) else { throw CaptureError.noDisplay }
             let filter = SCContentFilter(display: scd, excludingWindows: excluded)
             let cfg = SCStreamConfiguration()
+            // Keep the platform capture profile; raw PNG retains the returned image's tag and gamut.
+            // Composed output converts to sRGB, rather than retagging these pixels.
             let local = CaptureGeometry.displayLocal(rect, display: display.frame, scale: display.scale)
             cfg.sourceRect = local
             cfg.width = Int((local.width * display.scale).rounded())
@@ -183,6 +185,7 @@ enum ImageGrabber {
             }, grab: { w in
                 let filter = SCContentFilter(desktopIndependentWindow: w)
                 let cfg = SCStreamConfiguration()
+                // As for display captures, preserve the profile returned by the platform for raw output.
                 cfg.width = Int((w.frame.width * scale).rounded())
                 cfg.height = Int((w.frame.height * scale).rounded())
                 cfg.showsCursor = !options.hideCursor
