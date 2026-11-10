@@ -87,7 +87,8 @@ public final class ScreenCapturer {
 
     // MARK: Public API
 
-    /// Interactive crosshair selection; Space toggles window picking, Esc cancels (throws `.cancelled`).
+    /// Interactive crosshair selection. Space before a drag toggles window picking and, while dragging, moves the
+    /// selection; Esc cancels. A Space or display change ends it the same way (both throw `.cancelled`).
     public func captureArea() async throws -> CaptureResult {
         try await interactive(start: .area, kind: .area)
     }

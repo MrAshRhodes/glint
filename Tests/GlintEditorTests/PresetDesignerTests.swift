@@ -223,7 +223,7 @@ struct PresetDesignerTests {
         #expect(saves == 0 && closes == 0 && beeps == 2)
     }
 
-    @Test func designerHasNoAnnotationToolsOrExports() throws {
+    @Test func designerHasNoAnnotationToolsOrExports() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         var services = EditorExportServices()
         var copies = 0, writes = 0
@@ -241,9 +241,10 @@ struct PresetDesignerTests {
             #expect(!controller.handleShortcut(designerKey(key, modifiers: .command)))
         }
         #expect(controller.model.tool == .select)
-        #expect(!controller.copyToClipboard())
+        #expect(await controller.copyToClipboard() == false)
         controller.saveOutput()
-        #expect(controller.prepareDragFile() == nil)
+        #expect(controller.dragPayload() == nil)
+        await controller.finishExports()
         #expect(copies == 0 && writes == 0 && exports == 0)
     }
 

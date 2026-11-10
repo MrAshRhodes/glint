@@ -43,30 +43,99 @@ extension SCWindow: QueriedWindow {}
 enum ImageGrabber {
     struct Grab { let image: CGImage; let scale: CGFloat }
 
-    /// One shareable-content query with the window policy applied, reusable for every display it lists.
+    /// One shareable-content snapshot with the window policy applied, reusable for every display it lists. It is the
+    /// kept one when that can serve the capture (see `ContentReuse`), else a new query.
     struct ScreenContent {
-        let content: SCShareableContent
-        let excluded: [SCWindow]
+        /// How the filter leaves Glint's windows out of the pixels.
+        enum Exclusion {
+            case applications([SCRunningApplication])
+            case windows([SCWindow])
+        }
 
-        init(_ content: SCShareableContent, options: CaptureOptions) {
-            let me = ProcessInfo.processInfo.processIdentifier
+        let content: SCShareableContent
+        let exclusion: Exclusion
+        /// Where `content` came from, so a capture that fails with it can drop it from the cache.
+        let entry: ShareableContentCache.Entry
+        /// The snapshot is older than the request for it: it was kept, or it was a query already under way.
+        let isCached: Bool
+
+        static func current(options: CaptureOptions, displays: [DisplayInfo],
+                            cache: ContentCache<SCShareableContent> = ShareableContentCache.shared) async throws -> ScreenContent {
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            let (entry, isCached) = try await cache.snapshot(for: cache.now()) { entry, predatesRequest in
+                servedExclusion(of: entry, options: options, displays: displays, ownPID: ownPID,
+                                predatesRequest: predatesRequest) != nil
+            }
+            let facts = ContentFacts(entry.snapshot, ownPID: ownPID)
+            let cached = isCached ? ContentReuse.cachedExclusion(for: options, in: facts, ownPID: ownPID,
+                                                                 liveOwner: WindowEnumerator.ownerPID(of:)) : nil
+            ContentCacheSignposts.event(isCached ? "ShareableContentKept" : "ShareableContentQueried",
+                                        "displays=\(displays.count)")
+            return ScreenContent(entry: entry, isCached: isCached,
+                                 decision: cached ?? ContentReuse.exclusion(for: options, in: facts, ownPID: ownPID),
+                                 options: options, ownPID: ownPID)
+        }
+
+        /// How `entry` leaves windows out for this capture; nil when a snapshot that predates the capture cannot serve it.
+        private static func servedExclusion(of entry: ShareableContentCache.Entry, options: CaptureOptions,
+                                            displays: [DisplayInfo], ownPID: pid_t,
+                                            predatesRequest: Bool) -> ContentExclusion? {
+            let facts = ContentFacts(entry.snapshot, ownPID: ownPID)
+            guard predatesRequest else { return ContentReuse.exclusion(for: options, in: facts, ownPID: ownPID) }
+            guard ContentReuse.lists(displays, in: facts) else { return nil }
+            return ContentReuse.cachedExclusion(for: options, in: facts, ownPID: ownPID,
+                                                liveOwner: WindowEnumerator.ownerPID(of:))
+        }
+
+        private init(entry: ShareableContentCache.Entry, isCached: Bool, decision: ContentExclusion,
+                     options: CaptureOptions, ownPID: pid_t) {
+            let content = entry.snapshot
             self.content = content
-            excluded = content.windows.filter {
-                options.excludesWindow($0.windowID, pid: $0.owningApplication?.processID, ownPID: me)
+            self.entry = entry
+            self.isCached = isCached
+            switch decision {
+            case .ownApplication where content.applications.contains { $0.processID == ownPID }:
+                exclusion = .applications(content.applications.filter { $0.processID == ownPID })
+            case .ownApplication:
+                exclusion = .windows(content.windows.filter {
+                    options.excludesWindow($0.windowID, pid: $0.owningApplication?.processID, ownPID: ownPID)
+                })
+            case .windows(let ids):
+                exclusion = .windows(content.windows.filter { ids.contains($0.windowID) })
             }
         }
 
-        static func current(options: CaptureOptions) async throws -> ScreenContent {
-            let content = try await CaptureSignposts.measure("ShareableContent") {
-                try await WindowEnumerator.shareableContent()
-            }
-            return ScreenContent(content, options: options)
+        /// Drops this snapshot from the cache, which it failed, and takes a newer one.
+        func refreshed(options: CaptureOptions, displays: [DisplayInfo],
+                       cache: ContentCache<SCShareableContent> = ShareableContentCache.shared) async throws -> ScreenContent {
+            cache.discard(entry)
+            ContentCacheSignposts.event("ShareableContentRetried", "displays=\(displays.count)")
+            return try await Self.current(options: options, displays: displays, cache: cache)
+        }
+
+        /// `work` with the current content; when the content was not queried for this capture and `work` fails, once
+        /// more with a new query.
+        static func run<Output>(options: CaptureOptions, displays: [DisplayInfo],
+                                cache: ContentCache<SCShareableContent> = ShareableContentCache.shared,
+                                work: (ScreenContent) async throws -> Output) async throws -> Output {
+            try await retryingOnFreshSnapshot(try await current(options: options, displays: displays, cache: cache),
+                                              isCached: { $0.isCached },
+                                              refresh: { try await $0.refreshed(options: options, displays: displays, cache: cache) },
+                                              work: work)
         }
 
         func grab(_ rect: CGRect, display: DisplayInfo, options: CaptureOptions) async throws -> Grab {
             guard let scd = content.displays.first(where: { $0.displayID == display.id }) else { throw CaptureError.noDisplay }
-            let filter = SCContentFilter(display: scd, excludingWindows: excluded)
+            let filter: SCContentFilter
+            switch exclusion {
+            case .applications(let applications):
+                filter = SCContentFilter(display: scd, excludingApplications: applications, exceptingWindows: [])
+            case .windows(let windows):
+                filter = SCContentFilter(display: scd, excludingWindows: windows)
+            }
             let cfg = SCStreamConfiguration()
+            // Keep the platform capture profile; raw PNG retains the returned image's tag and gamut.
+            // Composed output converts to sRGB, rather than retagging these pixels.
             let local = CaptureGeometry.displayLocal(rect, display: display.frame, scale: display.scale)
             cfg.sourceRect = local
             cfg.width = Int((local.width * display.scale).rounded())
@@ -80,9 +149,27 @@ enum ImageGrabber {
         }
     }
 
+    /// Runs `work` on `content`. When `content` was not queried for this capture and `work` fails, it is run once more
+    /// on what `refresh` returns: a stale snapshot costs a query, never a failed capture. A cancelled capture is not
+    /// retried.
+    static func retryingOnFreshSnapshot<Content, Output>(
+        _ content: Content, isCached: (Content) -> Bool, refresh: (Content) async throws -> Content,
+        work: (Content) async throws -> Output
+    ) async throws -> Output {
+        do {
+            return try await work(content)
+        } catch {
+            try Task.checkCancellation()
+            guard isCached(content), !isCancellation(error) else { throw error }
+            return try await work(try await refresh(content))
+        }
+    }
+
     static func grabRect(_ rect: CGRect, display: DisplayInfo, options: CaptureOptions) async throws -> Grab {
         try await captureWithFallback(allowed: allowsRectFallback(options), capture: {
-            try await ScreenContent.current(options: options).grab(rect, display: display, options: options)
+            try await ScreenContent.run(options: options, displays: [display]) {
+                try await $0.grab(rect, display: display, options: options)
+            }
         }, fallback: {
             let r = rect.integral
             let args = ["-x", "-R", "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"]
@@ -102,12 +189,14 @@ enum ImageGrabber {
     ) async throws -> (displays: [FrozenDisplay], windows: [CGWindowID: any QueriedWindow]) {
         var windows: [CGWindowID: any QueriedWindow] = [:]
         let frozen = try await freeze(displays, options: options, content: {
-            let screenContent = try await ScreenContent.current(options: options)
+            let screenContent = try await ScreenContent.current(options: options, displays: displays)
             windows = Dictionary(screenContent.content.windows.map { ($0.windowID, $0 as any QueriedWindow) },
                                  uniquingKeysWith: { first, _ in first })
             return screenContent
         }, capture: { display, options, content in
-            try await content.grab(display.frame, display: display, options: options)
+            try await retryingOnFreshSnapshot(content, isCached: { $0.isCached },
+                                              refresh: { try await $0.refreshed(options: options, displays: displays) },
+                                              work: { try await $0.grab(display.frame, display: display, options: options) })
         })
         return (frozen, windows)
     }
@@ -183,6 +272,7 @@ enum ImageGrabber {
             }, grab: { w in
                 let filter = SCContentFilter(desktopIndependentWindow: w)
                 let cfg = SCStreamConfiguration()
+                // As for display captures, preserve the profile returned by the platform for raw output.
                 cfg.width = Int((w.frame.width * scale).rounded())
                 cfg.height = Int((w.frame.height * scale).rounded())
                 cfg.showsCursor = !options.hideCursor

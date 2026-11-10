@@ -43,9 +43,15 @@ jobs:
       - name: Test release failure gates
         run: node --test .github/scripts/notarize.test.cjs
 
+      - name: Test the hotkey latency report
+        run: node --test Scripts/capture-latency.test.cjs
+
       # Runs Sparkle's real signing tools, which the Build step above resolves into .build/artifacts.
       - name: Test the update feed generator
         run: node --test .github/scripts/appcast.test.cjs
+
+      - name: Test the performance guard
+        run: node --test .github/scripts/perf-guard.test.cjs
 
       - name: Check the changelog
         run: |

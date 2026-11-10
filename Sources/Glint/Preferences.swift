@@ -14,8 +14,16 @@ final class PrefsModel: ObservableObject {
 
     let prefs: AppPreferences
     let store: PresetStore
+    let hotkeys: HotkeyController
+    private var hotkeyChanges: AnyCancellable?
     private var presetEditors: [UUID: EditorWindowController] = [:]
-    init(prefs: AppPreferences, store: PresetStore) { self.prefs = prefs; self.store = store }
+    init(prefs: AppPreferences, store: PresetStore, hotkeys: HotkeyController) {
+        self.prefs = prefs
+        self.store = store
+        self.hotkeys = hotkeys
+        // The shortcut rows show which shortcuts aren't active, so they follow the controller.
+        hotkeyChanges = hotkeys.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
 
     func bind<T>(_ kp: ReferenceWritableKeyPath<AppPreferences, T>, then: (() -> Void)? = nil) -> Binding<T> {
         Binding(get: { self.prefs[keyPath: kp] },
@@ -44,10 +52,8 @@ final class PrefsModel: ObservableObject {
 /// takes its title from the selected pane and resizes to fit each pane's content.
 @MainActor
 final class PreferencesWindowController: NSWindowController {
-    static var shared: PreferencesWindowController!
-
-    convenience init(prefs: AppPreferences, store: PresetStore) {
-        let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store))
+    convenience init(prefs: AppPreferences, store: PresetStore, hotkeys: HotkeyController) {
+        let tabs = PreferencesTabViewController(model: PrefsModel(prefs: prefs, store: store, hotkeys: hotkeys))
         let window = NSWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.toolbarStyle = .preference
@@ -62,6 +68,18 @@ final class PreferencesWindowController: NSWindowController {
         if window?.isVisible != true { window?.center() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Opens Settings on the global shortcuts, where a shortcut that can't be used is flagged.
+    func presentShortcuts() {
+        revealShortcuts()
+        present()
+    }
+
+    /// Selects the Capture pane with its global shortcuts expanded.
+    func revealShortcuts() {
+        UserDefaults.standard.set(true, forKey: CollapsibleSection<EmptyView>.storageKey("shortcuts"))
+        (contentViewController as? PreferencesTabViewController)?.select(.capture)
     }
 }
 
@@ -352,7 +370,8 @@ private struct CaptureTab: View {
                     Text("Record the pointer separately so the editor can enlarge or hide it. Takes effect from the next recording; the pointer is then drawn by Glint rather than macOS.")
                 }
             }
-            CollapsibleSection("Global shortcuts", id: "shortcuts") {
+            CollapsibleSection("Global shortcuts", id: "shortcuts",
+                               summary: model.hotkeys.problems.isEmpty ? nil : "Needs attention") {
                 ForEach(HotkeyAction.allCases, id: \.self) { action in
                     HotkeyRow(model: model, action: action)
                 }
@@ -365,32 +384,47 @@ private struct CaptureTab: View {
 private struct HotkeyRow: View {
     @ObservedObject var model: PrefsModel
     let action: HotkeyAction
+    /// Why the last change to this shortcut was turned down; the shortcut itself stayed as it was.
+    @StateObject private var rejection = Local<HotkeyProblem?>(nil)
 
     var body: some View {
         let current = model.prefs.hotkey(for: action)
-        LabeledContent(action.displayName) {
-            HStack(spacing: 6) {
-                ShortcutField(combo: Self.recorded(current), name: action.displayName) { new in
-                    apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+        let inactive = model.hotkeys.problems[action]
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(action.displayName) {
+                HStack(spacing: 6) {
+                    ShortcutField(combo: RecordedKeyCombo(current), name: action.displayName) { new in
+                        apply(KeyCombo(keyCode: new.keyCode, modifiers: KeyModifiers(rawValue: 0).union(Self.modifiers(new.modifiers))))
+                    }
+                    Button { apply(action.defaultCombo) } label: { Image(systemName: "arrow.counterclockwise") }
+                        .buttonStyle(.borderless)
+                        .disabled(current == action.defaultCombo && inactive == nil)
+                        .help("Restore default")
+                        .accessibilityLabel("Restore default shortcut for \(action.displayName)")
                 }
-                Button { apply(action.defaultCombo) } label: { Image(systemName: "arrow.counterclockwise") }
-                    .buttonStyle(.borderless)
-                    .disabled(current == action.defaultCombo)
-                    .help("Restore default")
-                    .accessibilityLabel("Restore default shortcut for \(action.displayName)")
             }
+            if let refused = rejection.value { Self.warning(refused.rejectedMessage) }
+            if let inactive { Self.warning(inactive.inactiveMessage) }
         }
+        .onDisappear { rejection.value = nil }
+    }
+
+    private static func warning(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.red)
     }
 
     private func apply(_ c: KeyCombo) {
-        guard model.prefs.hotkey(for: action) != c else { return }
-        model.prefs.setHotkey(c, for: action)
+        guard model.prefs.hotkey(for: action) != c || model.hotkeys.problems[action] != nil else { return }
+        if let problem = model.hotkeys.change(action, to: c) {
+            rejection.value = problem
+            AccessibilityNotification.Announcement(problem.rejectedMessage).post()
+            return
+        }
+        rejection.value = nil
         model.objectWillChange.send()
         model.changed()
-    }
-
-    static func recorded(_ c: KeyCombo) -> RecordedKeyCombo {
-        RecordedKeyCombo(keyCode: c.keyCode, modifiers: HotkeyModifiers(rawValue: c.carbonModifiers))
     }
 
     static func modifiers(_ m: HotkeyModifiers) -> KeyModifiers {
@@ -1313,18 +1347,57 @@ private struct AboutTab: View {
     }
 }
 
+/// Whether Screen Recording is granted and whether macOS kept a stale entry for an older signature, as the
+/// permissions pane shows them. Views change only when one of the two changes, not on every poll.
+final class ScreenRecordingStatus: ObservableObject {
+    @Published private(set) var isGranted: Bool
+    @Published private(set) var isStale: Bool
+    /// A request made from the pane is still waiting on the user, not a stale entry.
+    var requestedHere = false
+
+    private let readGrant: () -> Bool
+    private let needsReauthorization: (Bool) -> Bool
+
+    init(
+        readGrant: @escaping () -> Bool = { ScreenRecordingPermission.refreshGrant() },
+        needsReauthorization: @escaping (Bool) -> Bool = { ScreenRecordingPermission.needsReauthorization(granted: $0) }
+    ) {
+        self.readGrant = readGrant
+        self.needsReauthorization = needsReauthorization
+        let granted = readGrant()
+        isGranted = granted
+        isStale = needsReauthorization(granted)
+    }
+
+    func refresh() {
+        AppPerformance.measure("PermissionPoll", in: AppPerformance.idle) {
+            let granted = readGrant()
+            let stale = !requestedHere && needsReauthorization(granted)
+            if granted != isGranted { isGranted = granted }
+            if stale != isStale { isStale = stale }
+        }
+    }
+}
+
 struct PermissionsPane: View {
     static let reauthorizeTitle = "Re-authorize Screen Recording…"
     static let reauthorizeCaption = "Already switched on in System Settings but captures still fail? This can happen after an update. Glint will clear its old entry and request access again."
     static let accessHint = "Glint needs Screen Recording access to take screenshots. After switching it on, choose Quit & Reopen if macOS asks, or restart Glint yourself."
 
-    @StateObject private var state = Local<Bool>(ScreenRecordingPermission.refreshGrant())
-    @StateObject private var stale = Local<Bool>(ScreenRecordingPermission.needsReauthorization)
-    @StateObject private var requestedHere = Local<Bool>(false)
+    @StateObject private var grant: ScreenRecordingStatus
+    @StateObject private var poller: OnScreenPoller
     @StateObject private var working = Local<Bool>(false)
     @StateObject private var status = Local<String?>(nil)
-    private var granted: Bool { state.value }
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var granted: Bool { grant.isGranted }
+
+    /// Re-reads the grant once a second, but only while the pane is on screen. Tests replace both parameters.
+    init(
+        grant: @autoclosure @escaping () -> ScreenRecordingStatus = ScreenRecordingStatus(),
+        poller: @autoclosure @escaping () -> OnScreenPoller = OnScreenPoller()
+    ) {
+        _grant = StateObject(wrappedValue: grant())
+        _poller = StateObject(wrappedValue: poller())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1347,7 +1420,7 @@ struct PermissionsPane: View {
             }
             .accessibilityElement(children: .combine)
             if !granted {
-                if stale.value {
+                if grant.isStale {
                     VStack(alignment: .leading, spacing: 6) {
                         Button(Self.reauthorizeTitle) { reauthorize() }
                             .buttonStyle(.borderedProminent)
@@ -1360,9 +1433,9 @@ struct PermissionsPane: View {
                 } else {
                     HStack {
                         Button("Request Access") {
-                            requestedHere.value = true
+                            grant.requestedHere = true
                             ScreenRecordingPermission.request()
-                            refresh()
+                            grant.refresh()
                         }
                         Button("Open System Settings") { ScreenRecordingPermission.openSystemSettings() }
                     }
@@ -1373,13 +1446,8 @@ struct PermissionsPane: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onReceive(timer) { _ in refresh() }
-    }
-
-    private func refresh() {
-        state.value = ScreenRecordingPermission.refreshGrant()
-        // A request made from this pane is still waiting on the user, not a stale entry.
-        stale.value = !requestedHere.value && ScreenRecordingPermission.needsReauthorization(granted: state.value)
+        .onReceive(poller.beats) { _ in grant.refresh() }
+        .background(WindowVisibility { poller.setOnScreen($0) })
     }
 
     private func reauthorize() {
@@ -1387,10 +1455,10 @@ struct PermissionsPane: View {
         status.value = nil
         Task { @MainActor in
             let outcome = await ScreenRecordingPermission.reauthorize()
-            if outcome == .requestedAgain { requestedHere.value = true }
+            if outcome == .requestedAgain { grant.requestedHere = true }
             status.value = Self.message(for: outcome)
             working.value = false
-            refresh()
+            grant.refresh()
         }
     }
 
@@ -1477,7 +1545,7 @@ final class PermissionsWindow {
                         HStack {
                             Text(title)
                             Spacer()
-                            Text(HotkeyRow.recorded(AppPreferences.shared.hotkey(for: action)).displayString)
+                            Text(RecordedKeyCombo(AppPreferences.shared.hotkey(for: action)).displayString)
                                 .font(.body.monospaced())
                                 .foregroundStyle(.secondary)
                         }

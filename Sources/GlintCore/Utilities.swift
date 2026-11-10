@@ -95,10 +95,15 @@ public enum GlintBitmap {
 public extension CGImage {
     var pixelSize: CGSize { CGSize(width: width, height: height) }
 
+    /// Already an sRGB 8-bit premultiplied bitmap, which `glintSRGB()` returns as it is.
+    var isGlintSRGB: Bool {
+        guard let cs = colorSpace, cs.name == CGColorSpace.sRGB, bitsPerComponent == 8 else { return false }
+        return alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst
+    }
+
     /// Redraws into an sRGB RGBA8 premultiplied bitmap.
     func glintSRGB() -> CGImage {
-        if let cs = colorSpace, cs.name == CGColorSpace.sRGB, bitsPerComponent == 8,
-           alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst { return self }
+        if isGlintSRGB { return self }
         guard let ctx = GlintBitmap.makeContext(width: width, height: height) else { return self }
         ctx.draw(self, in: CGRect(x: 0, y: 0, width: width, height: height))
         return ctx.makeImage() ?? self
@@ -107,6 +112,27 @@ public extension CGImage {
     /// Crop in image space (top-left origin). The rect is clamped to the image.
     func glintCropped(to rect: CGRect) -> CGImage? {
         cropping(to: rect.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height)))
+    }
+
+    /// A copy whose longer side is at most `maxPixelSide`, with the same aspect ratio, transparency and, where a bitmap
+    /// can be drawn in it, colour space. An image that already fits is returned as is: it is never enlarged.
+    func glintThumbnail(maxPixelSide: Int) -> CGImage {
+        let longSide = max(width, height)
+        guard maxPixelSide > 0, longSide > maxPixelSide else { return self }
+        let factor = Double(maxPixelSide) / Double(longSide)
+        let thumbnailWidth = max(Int((Double(width) * factor).rounded()), 1)
+        let thumbnailHeight = max(Int((Double(height) * factor).rounded()), 1)
+        var spaces = [ColorSpaces.sRGB]
+        if let source = colorSpace, source.model == .rgb, source.supportsOutput { spaces.insert(source, at: 0) }
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        for space in spaces {
+            guard let context = CGContext(data: nil, width: thumbnailWidth, height: thumbnailHeight, bitsPerComponent: 8,
+                                          bytesPerRow: 0, space: space, bitmapInfo: info) else { continue }
+            context.interpolationQuality = .high
+            context.draw(self, in: CGRect(x: 0, y: 0, width: thumbnailWidth, height: thumbnailHeight))
+            if let thumbnail = context.makeImage() { return thumbnail }
+        }
+        return self
     }
 }
 

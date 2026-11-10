@@ -205,4 +205,18 @@ struct WindowEnumeratorTests {
             #expect(!WindowEnumerator.reservedChromeLevels.contains(level))
         }
     }
+
+    @Test func theOwnerOfAWindowComesFromItsEntryInTheList() {
+        let frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let list = [entry(1, pid: me, layer: 0, frame: frame), entry(2, pid: other, layer: 0, frame: frame)]
+        #expect(WindowEnumerator.ownerPID(of: 1, in: list) == me)
+        #expect(WindowEnumerator.ownerPID(of: 2, in: list) == other)
+        // A window that is gone has no entry.
+        #expect(WindowEnumerator.ownerPID(of: 3, in: list) == nil)
+        #expect(WindowEnumerator.ownerPID(of: 1, in: []) == nil)
+
+        var withoutOwner = entry(4, pid: other, layer: 0, frame: frame)
+        withoutOwner[kCGWindowOwnerPID as String] = nil
+        #expect(WindowEnumerator.ownerPID(of: 4, in: [withoutOwner]) == nil)
+    }
 }

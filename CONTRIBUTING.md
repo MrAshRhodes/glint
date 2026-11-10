@@ -36,6 +36,46 @@ Every SwiftPM call goes through `Scripts/swiftw.sh`. With Xcode installed it is 
 
 `make test` and CI run the suite with `--no-parallel`, one test at a time. Many tests open real AppKit windows, which all share the one main thread. Run together on a small machine such as a 3-core CI runner, they queue behind each other and their timed waits expire although nothing is wrong. Pass the same flag when you call `swift test` yourself.
 
+### Screenshot colour policy
+
+Raw screenshot PNGs keep the `CGImage` profile returned by ScreenCaptureKit (or the
+permitted `screencapture` fallback). Glint does not override the platform's still
+capture colour space or merely relabel its pixels. The frozen-region copy preserves
+a supported source output space. This preserves supplied Display P3 data; it does
+not promise that every OS/display capture API returns Display P3. A native capture
+comparison is required to establish that for a particular machine.
+
+The editor loader and compositor convert into premultiplied RGBA8 sRGB with Core
+Graphics colour management. Composed PNG/TIFF therefore retain sRGB and alpha;
+JPEG is flattened onto white in sRGB before encoding. Colours outside sRGB may
+clip during that intentional conversion; raw history is the uncomposed alternative.
+The low-level export API keeps the input profile at original size for PNG/TIFF,
+but a size-changing resample uses the same sRGB bitmap policy as the compositor.
+A scale option that needs no resize leaves the profile unchanged. Clipboard PNG
+and TIFF use the same encoding policy as equivalent files, including scale and
+backing-scale inputs. Pasting into an app that ignores profiles is outside Glint's
+control. Scrolling capture/stitching and recording explicitly use sRGB.
+
+`ColourPolicyTests` covers equivalent in-gamut sRGB/Display P3 patches, neutral
+gradients, saturated P3 input, alpha edges, composition, original/resized export,
+and private-pasteboard representations. Comparisons are in a common colour-managed
+sRGB space, not between differently tagged RGB bytes. The deterministic RGBA8
+in-gamut patch tolerance is 3/255 per channel (5/255 for quality-1 JPEG patch
+centres, away from compression boundaries); neutral gradients allow 1/255.
+These are regression tolerances for the synthetic pipeline, not perceptual
+thresholds or proof of display fidelity. Repeated normalization must not convert
+an already-normalized bitmap again. DPI/logical-size tests are separate from
+colour checks.
+
+Live acceptance for #111 still requires displaying the sRGB and Display P3 charts
+on a wide-gamut display, recording the OS/display/profile configuration, and
+comparing native SDR captures with Glint raw files, composed PNG/JPEG, and pasted
+images in a colour-managed viewer. Record profile tags and common-space in-gamut
+errors separately from intentional out-of-gamut clipping. Check translucent edges
+over both light and dark backgrounds. HDR/extended-range capture and display
+tone mapping are outside this initial SDR policy and are not validated by these
+8-bit fixtures.
+
 ### Profiling the capture overlay
 
 Use an optimized build (`make app`, not `CONFIG=debug`). On a Mac with full Xcode,
@@ -53,11 +93,44 @@ coalesced events do not reset it. Intervals aborted on close are marked `cancell
 and must be excluded from latency percentiles. Correlate these with input dispatch
 and frame traces: invalidation omits earlier event processing, and draw completion
 is **not** screen presentation. Use a presentation trace or external measurement
-for real event-to-paint latency.
+for real event-to-paint latency. To judge presentation skew between displays, compare one
+overlay's per-panel `PanelCreation` and `FirstDraw` intervals on two or more displays; the
+panels are created and ordered in front one after another, and that order changes only if
+visible skew is demonstrated.
 Report sample counts, p50/p95, and individual stalls over 50 ms in the first two
 seconds. Check the actual display budget (16.7 ms at 60 Hz; 8.3 ms at 120 Hz) without
 claiming unmeasured refresh rates or hardware. Signposts must not include cursor
 coordinates, window metadata, or captured contents.
+
+`FirstDraw` and `Draw` begin records also report `rects` (the number of nonempty
+rectangles), `covered` (their union area divided by the view area), and `bounding`
+(their bounding-box area divided by the view area). Overlaps are counted once and
+rectangles are clipped to the view bounds. `appkit=1` means these came from
+`getRectsBeingDrawn` during AppKit drawing; `appkit=0` marks the `dirtyRect` fallback
+used by direct/offscreen draws and is **not** an observed AppKit clip. Geometry is
+summarized before the CPU draw interval starts, only while signposts are enabled;
+no coordinates or display/window identifiers are logged. This instrumentation
+has overhead outside `Draw`, so compare equally instrumented runs.
+
+Do not infer full-display repainting from `dirtyRect` alone, or infer a disjoint
+clip from calls to `setNeedsDisplay`. A bounded AppKit probe on macOS 26.6
+(25G5065a), Apple M2 Max, found one full-view effective rectangle for diagonal
+crosshair invalidations in a layer-backed 1000 x 700-point panel: both `covered`
+and `bounding` were 1. Two separated small rectangles were coalesced to their
+bounding box as well. This was an occluded synthetic panel on a 1x display
+reporting a maximum of 50 Hz, **not** the live capture UI, a Retina measurement,
+or a presentation trace. It motivates measuring the effective live clip rather
+than treating the disjoint-clip CPU benchmark below as representative of AppKit.
+
+For redraw acceptance, record display model, resolution, backing scale, configured
+and measured refresh rate, and cold/warm sample counts for diagonal pointer motion,
+selection resizing and window hover. Report `covered` and `bounding` p50/p95
+alongside handler/`Draw` CPU p50/p95, `InvalidationToDraw`, and a separate frame
+trace showing missed presentations. A warm pointer-only CPU p95 below 1 ms is a
+provisional target, not a measured result or a substitute for the display's frame
+budget. Check for trails, flicker and stale labels/selection holes on each display
+and across mixed-scale/refresh boundaries. These live measurements remain
+outstanding; no rendering change is justified solely by the synthetic probe.
 
 Signpost intervals can also be collected without Xcode or changes to system logging
 settings. Start the collector before exercising an instrumented build, and use a
@@ -86,6 +159,8 @@ Scripts/benchmark-overlay.sh current        # snapshot of current working source
 # Optional: compare clipped dirty regions instead of identical full-bounds draws.
 DRAW_MODE=damage Scripts/benchmark-overlay.sh baseline HEAD
 DRAW_MODE=damage Scripts/benchmark-overlay.sh current
+# Compare the same damage after coalescing it to its bounding box.
+DRAW_MODE=bounding Scripts/benchmark-overlay.sh current
 ```
 
 The `swiftc -O` harness uses an unshown 1728 × 1117-point bitmap at 2×, three fixed
@@ -99,7 +174,12 @@ These are synchronous CPU drawing measurements, **not** real mouse latency, fram
 presentation, or a substitute for the live cold/warm acceptance trace above. Run
 comparisons sequentially with other builds and heavy background work stopped. Damage
 mode models a single draw with the disjoint dirty-region clip, not separate draws
-for overlapping strips; the input sequence is synthetic and unpaced.
+for overlapping strips. Bounding mode uses one bounding-box clip when damage is
+nonempty, retaining zero-draw samples when nothing changes; full mode redraws the
+entire view on every sample. The summaries include modeled dirty-area/bounding-box
+fractions and rectangle counts. None of these modes observes AppKit's actual clip;
+the input sequence is synthetic and unpaced. Fraction calculations run outside
+the reported update/draw CPU intervals.
 
 Reference CPU comparison for [#42](https://github.com/MrAshRhodes/glint/issues/42):
 Apple M2 Max (Mac14,6), 32 GiB, macOS 26.6 (25G5065a), `swiftc -O`, baseline
@@ -140,20 +220,21 @@ revisions, displays and input path when comparing.
 | `QueueDelay` | A global hotkey's callback arriving, through the main actor handling it. |
 | `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `scrolling`, `timer`). |
 | `PermissionCheck` | The Screen Recording permission check that starts an area, window or full-screen capture. |
-| `ShareableContent` | One ScreenCaptureKit shareable-content query (the overlay's freeze, a window grab). |
+| `ShareableContent` | One ScreenCaptureKit shareable-content query: Glint's own refill after launch or a change of screens or session, a capture that had no usable kept snapshot (the overlay's freeze, a grab), a window grab. |
 | `SnapTargets` | Building the overlay's edge-snap targets. Emitted through `OverlayPerformance`, which stays free of GlintCore. |
 | `CaptureImage` | One ScreenCaptureKit screenshot call. |
 | `SelectionToImage` | The selection finishing (mouse-up) to the captured image, including the settle wait, grab and crop. Interactive area, window and text captures. |
 | `RawWrite` | Writing the raw screenshot. |
+| `Recognize` | One text-recognition pass over an image: automatic redaction, Detect Text or Capture Text. A capture is recognised once per set of redaction settings, so a capture that is redacted and then edited shows one interval, not two. |
 | `Render` | Compositing the look for a direct export (editor off, or a clipboard-only capture). |
 | `OutputWrite` | Saving a direct export, including its encode. |
-| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite`, `Pasteboard` and `export.drag`. |
-| `Pasteboard` | Putting the image on the clipboard, including its PNG and TIFF encodes. |
+| `EncodePNG`, `EncodeTIFF`, `EncodeJPEG`, `EncodeHEIC` | One `Exporter.data` encode, nested inside `OutputWrite` and `export.drag`. The clipboard's PNG encode starts in the background right after `Pasteboard` begins and its TIFF encode runs when an app asks for it, so neither is nested in `Pasteboard`; a save that reuses the clipboard's PNG has no `EncodePNG` of its own. |
+| `Pasteboard` | Putting the image on the clipboard as a promise, which is all it covers: the PNG is encoded afterwards in the background and the TIFF, made from the PNG, only when an app pastes it. |
 | `QuickAccessShown` | Creating the thumbnail panel and putting it on screen. |
 | `editor.open` | An editor model's creation to its first finished preview. Every editor kind (capture, reopened image or project, recording, preset designer) emits it. |
 | `editor.render` | One preview render, off the main thread. |
-| `export.copy` | The editor's Copy action: final render, clipboard write and the follow-up work. |
-| `export.drag` | The editor's drag-out: final render and writing the drag file. |
+| `export.copy` | The editor's Copy action: snapshot, off-main-actor final render, clipboard promise and the follow-up work. |
+| `export.drag` | The editor's drag-out, from the drag starting: off-main-actor final render and writing the drag file. |
 
 `CaptureTotal` includes the time the user spends choosing, so read latency from the stage intervals, not from its
 duration. Its end message says how the capture task ended: `cancelled` for Esc or task cancellation, `failed` for a
@@ -163,18 +244,32 @@ same `CaptureTotal`. Intervals ended by cancellation or an error must be exclude
 overlay.
 
 Only one capture runs at a time, but other work can overlap it: Reopen Last Image retention encodes in the background
-after the previous capture, and an editor that is already open keeps rendering previews. Each interval has its own
-opaque signpost ID and there is no capture identifier, so attribute stage intervals to a `CaptureTotal` by time
-containment only while nothing else ran, and read an `Encode*` interval that is not inside an `OutputWrite`,
-`Pasteboard` or `export.drag` interval as other work (retention, an editor Save). Metadata is limited to the trigger
+after the previous capture, the clipboard's PNG is encoded in the background after `Pasteboard` ends, and an editor that
+is already open keeps rendering previews. Each interval has its own opaque signpost ID and there is no capture
+identifier, so attribute stage intervals to a `CaptureTotal` by time containment only while nothing else ran, and read
+an `Encode*` interval that is not inside an `OutputWrite` or `export.drag` interval as other work (the clipboard's
+background PNG or its TIFF, retention, an editor Save). Metadata is limited to the trigger
 and mode on `CaptureTotal` and `eventAgeMs` on `QueueDelay`: never add coordinates, window titles, file paths or image
 content.
+
+Glint keeps ScreenCaptureKit's shareable content (displays, applications and windows: metadata, no pixels) between
+captures, so a hotkey does not wait for the query. It is queried after launch and again once the screens or the session
+have been quiet for a second (display change, wake, screens waking, session becoming active), only when Screen
+Recording is already granted, and never prompts. Three events in the `Capture` category, with `displays=<count>` as
+their only metadata, show how a capture got its content: `ShareableContentKept` (it used the snapshot kept from before
+the hotkey), `ShareableContentQueried` (nothing usable was kept, so it queried for itself: expected for the first
+capture after a change, and for every capture if Glint's own application is missing from the snapshot) and
+`ShareableContentRetried` (a capture failed on a kept snapshot, which was dropped, and ran again on a new query). The
+kept share is `Kept / (Kept + Queried)`. Read the first capture after a launch, wake or display change apart from warm
+ones. Permission checks are not cached; `PermissionCheck` shows whether they need to be.
 
 The two headline numbers come from timestamps across both categories:
 
 - Hotkey → first overlay frame: the `QueueDelay` begin time minus its `eventAgeMs`, to the `OverlayFirstDraw` end
   (category `SelectionOverlay`).
-- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end. Mouse-up → thumbnail: the
+- Mouse-up → clipboard: the `MouseUp` begin (`SelectionOverlay`) to the `Pasteboard` end, which is when the clipboard
+  holds the image's promise. A paste that comes before the background `EncodePNG` has ended waits for it, so that
+  interval's end is when the PNG itself is there. Mouse-up → thumbnail: the
   same begin to the `QuickAccessShown` end. With **Open editor after capture** on, neither runs: read `editor.open`
   instead, which begins when the editor model is created rather than at mouse-up, and `export.copy`.
 
@@ -199,9 +294,212 @@ The command was smoke-tested only against unit-test runs, not live captures. Tho
 end records for every interval above except `ShareableContent`, `CaptureImage` and `QuickAccessShown`, which the
 tests stub and which need a live capture. `QueueDelay` came from a unit test, not a real hotkey press.
 
+To measure the delay after idle, sleep and display changes
+([#106](https://github.com/MrAshRhodes/glint/issues/106)), collect both categories into one file for the whole session
+and read it with `Scripts/capture-latency.cjs`. Start the collector before launching Glint, so the first capture is a
+real cold start (`--timeout` takes seconds, or a number with an `m`, `h` or `d` suffix):
+
+```sh
+mkdir -p .build/capture-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 1h \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Capture" OR category == "SelectionOverlay")' \
+  > .build/capture-traces/idle-wake.ndjson
+```
+
+The script takes every hotkey capture (a completed `QueueDelay`; menu and URL captures have none), dates it by its key
+press (the `QueueDelay` begin time minus `eventAgeMs`) and puts it in one scenario:
+
+- `first`: no earlier Glint signpost from that process is in the trace.
+- `idle`: at least 60 s (`--idle-seconds`) after that process's last Glint signpost, so wait a minute after the previous
+  capture finished.
+- `warm`: every other capture. A p95 over fewer than 20 samples is only the maximum, so take 20 or more of any scenario
+  you want one for.
+- A scenario you name, for the first capture after something the log cannot see: a wake from sleep, a display being
+  connected or changed, switching to another user or unlocking the session. Right after the event run
+  `date '+%Y-%m-%d %H:%M:%S%z'`, press the hotkey, and pass that time as `--marker NAME=TIME`, once per event.
+
+```sh
+node Scripts/capture-latency.cjs \
+  --marker 'wake=2026-11-10 18:20:00+0100' --marker 'display=2026-11-10 18:42:10+0100' \
+  .build/capture-traces/idle-wake.ndjson
+```
+
+Several files are merged (`-` reads standard input), `--json` prints JSON and `--help` lists the options. A marker
+that no capture followed is listed in the report, which is also what happens when the stream ended while the Mac slept.
+Whether `log stream` survives sleep was not checked, so confirm the file keeps growing after a wake and start another
+collector file if it does not.
+
+The table has a row per stretch of the path: *key event to hotkey callback* (`eventAgeMs`), *callback to main actor*
+(`QueueDelay`), their sum *key event to main actor* (the hotkey dispatch), *main actor to first overlay frame* (what
+runs in between, such as the permission check, the freeze and the overlay's setup; the stage intervals above show which
+part moved) and *key event to first overlay frame*, the headline number. A p50 more than 20 ms over warm, or a p95
+that much over warm with 20 or more samples on both sides, is marked `(investigate)`. That 20 ms is the issue's initial
+diagnostic threshold (`--penalty-ms`), not a result or a budget. The report holds durations and counts only, so it
+shows how long each stretch took, not why: telling App Nap from a cache rebuild, a power-state change or a display wake
+needs Instruments.
+
+*Key event to hotkey callback* is also the first check of a real hotkey event's timestamp, which the clock check above
+could not make. An age near zero and never negative is what one clock gives. An age that is negative or not a number is
+left out and counted under "invalid event age", and ages of seconds would point to two different clocks.
+
+Idle wake-ups are not in the signposts. Read them on the same host, build and idle period from Activity Monitor's Energy
+tab (*Idle Wake Ups*), or with `top`, which accepts `idlew` on macOS 26.6 although its man page does not list it:
+
+```sh
+top -l 2 -s 60 -pid "$(pgrep -x Glint)" -stats pid,command,idlew
+```
+
+`IDLEW` is a running total (a trailing `+` means it grew since the previous sample), so the second sample minus the
+first is the wake-ups in that minute. A penalty over the threshold is a reason to investigate, not evidence for a
+persistent activity assertion or a recurring timer: either needs these counts from before and after the change. Record
+the host with every figure: model, macOS build, displays (count, resolution, scale, refresh rate), power source, Glint
+revision and the sample count per scenario. A build that caches display or window metadata
+([#102](https://github.com/MrAshRhodes/glint/issues/102)) can pay to rebuild it in the first capture after a display
+change or wake, which this report cannot separate from other startup work, so compare it with a build without the cache.
+
+The script has only been run on synthetic traces and on a trace from unit-test runs, never on a live hotkey session, so
+no idle, wake or display-change figure is recorded here: that needs the live capture UI and a physical key press.
+
 Provisional reference-host budgets (targets, **not** measured native performance): hotkey → first overlay frame
 ≤ 100 ms, mouse-up → clipboard ≤ 200 ms, mouse-up → thumbnail ≤ 250 ms. No cold/warm p50/p95 for 1080p and 5K
 displays is recorded here: that needs the live capture UI and has not been measured yet.
+
+### Profiling launch and idle work
+
+Work done at launch and while idle is marked with signposts in subsystem `io.github.mrashrhodes.glint`.
+Nothing is recorded unless a collector is attached, and the signposts carry no paths, shortcuts or captured
+content. Category `Launch` has the intervals `HotkeySync` (registering the global shortcuts), `UpdaterSetup`,
+`SettingsWindowBuild` (the first time Settings opens; launch does not build it), `StatusMenuBuild` (each time
+the menu bar menu opens) and `RecentItems` (the Open Recent lookup inside it), and the events
+`HotkeysRegistered` and `LaunchFinished`, which report the milliseconds since the process started. Category
+`IdleWork` has `PermissionPoll`, one Screen Recording check, which runs only while the Permissions pane is
+on screen.
+
+```sh
+mkdir -p .build/launch-traces
+/usr/bin/log stream --signpost --level debug --style ndjson --timeout 60 \
+  --predicate 'subsystem == "io.github.mrashrhodes.glint" AND (category == "Launch" OR category == "IdleWork")' \
+  > .build/launch-traces/cold.ndjson
+```
+
+Start the collector before launching the build you are measuring, and pair begin/end records as for the
+overlay above. `HotkeysRegistered` marks when the shortcuts were registered. It is not the time until a
+shortcut press works, which the signposts do not measure: time that with a live launch-and-press trace. Keep
+cold launches (a new process) apart from warm ones, compare the same revisions, hardware and permission
+state, and report sample counts. To check idle work, collect for a few minutes with Settings never opened,
+then with the Permissions pane open and then closed or on another tab: `PermissionPoll` should appear only
+while the pane is on screen.
+
+### Timing diagnostics and the performance guard
+
+`Glint --diagnose --timing` times, on the machine it runs on, the stages between a capture starting and its image being
+exported, and prints the result as JSON. It complements the signposts above: those need a person to perform an
+instrumented capture, while this runs from a terminal and gives p50/p95 figures that can be pasted into an issue.
+
+```sh
+Glint.app/Contents/MacOS/Glint --diagnose --timing [--timing-iterations 50] [--timing-cold-runs 20] [--allow-screen-capture]
+```
+
+| Stage (JSON key) | One execution |
+| --- | --- |
+| `shareable_content` | One ScreenCaptureKit shareable-content query, which every capture starts with. Needs Screen Recording permission. |
+| `display_grab` | One `SCScreenshotManager` grab of the main display from that content, as the frozen overlay background is taken. Needs permission **and** `--allow-screen-capture`. |
+| `selection_snapshot` | `WindowEnumerator.selectionSnapshot()`, the metadata-only window list behind snapping. |
+| `render_and_encode` | `Compositor.render` with the default look, then a PNG encode, of the grabbed frame, or of a generated 2880 × 1800 frame when no pixels were grabbed. |
+
+**Cold** is a stage's first execution in a freshly launched Glint process. Each cold run starts the same executable
+with the internal `--timing-probe` option, which runs every stage once, in the order above, and prints one line of
+timings that the parent keeps. The operating system's caches are not reset between runs, and a later stage in a probe
+inherits what an earlier one warmed (the grab follows the content query), so read a cold figure as "first use in a new
+process", not "first use after boot". **Warm** is a repeat in the measuring process after one discarded warm-up.
+`--timing-iterations` sets the warm repeats per stage (20 to 1000, default 50) and `--timing-cold-runs` the fresh
+processes (0 to 100, default 20). A p95 over fewer than 20 samples is only the maximum, so such a summary says
+`"p95_reliable": false`.
+
+The JSON holds `schema_version`, `glint_version`, `macos`, `architecture`, the `options` used, the rendered `frame`
+(`source` is `display` or `synthetic`) and the `definitions` of cold and warm. Under `cold` and `warm`, each stage has
+a `failures` count and a `timing` with `count`, `min_ms`, `p50_ms`, `p95_ms`, `max_ms` and `p95_reliable`. A stage that
+did not run is under `skipped` with its reason: no permission, or no consent.
+
+Plain `--diagnose` stays the aggregate-only report. `--timing` adds durations only. It reads display pixels solely
+because you passed `--allow-screen-capture`; nothing passes that flag on its own, so CI, timers and tests never grab
+the screen, and a cold-run probe grabs only when its parent was given the flag. Errors are counted, never quoted, and
+no window title, display name, identifier or pixel reaches the output. Screen Recording permission is checked for the
+process that runs the command, which macOS may attribute to the terminal app that started it rather than to Glint;
+that attribution has not been verified on hardware.
+
+The **Performance** workflow (`.github/workflows/performance.yml`, job "Performance guard") is a tripwire for gross
+slowdowns, not a latency test and not a required check. It runs every Monday at 04:17 UTC, from **Run workflow** in the
+Actions tab, and on pull requests that change the benchmark or the guard themselves. It needs no permission, never
+captures the screen, and uploads only timing numbers, the revision and the runner's hardware model as the
+`performance-summary` artifact for 30 days. It runs three things:
+
+1. `Scripts/benchmark-overlay.sh current` with `ROUNDS=5`, in `full` mode and again with `DRAW_MODE=damage`: three
+   scenarios, a fresh process per round and 120 warm draws each. These are the synthetic CPU drawing measurements
+   described above.
+2. `ExportTimingTests`. Its `syntheticRetinaExportStaysWithinBudget` test runs only when `GLINT_EXPORT_BENCHMARK=1`:
+   it renders and encodes a synthetic 2880 × 1800 frame at 2× (30 times after a warm-up, set with
+   `GLINT_EXPORT_BENCHMARK_ITERATIONS`), fails by itself when the p95 passes `GLINT_RENDER_ENCODE_BUDGET_MS` (default
+   5000), and writes its samples as JSON to `GLINT_EXPORT_BENCHMARK_OUTPUT`. It also asserts that the PNG's density is
+   72 dpi times the backing scale and that it carries a colour profile. Which profile that is belongs to the export
+   colour policy, not to this test.
+3. `.github/scripts/perf-guard.cjs`, which reads those summaries and never any pixels. It compares them with the
+   limits in the workflow's `env`, writes `guard-summary.json` and a table to the job summary, and exits 1 over a limit.
+   It fails closed on a missing scenario, too few samples, an unknown draw mode or an export that did not use the
+   synthetic frame, so a broken benchmark cannot pass. `node --test .github/scripts/perf-guard.test.cjs` covers it and
+   runs in CI.
+
+| Limit in `performance.yml` | Value | Compared with | Reference |
+| --- | --- | --- | --- |
+| `PERF_OVERLAY_FULL_WARM_P95_MS` | 300 ms | Warm update + draw p95 of each scenario, full redraw | 23 to 33 ms |
+| `PERF_OVERLAY_DAMAGE_WARM_P95_MS` | 60 ms | The same with `DRAW_MODE=damage` | 0.5 to 5.8 ms |
+| `PERF_OVERLAY_FIRST_DRAW_MAX_MS` | 3000 ms | Slowest first draw of each scenario over the 5 fresh processes, view setup included | 155 to 215 ms |
+| `PERF_EXPORT_P95_MS` | 5000 ms | Synthetic render + encode p95 | 320 to 365 ms |
+
+The reference column is one loaded Apple M2 Max (Mac14,6, macOS 26.6) at revision `4c12eb0`, with a debug build for the
+export (`swift test`), not a runner. The limits are about ten times that because a shared runner is noisy and the job
+must catch an order-of-magnitude regression, not drift. Tighten them from the uploaded summaries once enough scheduled
+runs show how much the runner varies.
+
+To rehearse it locally, take the same measurements and point the guard at them:
+
+```sh
+ROUNDS=5 Scripts/benchmark-overlay.sh current                 # prints its .build/benchmark/current-… directory
+ROUNDS=5 DRAW_MODE=damage Scripts/benchmark-overlay.sh current
+GLINT_EXPORT_BENCHMARK=1 GLINT_EXPORT_BENCHMARK_OUTPUT="$PWD/.build/export-summary.json" \
+  Scripts/swiftw.sh test --no-parallel --filter ExportTimingTests
+PERF_OVERLAY_FULL_WARM_P95_MS=300 PERF_OVERLAY_DAMAGE_WARM_P95_MS=60 \
+PERF_OVERLAY_FIRST_DRAW_MAX_MS=3000 PERF_EXPORT_P95_MS=5000 \
+  node .github/scripts/perf-guard.cjs --overlay full=<full summary.json> --overlay damage=<damage summary.json> \
+    --export .build/export-summary.json
+```
+
+### Profiling the editor render
+
+Every preview, copy and export of a capture renders it again, so the editor keeps what a change of look doesn't
+touch: `RenderCache` holds the capture's sRGB copy and the capture with its annotations burned in, and
+`ImageFileCache` holds decoded background, wallpaper and watermark images until their files change. A bounded,
+permission-free CPU comparison also works with Command Line Tools:
+
+```sh
+Scripts/benchmark-editor-render.sh compare origin/main  # interleaved: that revision's GlintCore vs. the working tree
+Scripts/benchmark-editor-render.sh baseline HEAD        # one side only, from immutable git sources
+Scripts/benchmark-editor-render.sh current              # one side only, a snapshot of the working tree
+```
+
+The `swiftc -O` harness compiles each variant's `Sources/GlintCore` with `Scripts/EditorRenderBenchmark.swift` into one
+module and runs every scenario in a fresh process on a synthetic capture that is never shown (`SIZE`, default
+`5120x2880`; `SOURCE=p3|srgb`, default `p3`): a padding drag with 0, 12 or 40 annotations, a shadow drag and an
+annotation drag with 12, a padding drag with a magnifier among the annotations (its lens snapshot is never cached, so
+that case always bakes again), a cycle through every background kind including the desktop wallpaper, a
+full-resolution export right after a preview, and a `stages` run that times conversion, annotation baking,
+composition, file decoding and stand-ins for the thumbnail and the present step separately. `ROUNDS=1..30`
+(default 5) and `FRAMES=2..500` (default 24) bound the run; the first frame of each process is reported apart from
+the warm ones, with peak memory. Each run keeps a manifest (host, toolchain, load average before and after, source
+hashes), the raw `samples.jsonl` and a percentile `summary.json` under `.build/benchmark/editor-render-*`. The numbers
+are offscreen CPU time and memory on one host, **not** main-thread stalls, frame pacing, window-server presentation
+or input latency. Run comparisons with other builds and heavy background work stopped, and check the live editor by
+hand.
 
 ## Command Line Tools only
 
@@ -291,18 +589,26 @@ The baseline accepts axis-aligned contrast runs of at least 48 sample pixels wit
 
 An optimized local run on 2026-10-22 measured 0.30–0.36 ms for the first detector invocation per fixture and 0.30–0.32 ms warm medians (25 iterations). These timings exclude screen acquisition, downsampling and overlay rendering; they are **not** first-capture or pointer-responsiveness measurements. Aggregate precision is 8/68 (11.8%) and recall 8/16 (50%) on this deliberately mixed set. Real desktop accuracy is unmeasured. Raising confidence from these pixel runs alone cannot distinguish decoration from a meaningful boundary; low-contrast/small targets are missed, and moving content changes candidates between snapshots. **Content detection remains disabled**, with no target-choice UI.
 
-Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences. Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
+Before enabling a content mode, improve and measure the detector against representative images (including texture, text, low contrast and motion), define supported edge classes and acceptance thresholds, and add asynchronous cancellation/stale-result tests. Analysis must use an in-memory ScreenCaptureKit snapshot with `allowScreencaptureFallback = false`, excluding Glint's windows and requiring the existing Screen Recording grant. Never route analysis through the temporary-PNG fallback, history, export or clipboard. Snapshot acquisition must start only for an explicitly requested capture, not at launch or when opening Preferences (this is about pixels: ScreenCaptureKit's shareable content, which holds only display, application and window metadata, is kept ready ahead of a capture, see the signposts section). Freeze accepted targets for the drag, release buffers on completion/cancellation, and report permission/detection failure while retaining window/free selection. Permission-denial/cancellation integration checks remain a gate for this unshipped phase.
 
 ### Interactive release checks
 
-After `make test` and `make app`, check the same selection through area, area-to-clipboard, OCR-area and timed-area capture. Check live menu/Preferences synchronization, restart persistence and reset. Verify Command-click, including a first click on a secondary display, reaches the non-activating panel without moving it; starting a selection while the hotkey's Command is still held settles to the saved setting once released; stationary Command press/release updates the preview; Shift makes a square in each quadrant; Shift-arrow nudges by 10; and Space/Return/Esc/right-click keep their existing behavior. Compare preview and output at partially occluded edges, with no nearby windows, at display boundaries, and across negative-coordinate/mixed-Retina display arrangements.
+After `make test` and `make app`, check the same selection through area, area-to-clipboard, OCR-area and timed-area capture. Check live menu/Preferences synchronization, restart persistence and reset. Verify Command-click, including a first click on a secondary display, reaches the non-activating panel without moving it; starting a selection while the hotkey's Command is still held settles to the saved setting once released; stationary Command press/release updates the preview; Shift makes a square in each quadrant; Shift-arrow nudges by 10 (the selection during a drag, otherwise the pointer); Space before a drag still switches area/window; and Return/Esc/right-click keep their existing behavior. Compare preview and output at partially occluded edges, with no nearby windows, at display boundaries, and across negative-coordinate/mixed-Retina display arrangements.
+
+Check the selection overlay's transitions live, with at least two displays of different scales, and record what could not be exercised as unverified:
+
+- **Cursor.** The crosshair shows on every display's panel, including a panel that is not key (for example a secondary display while another is key) and while Glint is not the active app, after switching area/window mode, and when the pointer moves from one display to another; the arrow returns when the selection ends. Cursor rects only apply to the key window and AppKit does not support cursor updates for an always-active tracking area, so the panels also set the crosshair from the enter and move events; that this holds for a non-key panel while Glint is inactive has not been observed, so check it first.
+- **Hold Space during a drag.** The whole rectangle follows the pointer without resizing, stops at the display edge and comes back with the pointer, releasing Space resumes resizing without a jump, a held (repeating) Space does not switch mode, and releasing the mouse while Space is held captures the moved rectangle. Compare the captured pixels with the preview on the 1x and the 2x display. Two known limits to confirm rather than assume fixed: if Command is pressed while Space is held, AppKit may withhold the Space key-up, so release Space first (otherwise the move lasts until Space is pressed and released again or the mouse is released); and a Shift square held back by a display edge can resize abruptly when resizing resumes after the move, as it already does after an arrow nudge.
+- **Arrow nudge, then mouse.** With and without a drag, nudge and then move the mouse at once: the pointer and rectangle continue from the nudged position, with no stall or lag from event suppression after the pointer warp. Change the pointer's event suppression only if a focused reproduction shows it is needed.
+- **Space and display changes.** With the overlay open, switch Spaces (Control-arrow, Mission Control) and connect, disconnect or rearrange a display: the overlay closes without capturing, no panel stays on screen, the arrow cursor returns, and the next capture works. Try it while dragging, while Space is held and during the freeze.
+- **Skew.** On two displays, compare the `PanelCreation` and `FirstDraw` signposts of one overlay, as described above, and look for panels that appear visibly late.
 
 Profile both the first overlay and a warm overlay with snapping off/on. Record candidate preparation separately from input handling and drawing; synthetic geometry timings alone cannot establish that first-load lag ([#42](https://github.com/MrAshRhodes/glint/issues/42)) is unchanged. Do not enumerate windows, capture pixels or run a detector per pointer event.
 
 ## Capture focus and self-capture checks
 
 After changing screenshot acquisition or selection, run the focused capture and pipeline tests with
-`Scripts/swiftw.sh test --no-parallel --filter 'WindowEnumeratorTests|ImageGrabberTests|SelectionOverlayTests|SelectionSessionTests|CaptureGeometryTests|ScreenCapturerTests|CaptureWindowLifecycleTests|CapturePipelineTests'`
+`Scripts/swiftw.sh test --no-parallel --filter 'WindowEnumeratorTests|ImageGrabberTests|SelectionOverlayTests|SelectionSessionTests|SnappingSelectionTests|CaptureGeometryTests|ScreenCapturerTests|CaptureWindowLifecycleTests|CapturePipelineTests'`
 and `make build`. Build the native app with `make app CONFIG=debug` for the checks below. Synthetic
 image tests establish pixel routing and lifecycle behavior, not another app's actual focus behavior.
 
@@ -313,7 +619,7 @@ image tests establish pixel routing and lifecycle behavior, not another app's ac
 | Ordinary windows | Check independent-window capture, transparency, the shadow option, cursor setting, clipboard-only output and editor output. |
 | Window timing | A window pick (and a timed window grab) does not wait for the overlay: `CaptureOptions.windowSettleDelay` defaults to 0, the window list read by the freeze is reused while the window's size still matches, and one fresh lookup covers a window that is missing, was resized, or follows a real `windowSettleDelay` wait. Spot-check ten apps (for example Finder, Safari, Terminal, Notes, System Settings, Xcode, a Chromium app, a window with a sheet or popover, a full-screen app and a menu-bar utility): compare each capture with the frozen preview for title-bar active state, focus rings, shadow and corners. Also pick a window and close, move or resize it right after the click, and change displays before the click. Any difference means setting `windowSettleDelay` back to `settleDelay`. Live area grabs (timed area) still wait only what is left of `settleDelay` since the overlay closed. |
 | Timer and entry points | Select an area, reopen a popup during the countdown, and confirm the final image uses the new state. Clicking the menu bar or confirming a URL can dismiss popups before capture starts; preserve URL consent and document this limitation. |
-| Displays and cleanup | Exercise negative display origins, mixed 1x/2x scales, secondary-display selection, Space/Return/Esc, modifiers and snapping. Repeat success, cancellation, denied permission and capture errors; ensure no late panels or retained snapshot buffers. |
+| Displays and cleanup | Exercise negative display origins, mixed 1x/2x scales, secondary-display selection, Space (including holding it during a drag)/Return/Esc, arrow nudging followed by mouse motion, modifiers and snapping. Switch Spaces and change the display layout while selecting. Repeat success, cancellation, denied permission and capture errors; ensure no late panels, observers or retained snapshot buffers, and that the arrow cursor is restored. |
 
 Use optimized cold/warm runs and the overlay signposts described above to compare snapshot acquisition
 and first-presentation costs separately. Do not treat drawing CPU measurements as end-to-end latency.
@@ -423,7 +729,7 @@ Every change to `main` needs an issue and a pull request, including documentatio
 1. Create or choose an issue in `MrAshRhodes/glint` that describes the change.
 2. Create a focused branch from `main`, for example `feat/123-short-description`.
 3. Open a pull request to `main` and put `Fixes #123` in its description, outside comments and code blocks. `Closes` and `Resolves` also work, as do same-repository issue URLs. A PR number, nonexistent issue or issue in another repository does not count. Existing closed issues are allowed for follow-up work.
-4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy and `node --test .github/scripts/changelog.test.cjs` when changing the changelog tooling (Node.js 20+).
+4. Add or update tests for behavior changes. Run `make test` and `make app`; run `node --test .github/scripts/issue-link.test.cjs` when changing the issue-link policy, `node --test .github/scripts/changelog.test.cjs` when changing the changelog tooling and `node --test Scripts/capture-latency.test.cjs` when changing the hotkey latency report (Node.js 20+).
 5. Record notable user-visible changes under Unreleased in the [changelog](CHANGELOG.md), grouped as Added, Changed, Deprecated, Removed, Fixed, or Security. Call out breaking changes and any action users need to take. These entries become the release notes, and CI fails if the changelog is malformed, for example when a `[#123]` reference has no link definition at the bottom of the file.
 6. Resolve review conversations, bring the branch up to date and wait for the required **Build and test** and **Issue link** checks before merging.
 

@@ -17,34 +17,87 @@ private func pixelSizeAndDensity(of data: Data) throws -> (width: Int, height: I
             try #require(properties[kCGImagePropertyDPIWidth] as? Double))
 }
 
+/// A value guarded by a lock, for test doubles the pipeline calls from background threads.
+final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) { stored = value }
+
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+
+    @discardableResult
+    func withValue<Result>(_ body: (inout Value) -> Result) -> Result { lock.withLock { body(&stored) } }
+}
+
+typealias RecordedWrite = (url: URL, format: ExportFormat, scale: ExportScale, backingScale: CGFloat)
+
+/// Keeps the Edit action of the thumbnail the pipeline offers, which a test presses instead of clicking.
+@MainActor
+private final class EditActionQuickAccess: QuickAccessPresenting {
+    private(set) var edit: (() -> Void)?
+
+    func thumbnailPixelSide(for displayID: CGDirectDisplayID?) -> Int { 128 }
+
+    func show(_ item: QuickAccessItem) { edit = item.onEdit }
+
+    func fileSaved(_ url: URL, for id: UUID) {}
+}
+
 @MainActor
 final class CaptureFixture {
+    private struct Failures { var write = false, raw = false, render = false }
+
     let suite = "glint.pipeline.tests.\(UUID().uuidString)"
     let directory: URL
     let preferences: AppPreferences
     let presets: PresetStore
     let image: CGImage
-    var writes: [(url: URL, format: ExportFormat, scale: ExportScale, backingScale: CGFloat)] = []
+    /// Written and rendered on background threads, so they sit behind locks.
+    private let writeLog = LockedValue<[RecordedWrite]>([])
+    private let renderLog = LockedValue<[CGImage]>([])
+    private let failures = LockedValue(Failures())
+    /// Whether each render ran on the main thread.
+    let renderedOnMain = LockedValue<[Bool]>([])
+    /// Runs on the writing thread before each file is written, so a test can hold the disk.
+    let beforeWrite = LockedValue<(@Sendable (URL) -> Void)?>(nil)
+    /// Runs on the rendering thread before each render.
+    let beforeRender = LockedValue<(@Sendable () -> Void)?>(nil)
+    var writes: [RecordedWrite] { writeLog.value }
+    var renderedImages: [CGImage] { renderLog.value }
+    var failWrite: Bool {
+        get { failures.value.write }
+        set { failures.withValue { $0.write = newValue } }
+    }
+    var failRaw: Bool {
+        get { failures.value.raw }
+        set { failures.withValue { $0.raw = newValue } }
+    }
+    var failRender: Bool {
+        get { failures.value.render }
+        set { failures.withValue { $0.render = newValue } }
+    }
     var notifications: [(title: String, body: String, url: URL?)] = []
     var rejections = 0
     var recent: [URL] = []
     var copies = 0
+    /// Counts every change of the clipboard, so a test can also stand in for another app using it.
+    var clipboardChanges = 0
     var copiedImage: CGImage?
     var copiedScales: (scale: ExportScale, backingScale: CGFloat)?
     var copiedTexts: [String] = []
     var sounds = 0
     var wallpaper: Result<CGImage, DesktopWallpaperError> = .failure(.unavailable)
     var wallpaperReads = 0
-    var failWrite = false
-    var failRaw = false
     var copySucceeds = true
     var failRecognition = false
     var failBake = false
-    var failRender = false
     var lines: [RecognizedLine] = []
     var recognizedImages: [CGImage] = []
     var bakedImages: [CGImage] = []
-    var renderedImages: [CGImage] = []
     var retryRequests: [(title: String, message: String)] = []
     var retry: () -> Bool = { false }
     var scrolling: (any ScrollingCapture)?
@@ -74,20 +127,27 @@ final class CaptureFixture {
 
     func pipeline(configure: (inout CapturePipeline.Services) -> Void = { _ in }) -> CapturePipeline {
         var services = CapturePipeline.Services()
-        services.write = { [self] image, url, format, scale, backingScale in
-            writes.append((url, format, scale, backingScale))
-            if failWrite || failRaw && url.deletingLastPathComponent().lastPathComponent == "Raw" {
+        let writeLog = writeLog, renderLog = renderLog, failures = failures
+        let renderedOnMain = renderedOnMain, beforeWrite = beforeWrite, beforeRender = beforeRender
+        services.write = { image, url, format, scale, backingScale in
+            writeLog.withValue { $0.append((url, format, scale, backingScale)) }
+            beforeWrite.value?(url)
+            let flags = failures.value
+            if flags.write || flags.raw && url.deletingLastPathComponent().lastPathComponent == "Raw" {
                 throw TestFailure.write
             }
-            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale)
+            return try Exporter.write(image, to: url, format: format, scale: scale, backingScale: backingScale,
+                                      replacing: false)
         }
         services.copy = { [self] image, scale, backingScale in
             copies += 1
+            clipboardChanges += 1
             copiedImage = image
             copiedScales = (scale, backingScale)
             return copySucceeds
         }
-        services.copyText = { [self] in copiedTexts.append($0) }
+        services.copyText = { [self] in copiedTexts.append($0); clipboardChanges += 1 }
+        services.clipboardChangeCount = { [self] in clipboardChanges }
         services.wallpaper = { [self] in wallpaperReads += 1; return wallpaper }
         services.recognize = { [self] image, _ in
             recognizedImages.append(image)
@@ -98,9 +158,11 @@ final class CaptureFixture {
             bakedImages.append(image)
             return failBake ? nil : AnnotationRenderer.bake(source: image, annotations: annotations)
         }
-        services.render = { [self] image, settings, backingScale, wallpaper in
-            renderedImages.append(image)
-            if failRender { throw RenderError.annotationsNotApplied }
+        services.render = { image, settings, backingScale, wallpaper in
+            renderLog.withValue { $0.append(image) }
+            renderedOnMain.withValue { $0.append(Thread.isMainThread) }
+            beforeRender.value?()
+            if failures.value.render { throw RenderError.annotationsNotApplied }
             return try Compositor.render(image: image, settings: settings, backingScale: backingScale, wallpaper: wallpaper)
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
@@ -119,8 +181,16 @@ final class CaptureFixture {
     }
 
     func run(clipboardOnly: Bool = false, saveRaw: Bool = false) async {
-        await pipeline().handle(image: image, scale: 2, source: "test", rawURL: nil,
-                                saveRaw: saveRaw, clipboardOnly: clipboardOnly)
+        let pipeline = pipeline()
+        await pipeline.handle(image: image, scale: 2, source: "test", rawURL: nil,
+                              saveRaw: saveRaw, clipboardOnly: clipboardOnly)
+        await settle(pipeline)
+    }
+
+    /// Waits for the writes a capture queued in the background.
+    func settle(_ pipeline: CapturePipeline) async {
+        let idle = await pipeline.waitForRetention(timeout: .seconds(60))
+        #expect(idle, "Queued writes did not finish")
     }
 
     func cleanUp() {
@@ -133,10 +203,16 @@ final class CaptureFixture {
 @MainActor
 private final class CaptureTestWindow: NSWindow {
     var restorationCount = 0
+    var hideCount = 0
 
     override func orderFront(_ sender: Any?) {
         restorationCount += 1
         super.orderFront(sender)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        hideCount += 1
+        super.orderOut(sender)
     }
 }
 
@@ -444,8 +520,85 @@ struct CaptureWindowLifecycleTests {
         #expect(editor.restorationCount == (presentedDuringSelection ? 1 : 0))
     }
 
-    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast, .timer(3)])
-    func capturesWithoutAFrozenOverlayHideUpFront(mode: CapturePipeline.Mode) async throws {
+    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast], [0, 1, 2, 3, 4, 5])
+    func noninteractiveCapturesNeverReorderExistingWindows(mode: CapturePipeline.Mode, outcome: Int) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.saveOutput = false
+        let editor = window(); defer { editor.close() }
+        let settings = window(); defer { settings.close() }
+        let hidden = window(); defer { hidden.close() }
+        hidden.orderOut(nil)
+        hidden.hideCount = 0
+        let visible: [NSWindow] = [settings, editor]
+        let initialOrder = NSApp.orderedWindows.filter { visible.contains($0) }
+        let initialKeyWindow = NSApp.keyWindow
+        var permissionPrompts = 0
+        var stalePresentations = 0
+        ScreenCapturer.shared.onSelectionPresented = { stalePresentations += 1 }
+        func checkWindows() {
+            #expect(visible.allSatisfy { $0.isVisible })
+            #expect(!hidden.isVisible)
+            #expect(NSApp.orderedWindows.filter { visible.contains($0) } == initialOrder)
+            #expect(NSApp.keyWindow === initialKeyWindow)
+            #expect([editor, settings, hidden].allSatisfy { $0.hideCount == 0 && $0.restorationCount == 0 })
+        }
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [settings, editor, hidden] }
+            $0.permissionDenied = { permissionPrompts += 1 }
+            $0.capture = { capturer, selectedMode, _ in
+                #expect(selectedMode == mode)
+                #expect(capturer.options.excludeOwnWindows)
+                #expect(capturer.onSelectionPresented == nil)
+                checkWindows()
+                switch outcome {
+                case 1: throw CaptureError.failed("Synthetic acquisition failure")
+                case 2: throw CaptureError.permissionDenied
+                case 3: throw CancellationError()
+                case 4: throw CaptureError.cancelled
+                case 5: throw CaptureError.noLastArea
+                default:
+                    return CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                         rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                         kind: mode == .fullscreen ? .fullscreen : .lastArea, windowInfo: nil)
+                }
+            }
+        }
+        let task = try #require(pipeline.start(mode))
+        checkWindows()
+        await task.value
+        checkWindows()
+        #expect(stalePresentations == 0 && ScreenCapturer.shared.onSelectionPresented == nil)
+        #expect(!pipeline.isBusy)
+        #expect(permissionPrompts == (outcome == 2 ? 1 : 0))
+        #expect(f.notifications.filter { $0.title == "Capture failed" }.count == ([1, 5].contains(outcome) ? 1 : 0))
+    }
+
+    @Test(arguments: [CapturePipeline.Mode.fullscreen, .repeatLast])
+    func cancellingNoninteractiveCaptureDiscardsLatePixelsWithoutReorderingWindows(mode: CapturePipeline.Mode) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        let editor = window(); defer { editor.close() }
+        var continuation: CheckedContinuation<CaptureResult, Never>?
+        let pipeline = f.pipeline {
+            $0.captureWindows = { [editor] }
+            $0.capture = { _, _, _ in
+                return await withCheckedContinuation { continuation = $0 }
+            }
+        }
+        let task = try #require(pipeline.start(mode))
+        for _ in 0..<100 where continuation == nil { await Task.yield() }
+        let pending = try #require(continuation)
+        #expect(editor.isVisible && editor.hideCount == 0)
+        task.cancel()
+        pending.resume(returning: CaptureResult(image: f.image, scale: 1, displayID: 1,
+                                               rect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                               kind: .fullscreen, windowInfo: nil))
+        await task.value
+        #expect(editor.isVisible && editor.hideCount == 0 && editor.restorationCount == 0)
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
+    }
+
+    @Test func timedCaptureStillHidesWindowsUpFront() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         let editor = window(); defer { editor.close() }
         var stalePresentations = 0
@@ -459,7 +612,7 @@ struct CaptureWindowLifecycleTests {
                 throw CaptureError.cancelled
             }
         }
-        try await #require(pipeline.start(mode)).value
+        try await #require(pipeline.start(.timer(3))).value
         #expect(hooks == [false] && stalePresentations == 0)
         #expect(editor.isVisible && editor.restorationCount == 1)
         #expect(ScreenCapturer.shared.onSelectionPresented == nil)
@@ -615,9 +768,11 @@ struct CapturePipelineTests {
         f.preferences.copyToClipboardAfterCapture = true
         let pasteboard = NSPasteboard(name: .init("glint.pipeline.density.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
-        await f.pipeline {
+        let pipeline = f.pipeline {
             $0.copy = { Exporter.copyToClipboard($0, scale: $1, backingScale: $2, pasteboard: pasteboard) }
-        }.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false, clipboardOnly: false)
+        await f.settle(pipeline)
 
         let savedURL = try #require(f.recent.first)
         let file = try pixelSizeAndDensity(of: Data(contentsOf: savedURL))
@@ -718,7 +873,8 @@ struct CapturePipelineTests {
         f.failRaw = true
         await f.run(saveRaw: true)
         #expect(f.writes.count == 2 && f.recent.count == 1)
-        #expect(f.notifications.map(\.title) == ["Raw screenshot not saved", "Screenshot saved"])
+        // The raw file and the output are written on separate queues, so their reports can arrive in either order.
+        #expect(f.notifications.map(\.title).sorted() == ["Raw screenshot not saved", "Screenshot saved"])
     }
 
     @Test func disabledHistoryUsesManualDirectoryAndSkipsRawSave() async throws {
@@ -864,7 +1020,8 @@ struct CapturePipelineTests {
         f.failBake = true
         f.failRender = true
         f.retry = {
-            #expect(f.writes.count == 1 && f.copies == 0 && f.sounds == 1)
+            // The raw file is written in the background, so it may not have been recorded yet; it is never repeated.
+            #expect(f.writes.count <= 1 && f.copies == 0 && f.sounds == 1)
             if f.retryRequests.count == 2 { f.failBake = false }
             if f.retryRequests.count == 4 { f.failRender = false }
             return f.retryRequests.count <= 4
@@ -873,8 +1030,9 @@ struct CapturePipelineTests {
         #expect(f.retryRequests.count == 4 && f.sounds == 1)
         #expect(f.recognizedImages.count == 1 && f.bakedImages.count == 3 && f.renderedImages.count == 3)
         #expect(f.writes.count == 2 && f.recent.count == 1)
-        #expect(f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }.count == 1)
-        let rawURL = try #require(f.writes.first?.url)
+        let rawWrites = f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }
+        #expect(rawWrites.count == 1)
+        let rawURL = try #require(rawWrites.first?.url)
         let savedURL = try #require(f.recent.first)
         let raw = try #require(GlintImageIO.load(url: rawURL))
         let saved = try #require(GlintImageIO.load(url: savedURL))
@@ -921,6 +1079,184 @@ struct CapturePipelineTests {
         #expect(f.renderedImages.allSatisfy { $0 === f.image })
         #expect(f.writes.isEmpty && f.copies == 0 && f.recent.isEmpty && f.sounds == 1)
     }
+
+    @Test(arguments: [true, false])
+    func theEditorIsToldWhetherTheCaptureWasAlreadyRedacted(autoRedact: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = autoRedact
+        f.preferences.openEditorAfterCapture = true
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var opened: [(editor: EditorWindowController, holdsBack: Bool, showsCapture: Bool, analysis: RedactionAnalysis)] = []
+        // Looks at the editor as it is presented, before anything it starts asynchronously has run.
+        let pipeline = f.pipeline {
+            $0.presentEditor = {
+                opened.append(($0, $0.model.awaitsRedaction, $0.model.provisional != nil, $0.model.redactionAnalysis))
+            }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+
+        let first = try #require(opened.first)
+        defer { first.editor.window?.close() }
+        #expect(opened.count == 1)
+        #expect(!first.holdsBack, "The pipeline already redacted the capture, so the editor has nothing to wait for")
+        #expect(first.showsCapture)
+        let pixels = try #require(PixelBuffer(first.editor.model.image))
+        let expected: UInt8 = autoRedact ? 0 : 255
+        #expect(pixels.pixel(50, 20) == (expected, expected, expected, 255))
+        #expect(f.recognizedImages.count == (autoRedact ? 1 : 0))
+
+        let analysis: RedactionAnalysis = autoRedact ? foundEmail(f) : .notRequested
+        #expect(first.analysis == analysis, "The editor starts from what the pipeline found")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(first.editor.model.redactionAnalysis == analysis, "It never started a pass of its own")
+        #expect(!first.editor.model.isBusy)
+    }
+
+    @Test func editingADirectExportDoesNotReadItsCaptureAgain() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.defaults.set(true, forKey: ShellKey.quickAccess)
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var editors: [EditorWindowController] = []
+        let quickAccess = EditActionQuickAccess()
+        let pipeline = f.pipeline {
+            $0.makeQuickAccess = { quickAccess }
+            $0.presentEditor = { editors.append($0) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await f.settle(pipeline)
+        #expect(f.writes.count == 1 && editors.isEmpty)
+        #expect(f.recognizedImages.count == 1)
+
+        let pressEdit = try #require(quickAccess.edit)
+        pressEdit()
+        let editor = try #require(editors.first)
+        defer { editor.window?.close() }
+        #expect(!editor.model.awaitsRedaction, "The exported capture was redacted, so the editor shows it at once")
+        #expect(editor.model.redactionAnalysis == foundEmail(f))
+        #expect(try #require(PixelBuffer(editor.model.image)).pixel(50, 20) == (0, 0, 0, 255))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(editor.model.redactionAnalysis == foundEmail(f) && !editor.model.isBusy)
+        #expect(f.recognizedImages.count == 1, "Neither the pipeline nor the editor read the capture a second time")
+    }
+
+    @Test func anEditorWithOtherSettingsThanTheExportReadsTheCaptureItself() async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.defaults.set(true, forKey: ShellKey.quickAccess)
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var opened: [(editor: EditorWindowController, holdsBack: Bool, analysis: RedactionAnalysis)] = []
+        let quickAccess = EditActionQuickAccess()
+        let pipeline = f.pipeline {
+            $0.makeQuickAccess = { quickAccess }
+            $0.presentEditor = { opened.append(($0, $0.model.awaitsRedaction, $0.model.redactionAnalysis)) }
+        }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: false)
+        await f.settle(pipeline)
+
+        f.preferences.autoRedactOptions = .all
+        let pressEdit = try #require(quickAccess.edit)
+        pressEdit()
+        let first = try #require(opened.first)
+        defer { first.editor.window?.close() }
+        #expect(first.holdsBack && first.analysis == .pending, "What was found with other categories is not an answer")
+    }
+
+    @Test(arguments: [false, true])
+    func theRawFileIsTheCaptureAsTakenBeforeAnyRedaction(opensEditor: Bool) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.saveRaw = true
+        f.preferences.openEditorAfterCapture = opensEditor
+        f.lines = [RecognizedLine(text: "test@example.com", box: CGRect(x: 10, y: 10, width: 80, height: 20))]
+        var editors: [EditorWindowController] = []
+        let pipeline = f.pipeline { $0.presentEditor = { editors.append($0) } }
+        await pipeline.handle(image: f.image, scale: 2, source: "test", rawURL: nil, saveRaw: true)
+        // The raw file is written off the main thread, alongside the redaction, so wait for it.
+        await f.settle(pipeline)
+
+        let rawWrite = try #require(f.writes.first { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" })
+        let raw = try #require(GlintImageIO.load(url: rawWrite.url))
+        #expect(try #require(PixelBuffer(raw)).pixel(50, 20) == (255, 255, 255, 255), "It holds the original pixels")
+
+        if opensEditor {
+            let editor = try #require(editors.first)
+            defer { editor.window?.close() }
+            #expect(editor.model.rawURL == rawWrite.url, "The editor is told where the unredacted original is")
+            #expect(try #require(PixelBuffer(editor.model.image)).pixel(50, 20) == (0, 0, 0, 255))
+        } else {
+            let exportedURL = try #require(f.recent.first)
+            let exported = try #require(GlintImageIO.load(url: exportedURL))
+            #expect(try #require(PixelBuffer(exported)).pixel(50, 20) == (0, 0, 0, 255), "The export is redacted")
+        }
+        #expect(f.writes.filter { $0.url.deletingLastPathComponent().lastPathComponent == "Raw" }.count == 1)
+    }
+
+    // MARK: One policy at every scale
+
+    /// What a pass finds in the fixture's one address with the fixture's settings.
+    private func foundEmail(_ f: CaptureFixture) -> RedactionAnalysis {
+        .matches(.init(count: 1, byCategory: [.email: 1]), .init(detector: f.preferences.autoRedactOptions))
+    }
+
+    /// A white capture of 100 × 40 points taken at `scale`.
+    private func capture(scale: CGFloat) throws -> CGImage {
+        let context = try #require(GlintBitmap.makeContext(width: Int(100 * scale), height: Int(40 * scale)))
+        context.setFillColor(RGBAColor.white.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 100 * scale, height: 40 * scale))
+        return try #require(context.makeImage())
+    }
+
+    private func covers(_ annotations: [Annotation]) -> [CGRect] {
+        annotations.compactMap { annotation in
+            guard case .redact(let rect) = annotation.kind else { return nil }
+            return rect
+        }
+    }
+
+    @Test(arguments: [CGFloat(1), 2])
+    func theEditorAndThePipelineCoverTheSameRegionAtEveryScale(scale: CGFloat) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        f.preferences.autoRedact = true
+        f.preferences.openEditorAfterCapture = true
+        let image = try capture(scale: scale)
+        // Text laid out in points: one match in the top-left corner and one running past the right edge, so
+        // both covers are clipped by the image.
+        let lines = [
+            RecognizedLine(text: "test@example.com",
+                           box: CGRect(x: 0, y: 1 * scale, width: 60 * scale, height: 10 * scale)),
+            RecognizedLine(text: "123-45-6789",
+                           box: CGRect(x: 70 * scale, y: 20 * scale, width: 40 * scale, height: 10 * scale)),
+        ]
+        f.lines = lines
+        var baked: [Annotation] = []
+        var editors: [EditorWindowController] = []
+        let pipeline = f.pipeline {
+            $0.bake = { image, annotations in
+                baked = annotations
+                return AnnotationRenderer.bake(source: image, annotations: annotations)
+            }
+            $0.presentEditor = { editors.append($0) }
+        }
+        await pipeline.handle(image: image, scale: scale, source: "test", rawURL: nil, saveRaw: false)
+        let piped = try #require(editors.first)
+        defer { piped.window?.close() }
+
+        let context = EditorContext(image: image, backingScale: scale, rawURL: nil, source: "test")
+        let own = EditorModel(context: context, preferences: f.preferences, presetStore: f.presets,
+                              recognizeText: { _ in lines })
+        defer { own.close() }
+        for _ in 0..<500 where own.awaitsRedaction { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(!own.awaitsRedaction)
+
+        let expected = [CGRect(x: 0, y: 0, width: 63, height: 14), CGRect(x: 67, y: 17, width: 33, height: 16)]
+        let inPoints = covers(baked).map {
+            CGRect(x: $0.minX / scale, y: $0.minY / scale, width: $0.width / scale, height: $0.height / scale)
+        }
+        #expect(inPoints == expected, "The pipeline covers the same logical region at 1× and 2×, up to the edges")
+        #expect(covers(own.annotations) == covers(baked), "The editor's own pass covers exactly what the pipeline did")
+        #expect(own.redactionAnalysis == piped.model.redactionAnalysis, "And finds exactly what the pipeline found")
+    }
 }
 
 @Suite("Scrolling capture in the pipeline")
@@ -950,6 +1286,7 @@ struct ScrollingCapturePipelineTests {
         #expect(pipeline.start(.scrolling) == nil)
         #expect(capture.finishes == 1)
         await task.value
+        await f.settle(pipeline)
 
         #expect(!pipeline.isScrollingCaptureActive && !pipeline.isBusy)
         // Recognition sees the full height, so redaction covers text far below the first screen.

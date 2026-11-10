@@ -98,6 +98,65 @@ struct SelectionOverlayTests {
                 sourceLocation: sourceLocation)
     }
 
+    @Test func dirtyRegionDistinguishesCrosshairCoverageFromItsBoundingBox() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let region = OverlayPerformance.DirtyRegion(
+            rects: [CGRect(x: 20, y: 0, width: 1, height: 100),
+                    CGRect(x: 0, y: 30, width: 100, height: 1)],
+            bounds: bounds, fromAppKit: true)
+        #expect(region.rectCount == 2 && region.fromAppKit)
+        #expect(abs(region.coveredFraction - 0.0199) < 0.000001)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func dirtyRegionClipsAndCountsOverlapsOnlyOnce() {
+        let bounds = CGRect(x: -50, y: 20, width: 100, height: 100)
+        let left = CGRect(x: -100, y: 0, width: 100, height: 200)
+        let top = CGRect(x: -100, y: 70, width: 200, height: 100)
+        let region = OverlayPerformance.DirtyRegion(rects: [left, top, left, .zero, .null],
+                                                   bounds: bounds, fromAppKit: true)
+        #expect(region.rectCount == 3)
+        #expect(region.coveredFraction == 0.75)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func dirtyRegionMergesNestedAndSeparatedSpans() {
+        let region = OverlayPerformance.DirtyRegion(
+            rects: [CGRect(x: 0, y: 0, width: 10, height: 5),
+                    CGRect(x: 0, y: 1, width: 10, height: 1),
+                    CGRect(x: 0, y: 8, width: 10, height: 2)],
+            bounds: CGRect(x: 0, y: 0, width: 10, height: 10), fromAppKit: true)
+        #expect(region.coveredFraction == 0.7)
+        #expect(region.boundingFraction == 1)
+    }
+
+    @Test func emptyDirtyRegionsHaveZeroCoverage() {
+        for bounds in [CGRect.zero, CGRect(x: 0, y: 0, width: 100, height: 100)] {
+            let region = OverlayPerformance.DirtyRegion(
+                rects: [CGRect(x: 200, y: 200, width: 10, height: 10)], bounds: bounds, fromAppKit: true)
+            #expect(region.rectCount == 0)
+            #expect(region.coveredFraction == 0 && region.boundingFraction == 0)
+        }
+    }
+
+    @Test func directDrawMarksTheDirtyRectFallbackRatherThanClaimingAnAppKitRegion() throws {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let overlay = view(session)
+        let bitmap = try Bitmap(size: size, scale: 1)
+        var observed: [OverlayPerformance.DirtyRegion] = []
+        overlay.onDirtyRegion = { observed.append($0) }
+        bitmap.paint(overlay, damage: [NSRect(x: 0, y: 0, width: size.width / 2, height: size.height)])
+        let region = try #require(observed.first)
+        #expect(observed.count == 1)
+        #expect(!region.fromAppKit && region.rectCount == 1)
+        #expect(region.coveredFraction == 0.5 && region.boundingFraction == 0.5)
+        // Observing a draw does not change the pixels.
+        overlay.onDirtyRegion = nil
+        let reference = try Bitmap(size: size, scale: 1)
+        reference.paint(overlay, damage: [NSRect(x: 0, y: 0, width: size.width / 2, height: size.height)])
+        #expect(reference.pixels == bitmap.pixels)
+    }
+
     @Test func movementOnlyInvalidatesTheAffectedDisplayAndChangedAxes() {
         let session = SelectionSession(mode: .area, lastArea: nil)
         session.cursor = CGPoint(x: 100, y: 100)
@@ -323,6 +382,96 @@ struct SelectionOverlayTests {
         overlay.rightMouseDown(with: try mouse(.rightMouseDown, anchor))
     }
 
+    private func overlayWithOwnDisplay() -> (SelectionSession, OverlayView) {
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        session.useDisplays([DisplayInfo(id: 1, frame: CGRect(origin: .zero, size: size), scale: 1,
+                                         name: "Test", isMain: true)])
+        return (session, view(session))
+    }
+
+    /// An event at a global point of the 640 × 480 display the view above covers.
+    private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: point.x, y: size.height - point.y),
+                                        modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                        eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    private func spaceEvent(_ type: NSEvent.EventType, isARepeat: Bool = false) throws -> NSEvent {
+        try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                      context: nil, characters: " ", charactersIgnoringModifiers: " ",
+                                      isARepeat: isARepeat, keyCode: 49))
+    }
+
+    @Test func holdingSpaceDuringADragMovesTheSelectionAndReleasingItResumesResizing() throws {
+        let (session, overlay) = overlayWithOwnDisplay()
+        overlay.mouseDown(with: try mouseEvent(.leftMouseDown, at: CGPoint(x: 100, y: 100)))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 200, y: 160)))
+        #expect(session.selection == CGRect(x: 100, y: 100, width: 100, height: 60))
+
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        // Holding the key sends repeats, which must neither switch the mode nor restart the move.
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .area)
+        #expect(session.selection == CGRect(x: 100, y: 100, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 230, y: 150)))
+        #expect(session.selection == CGRect(x: 130, y: 90, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 700, y: 600)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 100, height: 60))
+
+        overlay.keyUp(with: try spaceEvent(.keyUp))
+        // The pointer is far past the rectangle's corner; the first motion after the release must not jump to it.
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 700, y: 600)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 100, height: 60))
+        overlay.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: CGPoint(x: 690, y: 590)))
+        #expect(session.selection == CGRect(x: 540, y: 420, width: 90, height: 50))
+    }
+
+    @Test func spaceBeforeADragSwitchesModeOncePerPressNotOncePerKeyRepeat() throws {
+        let (session, overlay) = overlayWithOwnDisplay()
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        #expect(session.mode == .window)
+        // Each repeat on its own would switch back and forth, so check after every one.
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .window)
+        overlay.keyDown(with: try spaceEvent(.keyDown, isARepeat: true))
+        #expect(session.mode == .window)
+        overlay.keyUp(with: try spaceEvent(.keyUp))
+        #expect(session.mode == .window)
+        overlay.keyDown(with: try spaceEvent(.keyDown))
+        #expect(session.mode == .area)
+    }
+
+    private func enterExitEvent(_ type: NSEvent.EventType) throws -> NSEvent {
+        try #require(NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                                            windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0,
+                                            userData: nil))
+    }
+
+    @Test func theOverlayShowsTheCrosshairWheneverThePointerEntersOrMovesOverAnyPanel() throws {
+        // The overlay does not retain its session, so keep it alive for the events below.
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        defer { withExtendedLifetime(session) {} }
+        let overlay = view(session)
+        let area = try #require(overlay.trackingAreas.first)
+        // The area asks for cursor updates, which AppKit does not support for an always-active area, and cursor
+        // rects only apply to the key window, so each panel also sets the crosshair from the enter and move events
+        // it does receive.
+        #expect(area.options.isSuperset(of: [.cursorUpdate, .activeAlways, .inVisibleRect, .mouseMoved,
+                                             .mouseEnteredAndExited]))
+
+        NSCursor.arrow.set()
+        overlay.mouseEntered(with: try enterExitEvent(.mouseEntered))
+        #expect(NSCursor.current == NSCursor.crosshair)
+
+        NSCursor.arrow.set()
+        overlay.mouseMoved(with: try mouseEvent(.mouseMoved, at: CGPoint(x: 100, y: 100)))
+        #expect(NSCursor.current == NSCursor.crosshair)
+
+        NSCursor.arrow.set()
+        overlay.cursorUpdate(with: try enterExitEvent(.cursorUpdate))
+        #expect(NSCursor.current == NSCursor.crosshair)
+    }
+
     @Test(arguments: [CGFloat(1), CGFloat(2)])
     func frozenScreenShowsUndimmedInTheSelectionAndUprightUnderTheDim(scale: CGFloat) throws {
         // Red in the top-left 100 × 100 points, blue elsewhere.
@@ -526,5 +675,36 @@ struct SelectionOverlayTests {
 
         panel.revealChrome(reduceMotion: true)
         #expect(chromeLayer.animation(forKey: OverlayPanel.chromeFadeKey) == nil)
+    }
+
+    @Test func warmingUpFillsTheSharedCachesOnceForEachScale() {
+        OverlayView.warmUp(scales: [3])
+        let hints = OverlayView.cachedHintCount
+        let backgrounds = OverlayView.cachedBackgroundCount
+        #expect(hints >= 5, "Four area hints and the window hint")
+        #expect(backgrounds > 0)
+
+        OverlayView.warmUp(scales: [3])
+        #expect(OverlayView.cachedHintCount == hints)
+        #expect(OverlayView.cachedBackgroundCount == backgrounds)
+
+        // The capsule behind a hint is rendered in backing pixels, so another scale needs its own.
+        OverlayView.warmUp(scales: [4])
+        #expect(OverlayView.cachedHintCount == hints)
+        #expect(OverlayView.cachedBackgroundCount != backgrounds)
+    }
+
+    @Test func aFirstFrameAtAWarmedScaleBuildsNoHintText() throws {
+        OverlayView.warmUp(scales: [3])
+        let hints = OverlayView.cachedHintCount
+
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let overlay = view(session, scale: 3)
+        let bitmap = try Bitmap(size: size, scale: 3)
+        bitmap.paint(overlay, damage: overlay.refresh())
+        session.toggleMode()
+        bitmap.paint(overlay, damage: overlay.refresh())
+
+        #expect(OverlayView.cachedHintCount == hints)
     }
 }

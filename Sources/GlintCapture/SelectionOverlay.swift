@@ -14,11 +14,23 @@ final class SelectionSession {
     enum Mode { case area, window }
 
     struct Services {
-        var snapshot: @MainActor (Bool, Set<CGWindowID>) -> SelectionWindowSnapshot = {
-            WindowEnumerator.selectionSnapshot(excludingOwnProcess: $0, excludingWindowIDs: $1)
+        /// The window list is read off the main actor, so the display grab can start at the same time.
+        var snapshot: @MainActor (Bool, Set<CGWindowID>) async -> SelectionWindowSnapshot = { excludesOwn, excluded in
+            await Task.detached(priority: .userInitiated) {
+                WindowEnumerator.selectionSnapshot(excludingOwnProcess: excludesOwn, excludingWindowIDs: excluded)
+            }.value
         }
         var displays: @MainActor () -> [DisplayInfo] = { WindowEnumerator.displays() }
         var present: @MainActor (SelectionSession) -> Void = { $0.presentOverlay() }
+        /// The pointer's real position, which the overlay may not have seen a mouse event for yet.
+        var pointerLocation: @MainActor () -> CGPoint = {
+            CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        }
+        var movePointer: @MainActor (CGPoint) -> Void = { CGWarpMouseCursorPosition($0) }
+        /// Calls the handler when the active Space or the display layout changes, until the returned closure runs.
+        var observeChanges: @MainActor (@escaping @MainActor () -> Void) -> @MainActor () -> Void = {
+            SelectionSession.observeSystemChanges($0)
+        }
     }
 
     var mode: Mode
@@ -29,10 +41,22 @@ final class SelectionSession {
     let snapToEdges: Bool
     var snappingEnabled: Bool { snapToEdges != command }
     var snapGuides: [SnapEdge] { drag?.guides ?? [] }
-    var snappingHint: String {
+    var snappingHint: String { Self.snappingHint(snapToEdges: snapToEdges, command: command) }
+
+    /// What the overlay's hint says about snapping when edge snapping is set to `snapToEdges` and ⌘ is `command`.
+    static func snappingHint(snapToEdges: Bool, command: Bool) -> String {
+        let enabled = snapToEdges != command
         let action = command ? "Release" : "Hold"
-        let nextState = snappingEnabled ? "off" : "on"
-        return "Snap: \(snappingEnabled ? "on" : "off")  ·  \(action) ⌘: \(nextState)"
+        let nextState = enabled ? "off" : "on"
+        return "Snap: \(enabled ? "on" : "off")  ·  \(action) ⌘: \(nextState)"
+    }
+    var hint: String { Self.hint(mode: mode, snappingHint: snappingHint) }
+
+    static func hint(mode: Mode, snappingHint: String) -> String {
+        mode == .area
+            ? "Drag to select  ·  \(snappingHint)  ·  ⇧: square  ·  Space: window  ·  "
+                + "Hold Space while dragging: move  ·  Esc: cancel"
+            : "Click a window  ·  Space: area  ·  Esc: cancel"
     }
 
     private var panels: [OverlayPanel] = []
@@ -50,6 +74,8 @@ final class SelectionSession {
     private var command = false
     private var continuation: CheckedContinuation<SelectionOutcome, Error>?
     private var isRunning = false
+    /// Stops watching for Space and display changes; set while the selection is running.
+    private var stopObserving: (@MainActor () -> Void)?
     private var completionError: Error?
     private var firstDrawInterval: OSSignpostIntervalState?
     private let primaryHeight: CGFloat
@@ -83,6 +109,8 @@ final class SelectionSession {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             isRunning = true
+            // The panels, frozen images and window snapshot belong to the displays and Space they were made for.
+            stopObserving = services.observeChanges { [weak self] in self?.finish(.failure(CaptureError.cancelled)) }
             do {
                 try await prepare()
                 try Task.checkCancellation()
@@ -110,37 +138,66 @@ final class SelectionSession {
         return frozen
     }
 
+    private static func observeSystemChanges(_ handler: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let center = NotificationCenter.default
+        let space = workspace.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
+        }
+        let screens = center.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
+        }
+        return {
+            workspace.removeObserver(space)
+            center.removeObserver(screens)
+        }
+    }
+
     private func prepare() async throws {
         firstDrawInterval = OverlayPerformance.begin("OverlayFirstDraw")
         let setup = OverlayPerformance.begin("OverlaySetup")
         defer { OverlayPerformance.end("OverlaySetup", setup) }
-        let snapshot = OverlayPerformance.measure("WindowEnumeration") {
-            services.snapshot(excludeOwnWindows, excludedWindowIDs)
-        }
-        windows = snapshot.windows
-        displays = services.displays()
+        let displays = services.displays()
         guard !displays.isEmpty else { throw CaptureError.noDisplay }
-        targets = OverlayPerformance.measureCapture("SnapTargets") {
+        // The displays are grabbed off the main actor while the window list is read, the snap targets are worked
+        // out and the overlay's drawing caches are filled: none of them waits for the others.
+        async let frozenDisplays = freezeDisplays(displays)
+        let enumeration = OverlayPerformance.begin("WindowEnumeration")
+        let snapshot = await services.snapshot(excludeOwnWindows, excludedWindowIDs)
+        OverlayPerformance.end("WindowEnumeration", enumeration)
+        let targets = OverlayPerformance.measureCapture("SnapTargets") {
             Dictionary(uniqueKeysWithValues: displays.map {
                 ($0.id, SnapTargets.visibleEdges(in: $0.frame, windows: snapshot.snapWindows))
             })
         }
-        if let freeze {
-            let interval = OverlayPerformance.begin("FreezeCapture")
-            defer { OverlayPerformance.end("FreezeCapture", interval) }
-            let captured = try await freeze(displays)
-            try Task.checkCancellation()
-            if let completionError { throw completionError }
-            guard captured.count == displays.count, displays.allSatisfy({ display in
-                captured.contains { $0.display.id == display.id && $0.display.frame == display.frame }
+        OverlayView.warmUp(scales: Set(displays.map(\.scale)))
+        let grabbed = try await frozenDisplays
+        try Task.checkCancellation()
+        if let completionError { throw completionError }
+        if let grabbed {
+            guard grabbed.count == displays.count, displays.allSatisfy({ display in
+                grabbed.contains { $0.display.id == display.id && $0.display.frame == display.frame }
             }) else {
                 throw CaptureError.failed("Could not freeze every display before selection.")
             }
-            frozen = captured
+            frozen = grabbed
         }
+        self.displays = displays
+        self.targets = targets
+        windows = snapshot.windows
         shift = NSEvent.modifierFlags.contains(.shift)
         command = NSEvent.modifierFlags.contains(.command)
         cursor = CaptureGeometry.appKitToCG(NSEvent.mouseLocation, primaryHeight: primaryHeight)
+    }
+
+    /// The displays as they look now, or nil when this selection is live and freezes nothing.
+    private func freezeDisplays(_ displays: [DisplayInfo]) async throws -> [FrozenDisplay]? {
+        guard let freeze else { return nil }
+        let interval = OverlayPerformance.begin("FreezeCapture")
+        defer { OverlayPerformance.end("FreezeCapture", interval) }
+        return try await freeze(displays)
     }
 
     private func presentOverlay() {
@@ -230,16 +287,43 @@ final class SelectionSession {
         updateHover(); refresh()
     }
 
+    /// Space picks the other mode, except while dragging an area: there it moves the whole rectangle until released.
+    func spaceDown() {
+        if mode == .area, drag != nil {
+            drag?.beginReposition()
+        } else {
+            toggleMode()
+        }
+    }
+
+    func spaceUp() { drag?.endReposition() }
+
     func nudge(dx: CGFloat, dy: CGFloat) {
         if drag != nil {
             drag?.nudge(dx: dx, dy: dy)
             updateSelection()
         } else {
-            cursor.x += dx; cursor.y += dy
-            CGWarpMouseCursorPosition(cursor)
-            updateHover()
+            nudgePointer(dx: dx, dy: dy)
         }
         refresh()
+    }
+
+    /// Moves the real pointer, so the keys and the mouse stay in step. The pointer stays on the displays: a step
+    /// into a gap or past the outer edge stops at the edge of the display it started on.
+    private func nudgePointer(dx: CGFloat, dy: CGFloat) {
+        let current = services.pointerLocation()
+        var target = CGPoint(x: current.x + dx, y: current.y + dy)
+        let frames = displays.map(\.frame)
+        if !frames.contains(where: { $0.contains(target) }),
+           let index = CaptureGeometry.index(containing: current, in: frames) {
+            let frame = frames[index]
+            // The far edges belong to the neighbouring point, so the last position inside is one point short.
+            target = CGPoint(x: min(max(target.x, frame.minX), frame.maxX - 1),
+                             y: min(max(target.y, frame.minY), frame.maxY - 1))
+        }
+        if target != current { services.movePointer(target) }
+        cursor = target
+        updateHover()
     }
 
     func confirm() {
@@ -273,6 +357,8 @@ final class SelectionSession {
     private func finish(_ result: Result<SelectionOutcome, Error>) {
         guard isRunning else { return }
         isRunning = false
+        stopObserving?()
+        stopObserving = nil
         onPresented = nil
         let c = continuation
         continuation = nil
@@ -423,6 +509,7 @@ final class OverlayView: NSView {
     private var detailLayout: TextLayout?
     private var pendingDrawInterval: OSSignpostIntervalState?
     private var hasDrawn = false
+    var onDirtyRegion: ((OverlayPerformance.DirtyRegion) -> Void)?
 
     private static let detailAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
@@ -448,11 +535,14 @@ final class OverlayView: NSView {
     private struct BackgroundKey: Hashable {
         let width: Int
         let height: Int
+        /// The shadow is rendered in backing pixels, so a size alone does not say which image it is.
+        let scale: CGFloat
     }
 
     /// Pre-rendered capsule + shadow per label size in backing pixels, so a redraw is one image blit
-    /// instead of a Gaussian shadow pass. Only a handful of sizes occur (digit counts, hint texts).
-    private var labelBackgrounds: [BackgroundKey: CGImage] = [:]
+    /// instead of a Gaussian shadow pass. Only a handful of sizes occur (digit counts, hint texts). Shared by every
+    /// overlay, so the second capture of a session builds none of them.
+    private static var labelBackgrounds: [BackgroundKey: CGImage] = [:]
 
     private enum Palette {
         static let dim = NSColor.black.withAlphaComponent(0.38).cgColor
@@ -464,14 +554,53 @@ final class OverlayView: NSView {
 
     /// Corner radius of the window-picker highlight, close to the system window corner radius.
     private static let windowCornerRadius: CGFloat = 10
-    private var hintLayouts: [String: TextLayout] = [:]
+    private static var hintLayouts: [String: TextLayout] = [:]
 
-    private func hintLayout(_ text: String) -> TextLayout {
+    private static func hintLayout(_ text: String) -> TextLayout {
         if let cached = hintLayouts[text] { return cached }
-        let layout = TextLayout(text, attributes: Self.hintAttributes)
+        let layout = TextLayout(text, attributes: hintAttributes)
+        if hintLayouts.count >= 32 { hintLayouts.removeAll() }
         hintLayouts[text] = layout
         return layout
     }
+
+    /// Builds what the first overlay would otherwise build while it draws its first frame: the hint texts and their
+    /// capsules at every scale in use, and the text drawing itself, which loads fonts and glyphs on first use.
+    static func warmUp(scales: Set<CGFloat>) {
+        let areaHints = [false, true].flatMap { snapToEdges in
+            [false, true].map {
+                SelectionSession.hint(
+                    mode: .area,
+                    snappingHint: SelectionSession.snappingHint(snapToEdges: snapToEdges, command: $0)
+                )
+            }
+        }
+        let windowHint = SelectionSession.hint(mode: .window, snappingHint: "")
+        let hints = (areaHints + [windowHint]).map(hintLayout)
+        let numbers = TextLayout("0123456789  ×  ,", attributes: detailAttributes)
+        for scale in scales where scale > 0 {
+            for layout in hints {
+                _ = labelBackground(for: Label(layout: layout, origin: .zero, scale: scale).frame, scale: scale)
+            }
+            for layout in [hints[0], numbers] { drawOffscreen(layout, scale: scale) }
+        }
+    }
+
+    private static func drawOffscreen(_ layout: TextLayout, scale: CGFloat) {
+        guard let context = CGContext(data: nil, width: Int(ceil(layout.size.width * scale)),
+                                      height: Int(ceil(layout.size.height * scale)), bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        context.scaleBy(x: scale, y: scale)
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        layout.attributedText.draw(at: .zero)
+    }
+
+    /// How many hint layouts and label backgrounds are kept for every overlay.
+    static var cachedHintCount: Int { hintLayouts.count }
+    static var cachedBackgroundCount: Int { labelBackgrounds.count }
 
     private final class TextLayout {
         let text: String
@@ -533,7 +662,8 @@ final class OverlayView: NSView {
         self.scale = scale
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+                                       options: [.mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect,
+                                                 .mouseEnteredAndExited],
                                        owner: self, userInfo: nil))
     }
 
@@ -542,6 +672,10 @@ final class OverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    // Cursor rects only apply to the key window, and AppKit does not support cursor updates for an always-active
+    // tracking area, so entering or moving over any panel sets the crosshair too.
+    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
+    override func mouseEntered(with e: NSEvent) { NSCursor.crosshair.set() }
 
     // global CG <-> view-local conversion
     private func toCG(_ e: NSEvent) -> CGPoint {
@@ -560,7 +694,11 @@ final class OverlayView: NSView {
 
     // Hotkey chords include ⌘, so a release that happens before this panel is key would otherwise leave the hint stale.
     override func mouseMoved(with e: NSEvent) {
-        OverlayPerformance.measure("MouseMoved") { updateModifiers(e); session.mouseMoved(to: toCG(e)) }
+        OverlayPerformance.measure("MouseMoved") {
+            NSCursor.crosshair.set()
+            updateModifiers(e)
+            session.mouseMoved(to: toCG(e))
+        }
     }
     override func flagsChanged(with e: NSEvent) { updateModifiers(e) }
     override func mouseDown(with e: NSEvent) {
@@ -581,7 +719,7 @@ final class OverlayView: NSView {
         let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
         switch e.keyCode {
         case 53: session.cancel()
-        case 49: session.toggleMode()
+        case 49: if !e.isARepeat { session.spaceDown() }
         case 36, 76: session.confirm()
         case 123: session.nudge(dx: -step, dy: 0)
         case 124: session.nudge(dx: step, dy: 0)
@@ -589,6 +727,11 @@ final class OverlayView: NSView {
         case 126: session.nudge(dx: 0, dy: -step)
         default: break
         }
+    }
+
+    override func keyUp(with e: NSEvent) {
+        updateModifiers(e)
+        if e.keyCode == 49 { session.spaceUp() }
     }
 
     private func makeSnapshot() -> Snapshot {
@@ -629,10 +772,7 @@ final class OverlayView: NSView {
         }
 
         if session.mode == .window || session.selection == nil {
-            let text = session.mode == .area
-                ? "Drag to select  ·  \(session.snappingHint)  ·  ⇧: square  ·  Space: window  ·  Esc: cancel"
-                : "Click a window  ·  Space: area  ·  Esc: cancel"
-            let layout = hintLayout(text)
+            let layout = Self.hintLayout(session.hint)
             snapshot.hint = Label(layout: layout, origin: NSPoint(x: bounds.midX - layout.size.width / 2, y: 36),
                                   scale: scale)
         }
@@ -655,8 +795,8 @@ final class OverlayView: NSView {
         return Label(layout: layout, origin: origin, scale: scale)
     }
 
-    /// Keep damage as separate rectangles: unioning crosshair strips would dirty the entire display.
-    /// AppKit accumulates these regions when several input events arrive before the next draw.
+    /// Submit separate damage rectangles; AppKit can still coalesce them into a larger drawing region.
+    /// Draw signposts report that effective region rather than assuming it matches these requests.
     @discardableResult
     func refresh() -> [NSRect] {
         let next = makeSnapshot()
@@ -754,7 +894,19 @@ final class OverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let name: StaticString = hasDrawn ? "Draw" : "FirstDraw"
-        let interval = OverlayPerformance.begin(name)
+        var region: OverlayPerformance.DirtyRegion?
+        if OverlayPerformance.signposter.isEnabled || onDirtyRegion != nil {
+            var rects: UnsafePointer<NSRect>?
+            var count = 0
+            getRectsBeingDrawn(&rects, count: &count)
+            let fromAppKit = rects != nil && count > 0
+            let drawingRects = fromAppKit
+                ? Array(UnsafeBufferPointer(start: rects, count: count)) : [dirtyRect]
+            let measured = OverlayPerformance.DirtyRegion(rects: drawingRects, bounds: bounds, fromAppKit: fromAppKit)
+            region = measured
+            onDirtyRegion?(measured)
+        }
+        let interval = OverlayPerformance.beginDraw(name, region: region)
         defer {
             OverlayPerformance.end(name, interval)
             OverlayPerformance.end("InvalidationToDraw", pendingDrawInterval)
@@ -828,7 +980,7 @@ final class OverlayView: NSView {
     }
 
     private func paintLabel(_ label: Label, in context: CGContext) {
-        if let background = labelBackground(for: label.frame) {
+        if let background = Self.labelBackground(for: label.frame, scale: scale) {
             let pad = CGFloat(background.width - Int((label.frame.width * scale).rounded())) / 2 / scale
             context.saveGState()
             context.interpolationQuality = .none
@@ -838,8 +990,9 @@ final class OverlayView: NSView {
         label.layout.attributedText.draw(at: label.origin)
     }
 
-    private func labelBackground(for frame: NSRect) -> CGImage? {
-        let key = BackgroundKey(width: Int((frame.width * scale).rounded()), height: Int((frame.height * scale).rounded()))
+    private static func labelBackground(for frame: NSRect, scale: CGFloat) -> CGImage? {
+        let key = BackgroundKey(width: Int((frame.width * scale).rounded()), height: Int((frame.height * scale).rounded()),
+                                scale: scale)
         if let cached = labelBackgrounds[key] { return cached }
         let pad = Int(ceil(HUD.shadowReach * scale))
         guard key.width > 0, key.height > 0,
@@ -864,7 +1017,7 @@ final class OverlayView: NSView {
         bitmap.setLineWidth(hairline)
         bitmap.strokePath()
         guard let image = bitmap.makeImage() else { return nil }
-        if labelBackgrounds.count >= 32 { labelBackgrounds.removeAll() }
+        if labelBackgrounds.count >= 64 { labelBackgrounds.removeAll() }
         labelBackgrounds[key] = image
         return image
     }

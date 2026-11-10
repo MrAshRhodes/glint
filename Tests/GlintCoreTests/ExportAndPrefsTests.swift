@@ -95,6 +95,32 @@ struct ExportAndPrefsTests {
         #expect(GlintImageIO.load(url: url)?.width == 8)
     }
 
+    @Test func writingWithoutReplacingLeavesAnExistingFileAlone() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("taken.png")
+        let original = Data([1, 2, 3])
+        try original.write(to: url)
+
+        #expect(throws: ExportError.fileExists) {
+            try Exporter.write(TestImages.solid(8, 8, .red), to: url, replacing: false)
+        }
+        #expect(try Data(contentsOf: url) == original)
+        // The refused write leaves nothing behind beside the file.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["taken.png"])
+
+        // Save As relies on replacing, which stays the default.
+        try Exporter.write(TestImages.solid(8, 8, .red), to: url)
+        #expect(GlintImageIO.load(url: url)?.width == 8)
+    }
+
+    @Test func writingWithoutReplacingCreatesAFreeName() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("sub/free.png")
+        #expect(try Exporter.write(TestImages.solid(8, 8, .red), to: url, replacing: false) == url)
+        #expect(GlintImageIO.load(url: url)?.width == 8)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path) == ["free.png"])
+    }
+
     @Test func clipboardRoundTrip() throws {
         let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
         #expect(Exporter.copyToClipboard(TestImages.solid(12, 9, .red), pasteboard: pb))
@@ -159,6 +185,31 @@ struct ExportAndPrefsTests {
         #expect(Exporter.copyToClipboard(TestImages.solid(12, 9, .red), pasteboard: pb))
         let pasted = try properties(of: #require(pb.data(forType: .png)))
         #expect(pasted.width == 12 && pasted.height == 9 && abs(pasted.dpiX - 72) < 0.1)
+    }
+
+    /// Pasted pixels keep their colour meaning only with the profile of the saved file. Which profile that is belongs
+    /// to the export colour policy; this guards that the clipboard copy neither drops it nor differs from the file.
+    @Test(arguments: [1, 2] as [CGFloat])
+    func clipboardImagesCarryTheSavedFilesColourProfile(backingScale: CGFloat) throws {
+        let image = TestImages.framed(width: 120, height: 60, margins: EdgeMargins(top: 4, left: 4, bottom: 4, right: 4))
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("glint.test.\(UUID().uuidString)"))
+        defer { pb.releaseGlobally() }
+        #expect(Exporter.copyToClipboard(image, backingScale: backingScale, pasteboard: pb))
+        let savedPNG = try Exporter.write(image, to: dir.appendingPathComponent("saved.png"), backingScale: backingScale)
+        let savedTIFF = try Exporter.write(image, to: dir.appendingPathComponent("saved.tiff"), format: .tiff,
+                                           backingScale: backingScale)
+
+        func profileName(of data: Data) throws -> String? {
+            let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+            let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            return props[kCGImagePropertyProfileName] as? String
+        }
+        for (type, file) in [(NSPasteboard.PasteboardType.png, savedPNG), (.tiff, savedTIFF)] {
+            let pasted = try profileName(of: #require(pb.data(forType: type)))
+            #expect(pasted?.isEmpty == false, "\(type.rawValue) has no colour profile")
+            #expect(pasted == (try profileName(of: Data(contentsOf: file))), "\(type.rawValue) vs file profile")
+        }
     }
 
     @Test func preferencesDefaultsAndRoundTrip() throws {
@@ -354,5 +405,24 @@ struct ExportAndPrefsTests {
         #expect(AppPreferences(defaults: defaults).hotkey(for: .captureArea) == custom)
         #expect(custom.displayString == "⇧⌘A")
         #expect(AppPreferences(defaults: defaults).hotkey(for: .repeatLast) == HotkeyAction.repeatLast.defaultCombo)
+    }
+
+    @Test func hotkeyConflictNamesTheOtherActionUsingACombo() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let p = AppPreferences(defaults: defaults)
+        // Another action's default counts as taken.
+        let clipboard = HotkeyAction.captureAreaToClipboard.defaultCombo
+        #expect(p.hotkeyConflict(for: clipboard, assigning: .captureArea) == .captureAreaToClipboard)
+        // An action never conflicts with its own shortcut.
+        #expect(p.hotkeyConflict(for: HotkeyAction.captureArea.defaultCombo, assigning: .captureArea) == nil)
+        // A stored override counts, and the default it replaced is free again.
+        let custom = KeyCombo(keyCode: 0, modifiers: [.command, .shift])
+        p.setHotkey(custom, for: .captureWindow)
+        #expect(p.hotkeyConflict(for: custom, assigning: .captureArea) == .captureWindow)
+        #expect(p.hotkeyConflict(for: HotkeyAction.captureWindow.defaultCombo, assigning: .captureArea) == nil)
+        // Modifiers are part of the shortcut.
+        #expect(p.hotkeyConflict(for: KeyCombo(keyCode: 0, modifiers: [.command]), assigning: .captureArea) == nil)
     }
 }

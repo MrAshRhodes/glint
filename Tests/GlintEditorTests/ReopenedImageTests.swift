@@ -172,7 +172,7 @@ struct ReopenedImageTests {
         #expect(reopenedScans.count == 1 && reopened.annotations.count == 1)
     }
 
-    @Test func annotationsStillBurnInAndFailClosed() throws {
+    @Test func annotationsStillBurnInAndFailClosed() async throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         f.preferences.closeAfterCopy = false
         f.rememberLook()
@@ -187,7 +187,7 @@ struct ReopenedImageTests {
         controller.onImageShared = { shared.append(($0, $1, $2)) }
         controller.model.updateLive([redaction])
 
-        #expect(controller.copyToClipboard())
+        #expect(await controller.copyToClipboard())
         let copied = try #require(shared.first)
         #expect(shared.count == 1 && copied.kind == .copied && copied.scale == 2 && copied.image === copies[0])
         #expect(copied.image.width == 100 && copied.image.height == 80)
@@ -197,8 +197,8 @@ struct ReopenedImageTests {
         #expect(pixels.pixel(75, 60) == (255, 255, 255, 255))
 
         controller.model.renderer = failingBakeRenderer
-        #expect(!controller.copyToClipboard())
-        #expect(controller.prepareDragFile() == nil)
+        #expect(await controller.copyToClipboard() == false)
+        #expect(try await dragFile(from: controller) == nil)
         controller.saveOutput()
         #expect(shared.count == 1 && copies.count == 1)
         #expect(controller.model.statusMessage == "Save failed: \(RenderError.annotationsNotApplied.localizedDescription)")

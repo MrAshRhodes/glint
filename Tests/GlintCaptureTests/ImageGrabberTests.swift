@@ -16,6 +16,20 @@ struct ImageGrabberTests {
                     scale: 1, name: "Display \(id)", isMain: id == 1)
     }
 
+    @Test func detachingACropPreservesTheProvidedWideGamutProfile() throws {
+        let p3 = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+        let ctx = try #require(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                                        space: p3, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(try #require(CGColor(colorSpace: p3, components: [1, 0, 0, 0.5])))
+        ctx.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        let source = try #require(ctx.makeImage())
+        let frozen = FrozenDisplay(display: display(1), image: source)
+        let crop = try #require(frozen.crop(CGRect(x: 1, y: 1, width: 2, height: 2)))
+        #expect(crop.grab.image.width == 2 && crop.grab.image.height == 2)
+        #expect(crop.grab.image.colorSpace?.name == CGColorSpace.displayP3)
+        #expect(crop.grab.image.alphaInfo == .premultipliedFirst)
+    }
+
     @Test func ownWindowPolicyDefaultsToExclusionButAllowsSelfCapture() {
         var options = CaptureOptions()
         #expect(options.excludeOwnWindows)
@@ -239,6 +253,112 @@ struct ImageGrabberTests {
         }
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(lookups == 0)
+    }
+
+    @Test func cachedContentThatWorksIsNotRefreshed() async throws {
+        var refreshes = 0
+        let length = try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { _ in true }, refresh: { _ in
+            refreshes += 1
+            return "fresh"
+        }, work: { $0.count })
+        #expect(length == 4)
+        #expect(refreshes == 0)
+    }
+
+    @Test func cachedContentThatFailsIsRetriedOnceOnFreshContent() async throws {
+        var worked: [String] = []
+        var refreshes = 0
+        let pixels = image()
+        let grab = try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { $0 == "kept" }, refresh: { _ in
+            refreshes += 1
+            return "fresh"
+        }, work: { content in
+            worked.append(content)
+            if content == "kept" { throw CaptureError.failed("stale content") }
+            return ImageGrabber.Grab(image: pixels, scale: 1)
+        })
+        #expect(grab.image === pixels)
+        #expect(worked == ["kept", "fresh"])
+        #expect(refreshes == 1)
+    }
+
+    @Test func contentQueriedForTheCaptureIsNotRetried() async {
+        var worked = 0
+        var refreshes = 0
+        await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.retryingOnFreshSnapshot("fresh", isCached: { _ in false }, refresh: { _ in
+                refreshes += 1
+                return "again"
+            }, work: { _ -> Int in
+                worked += 1
+                throw CaptureError.failed("grab")
+            })
+        }
+        #expect(worked == 1)
+        #expect(refreshes == 0)
+    }
+
+    @Test func aFailureOnRefreshedContentIsReportedAfterOneRetry() async {
+        var worked: [String] = []
+        var refreshes = 0
+        let error = await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { _ in true }, refresh: { _ in
+                refreshes += 1
+                return "fresh"
+            }, work: { content -> Int in
+                worked.append(content)
+                throw CaptureError.failed("grab \(content)")
+            })
+        }
+        #expect(worked == ["kept", "fresh"])
+        #expect(refreshes == 1)
+        guard case .failed(let message)? = error else {
+            Issue.record("Expected failed, got \(String(describing: error))")
+            return
+        }
+        #expect(message == "grab fresh")
+    }
+
+    @Test func aFailedRefreshIsReportedInsteadOfTheStaleFailure() async {
+        var worked = 0
+        let error = await #expect(throws: CaptureError.self) {
+            try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { _ in true }, refresh: { _ -> String in
+                throw CaptureError.permissionDenied
+            }, work: { _ -> Int in
+                worked += 1
+                throw CaptureError.failed("stale content")
+            })
+        }
+        #expect(worked == 1)
+        guard case .permissionDenied? = error else {
+            Issue.record("Expected permissionDenied, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test func cancellationNeverRetriesCachedContent() async {
+        var refreshes = 0
+        for error in [CancellationError(), CaptureError.cancelled] as [Error] {
+            await #expect(throws: (any Error).self) {
+                try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { _ in true }, refresh: { _ in
+                    refreshes += 1
+                    return "fresh"
+                }, work: { _ -> Int in throw error })
+            }
+        }
+        #expect(refreshes == 0)
+
+        let task = Task {
+            try await ImageGrabber.retryingOnFreshSnapshot("kept", isCached: { _ in true }, refresh: { _ in
+                refreshes += 1
+                return "fresh"
+            }, work: { _ -> Int in
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CaptureError.failed("grab")
+            })
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(refreshes == 0)
     }
 
     @Test func freezingUsesEveryDisplayInInputOrderWithoutDiskFallback() async throws {

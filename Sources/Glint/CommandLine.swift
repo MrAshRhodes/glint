@@ -10,6 +10,9 @@ enum CommandLine_ {
     Usage: Glint [options]
       --version                       Print the version and exit
       --diagnose                      Print capture permission, counts and status only, then exit
+      --diagnose --timing [--timing-iterations N] [--timing-cold-runs N] [--allow-screen-capture]
+                                      Print cold and warm capture-to-export timings as JSON, then exit.
+                                      Display pixels are only grabbed with --allow-screen-capture
       --list-presets                  Print preset names and exit
       --render IN OUT [--preset NAME] [--scale N]
                                       Beautify IN into OUT without launching the UI
@@ -28,19 +31,32 @@ enum CommandLine_ {
         case "--list-presets":
             PresetStore().presets.forEach { print($0.name) }
             return 0
-        case "--diagnose":
-            var done = false
-            Task { @MainActor in
-                print(await CaptureDiagnostics.run())
-                done = true
-            }
-            while !done { RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05)) }
-            return 0
+        case "--diagnose", "--timing", "--timing-probe", "--timing-iterations", "--timing-cold-runs",
+             "--allow-screen-capture":
+            return diagnose(args)
         case "--render":
             return render(args)
         default:
             return nil
         }
+    }
+
+    private static func diagnose(_ args: [String]) -> Int32 {
+        // A rejected argument list never needs the main actor, so it must not wait on one: a caller that is
+        // already running on the main actor, like a test, would never see the Task below start.
+        if let message = CaptureTiming.argumentError(for: args) {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            return 2
+        }
+        var outcome: CaptureTiming.Outcome?
+        Task { @MainActor in
+            outcome = await CaptureTiming.run(arguments: args, glintVersion: AppInfo.version)
+        }
+        while outcome == nil { RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05)) }
+        guard let outcome else { return 1 }
+        if !outcome.output.isEmpty { print(outcome.output) }
+        if !outcome.errorOutput.isEmpty { FileHandle.standardError.write(Data((outcome.errorOutput + "\n").utf8)) }
+        return outcome.exitCode
     }
 
     private static func render(_ args: [String]) -> Int32 {

@@ -14,7 +14,8 @@ final class EditorActions: ObservableObject {
     var close: () -> Void = {}
     var commitEditing: () -> Void = {}
     var savePreset: () -> Void = {}
-    var dragFileURL: () -> URL? = { nil }
+    /// What a drag from the share tile carries, or nil when there is nothing to drag yet. Called as the drag starts.
+    var dragPayload: () -> NSPasteboardWriting? = { nil }
     /// Toolbar tool clicks; the controller handles them exactly like the tool's keyboard shortcut.
     var selectTool: (EditorTool) -> Void = { _ in }
     /// The Share button's frame in the bottom bar, so the sharing picker points at it.
@@ -426,7 +427,7 @@ struct DragThumbnail: NSViewRepresentable {
 
     func updateNSView(_ view: DragSourceView, context: Context) {
         view.previewImage = model.preview?.image
-        view.fileProvider = actions.dragFileURL
+        view.payloadProvider = actions.dragPayload
         view.needsDisplay = true
     }
 }
@@ -439,7 +440,7 @@ final class DragSourceView: NSView, NSDraggingSource {
     static let thumbnailCornerRadius: CGFloat = 6
 
     var previewImage: CGImage?
-    var fileProvider: () -> URL? = { nil }
+    var payloadProvider: () -> NSPasteboardWriting? = { nil }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -497,8 +498,8 @@ final class DragSourceView: NSView, NSDraggingSource {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let url = fileProvider() else { return }
-        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+        guard let payload = payloadProvider() else { return }
+        let item = NSDraggingItem(pasteboardWriter: payload)
         let thumb = previewImage.map { NSImage(cgImage: $0, size: CGSize(width: 120, height: 120 * CGFloat($0.height) / CGFloat(max($0.width, 1)))) }
         item.setDraggingFrame(CGRect(x: 0, y: 0, width: 120, height: thumb?.size.height ?? 80), contents: thumb)
         beginDraggingSession(with: [item], event: event, source: self)
