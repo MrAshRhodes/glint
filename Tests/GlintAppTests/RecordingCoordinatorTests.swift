@@ -46,6 +46,7 @@ private final class Harness {
     var closers: [@MainActor () -> Void] = []
     var presented: [RecordedVideo] = []
     var notifications: [(title: String, body: String)] = []
+    var failures: [(title: String, body: String)] = []
     var permissionPrompts = 0
     var beeps = 0
     var busy = false
@@ -65,6 +66,7 @@ private final class Harness {
             return NSObject()
         }
         services.notify = { [self] in notifications.append(($0, $1)) }
+        services.fail = { [self] in failures.append(($0, $1)) }
         services.showPermissions = { [self] in permissionPrompts += 1 }
         services.beep = { [self] in beeps += 1 }
         let coordinator = RecordingCoordinator(services: services, snapToEdges: { [self] in snapToEdges },
@@ -202,12 +204,30 @@ private final class Harness {
         let session = try await h.startAndWaitUntilRunning()
         session.fail(CaptureError.failed("Disk full"))
         await h.settle()
-        #expect(h.notifications.map(\.title) == ["Recording failed"])
-        #expect(h.notifications.first?.body == "Disk full")
+        #expect(h.failures.map(\.title) == ["Recording failed"])
+        #expect(h.failures.first?.body == "Disk full")
+        #expect(h.notifications.isEmpty)
         #expect(!h.coordinator.isActive)
 
         _ = try await h.startAndWaitUntilRunning()
         #expect(h.sessions.count == 2)
+    }
+
+    @Test func pressingTheShortcutWhileFinishingBeepsInsteadOfDroppingItSilently() async throws {
+        let h = Harness()
+        let session = try await h.startAndWaitUntilRunning()
+        session.emit(.recording)
+        h.coordinator.toggle()
+        #expect(session.stops == 1 && h.beeps == 0)
+
+        session.emit(.finishing)
+        h.coordinator.toggle()
+        h.coordinator.toggle()
+        #expect(h.beeps == 2)
+        #expect(session.stops == 1 && session.cancels == 0 && h.sessions.count == 1)
+        session.finish(Harness.video)
+        await h.settle()
+        #expect(h.presented.count == 1 && h.failures.isEmpty)
     }
 
     @Test func statusTitleFollowsThePhaseAndClearsWhenDone() async throws {
