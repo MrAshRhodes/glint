@@ -231,6 +231,7 @@ private final class ReopenFixture {
             return copySucceeds
         }
         services.notify = { [self] in notifications.append(($0, $1, $2)) }
+        services.fail = { [self] in notifications.append(($0, $1, $2)) }
         services.requestRetry = { _, _ in false }
         services.addRecent = { [self] in recent.append($0) }
         services.removeRecent = { [self] in removedRecent.append($0) }

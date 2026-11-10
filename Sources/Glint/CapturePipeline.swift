@@ -27,6 +27,10 @@ final class CapturePipeline {
             try Compositor.render(image: $0, settings: $1, backingScale: $2, wallpaper: $3)
         }
         var notify: @MainActor (String, String, URL?) -> Void = { Notifier.post(title: $0, body: $1, fileURL: $2) }
+        /// A failure the user must not miss, even with notifications off: see `FailureFeedback`.
+        var fail: @MainActor (String, String, URL?) -> Void = { Notifier.postFailure(title: $0, body: $1, fileURL: $2) }
+        /// A start request dropped because a capture or recording is already in progress.
+        var reject: @MainActor () -> Void = { NSSound.beep() }
         var requestRetry: @MainActor (String, String) -> Bool = { CaptureRecovery.requestRetry(title: $0, message: $1) }
         var sound: @MainActor () -> Void = { Notifier.playSound() }
         var addRecent: (URL) -> Void = { RecentFiles.add($0) }
@@ -123,7 +127,10 @@ final class CapturePipeline {
             activeScroll.finish()
             return nil
         }
-        guard !isBusy else { return nil }
+        guard !isBusy else {
+            services.reject()
+            return nil
+        }
         busy = true
         let signpost = CaptureSignposts.beginCapture(trigger: trigger, mode: mode.signpostLabel)
         let capturer = ScreenCapturer.shared
@@ -207,7 +214,7 @@ final class CapturePipeline {
                 services.permissionDenied()
             } catch {
                 outcome = .failed
-                services.notify("Capture failed", error.localizedDescription, nil)
+                services.fail("Capture failed", error.localizedDescription, nil)
             }
         }
     }
@@ -232,7 +239,7 @@ final class CapturePipeline {
             services.notify("Text copied", "Recognized text copied to clipboard", nil)
         } catch {
             guard !Task.isCancelled else { return }
-            services.notify("Text recognition failed", error.localizedDescription, nil)
+            services.fail("Text recognition failed", error.localizedDescription, nil)
         }
     }
 
@@ -257,7 +264,7 @@ final class CapturePipeline {
                     try services.write(image, url, .plainPNG, .original, scale)
                 }
             } catch {
-                services.notify("Raw screenshot not saved", error.localizedDescription, nil)
+                services.fail("Raw screenshot not saved", error.localizedDescription, nil)
             }
         }
         var working = image
@@ -349,6 +356,7 @@ final class CapturePipeline {
              sharedAs: copied ? .copied : nil)
         let title: String
         let detail: String
+        var failed = !failures.isEmpty
         if let saved {
             title = failures.isEmpty ? "Screenshot saved" : "Screenshot saved, but copy failed"
             detail = saved.lastPathComponent + (copied ? " — also copied to clipboard." : "")
@@ -358,8 +366,14 @@ final class CapturePipeline {
         } else {
             title = "Screenshot export failed"
             detail = "The beautified image was not saved or copied."
+            failed = true
         }
-        services.notify(title, ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n"), saved)
+        let message = ([detail] + failures + [wallpaperProblem].compactMap { $0 }).joined(separator: "\n")
+        if failed {
+            services.fail(title, message, saved)
+        } else {
+            services.notify(title, message, saved)
+        }
         if prefs.defaults.object(forKey: ShellKey.quickAccess) as? Bool ?? true {
             quickAccess.show(image: rendered, fileURL: saved, onEdit: { [weak self] in
                 self?.openEditor(image: image, scale: scale, rawURL: rawURL, source: source)
