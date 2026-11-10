@@ -527,4 +527,35 @@ struct SelectionOverlayTests {
         panel.revealChrome(reduceMotion: true)
         #expect(chromeLayer.animation(forKey: OverlayPanel.chromeFadeKey) == nil)
     }
+
+    @Test func warmingUpFillsTheSharedCachesOnceForEachScale() {
+        OverlayView.warmUp(scales: [3])
+        let hints = OverlayView.cachedHintCount
+        let backgrounds = OverlayView.cachedBackgroundCount
+        #expect(hints >= 5, "Four area hints and the window hint")
+        #expect(backgrounds > 0)
+
+        OverlayView.warmUp(scales: [3])
+        #expect(OverlayView.cachedHintCount == hints)
+        #expect(OverlayView.cachedBackgroundCount == backgrounds)
+
+        // The capsule behind a hint is rendered in backing pixels, so another scale needs its own.
+        OverlayView.warmUp(scales: [4])
+        #expect(OverlayView.cachedHintCount == hints)
+        #expect(OverlayView.cachedBackgroundCount != backgrounds)
+    }
+
+    @Test func aFirstFrameAtAWarmedScaleBuildsNoHintText() throws {
+        OverlayView.warmUp(scales: [3])
+        let hints = OverlayView.cachedHintCount
+
+        let session = SelectionSession(mode: .area, lastArea: nil)
+        let overlay = view(session, scale: 3)
+        let bitmap = try Bitmap(size: size, scale: 3)
+        bitmap.paint(overlay, damage: overlay.refresh())
+        session.toggleMode()
+        bitmap.paint(overlay, damage: overlay.refresh())
+
+        #expect(OverlayView.cachedHintCount == hints)
+    }
 }

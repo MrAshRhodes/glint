@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     private var statusItem: NSStatusItem?
     private let menu: NSMenu
     private let reopenMenuItems = NSHashTable<NSMenuItem>.weakObjects()
+    private let capturePrewarmer = CapturePrewarmer()
 
     init(prefs: AppPreferences = .shared, menu: NSMenu = NSMenu()) {
         self.prefs = prefs
@@ -75,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         menu.delegate = self
         updateStatusItem()
         registerHotkeys()
+        capturePrewarmer.start()
         startOutputCleanup()
         NotificationCenter.default.addObserver(forName: .glintPreferencesChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
