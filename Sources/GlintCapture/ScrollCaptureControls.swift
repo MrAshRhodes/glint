@@ -27,7 +27,7 @@ enum ScrollCaptureLayout {
 
 /// What VoiceOver says during a scrolling capture.
 enum ScrollCaptureAnnouncement {
-    static let started = "Scrolling capture started. Scroll slowly through the content, then press Done."
+    static let started = "Scrolling capture started. Follow the pace indicator, then press Done."
     static let resumed = "Capturing resumed"
 
     static func paused(_ warning: ScrollStitchWarning) -> String { "Capture paused. " + warning.message }
@@ -103,16 +103,23 @@ final class ScrollCaptureOverlayPresenter: ScrollCapturePresenting {
 
     func update(_ status: ScrollCaptureStatus, preview: CGImage?) {
         let wasPaused = self.status.isPaused
-        let previousWarning = self.status.warning
+        let previousMessage = self.status.pauseMessage
+        let previousPace = self.status.pace
+        let wasAutomatic = self.status.isAutomatic
         self.status = status
         hasCaptured = hasCaptured || status.frames > 0
         hudPanel?.apply(status, preview: preview)
         positionHUD()
         setPauseKeys(status.isPaused)
-        if let warning = status.warning, warning != previousWarning {
-            chrome.announce(ScrollCaptureAnnouncement.paused(warning))
+        if let message = status.pauseMessage, message != previousMessage {
+            chrome.announce("Capture paused. " + message)
         } else if wasPaused, !status.isPaused {
             chrome.announce(ScrollCaptureAnnouncement.resumed)
+        } else if status.isAutomatic, !wasAutomatic {
+            chrome.announce("Scrolling automatically. Choose Done to finish or Escape to cancel.")
+        } else if !status.isPaused, !status.isAutomatic, status.pace != previousPace,
+                  status.pace == .tooFast || status.pace == .tooSlow {
+            chrome.announce(status.pace.message)
         }
     }
 
@@ -197,6 +204,7 @@ final class ScrollCaptureHUDView: NSView {
 
     let preview = ScrollPreviewView()
     let statusLabel = NSTextField(labelWithString: "Scroll to start")
+    let paceLabel = NSTextField(wrappingLabelWithString: "")
     let warningLabel = NSTextField(wrappingLabelWithString: "")
     let progress = NSProgressIndicator()
     let doneButton: NSButton
@@ -237,6 +245,9 @@ final class ScrollCaptureHUDView: NSView {
         warningLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         warningLabel.textColor = .labelColor
         warningLabel.preferredMaxLayoutWidth = Self.width - 32
+        paceLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        paceLabel.preferredMaxLayoutWidth = Self.width - 32
+        paceLabel.setAccessibilityLabel("Scrolling pace")
         progress.isIndeterminate = false
         progress.minValue = 0
         progress.maxValue = 1
@@ -245,7 +256,7 @@ final class ScrollCaptureHUDView: NSView {
 
         let pauseRow = Self.row([retryButton, resumeButton])
         let actionRow = Self.row([undoButton, cancelButton, doneButton])
-        root.setViews([preview, statusLabel, progress, warningLabel, pauseRow, actionRow], in: .top)
+        root.setViews([preview, statusLabel, paceLabel, progress, warningLabel, pauseRow, actionRow], in: .top)
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = RecordingChromeTokens.spacing
@@ -255,6 +266,7 @@ final class ScrollCaptureHUDView: NSView {
             preview.widthAnchor.constraint(equalToConstant: Self.width - 32),
             preview.heightAnchor.constraint(equalToConstant: Self.previewHeight),
             progress.widthAnchor.constraint(equalToConstant: Self.width - 32),
+            paceLabel.widthAnchor.constraint(equalToConstant: Self.width - 32),
             warningLabel.widthAnchor.constraint(equalToConstant: Self.width - 32)
         ])
         glass.contentView = root
@@ -285,10 +297,17 @@ final class ScrollCaptureHUDView: NSView {
             ? "Scroll to start"
             : "\(status.frames) \(status.frames == 1 ? "frame" : "frames") · \(status.height) px"
         statusLabel.setAccessibilityValue(status.frames == 0 ? "Nothing yet" : ScrollCaptureAnnouncement.status(status))
+        paceLabel.stringValue = status.isAutomatic ? "Scrolling automatically — capturing each step." : status.pace.message
+        paceLabel.isHidden = status.isPaused
+        paceLabel.textColor = status.isAutomatic || status.pace == .steady ? .systemGreen
+            : (status.pace == .ready ? .secondaryLabelColor : .systemOrange)
+        paceLabel.drawsBackground = !status.isAutomatic && (status.pace == .tooFast || status.pace == .tooSlow)
+        paceLabel.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.12)
+        paceLabel.setAccessibilityValue(paceLabel.stringValue)
         progress.doubleValue = status.progress
         progress.isHidden = !status.isNearLimit
-        warningLabel.stringValue = status.warning?.message ?? ""
-        warningLabel.isHidden = status.warning == nil
+        warningLabel.stringValue = status.pauseMessage ?? ""
+        warningLabel.isHidden = !status.isPaused
         resumeButton.isHidden = !status.isPaused || status.isAtLimit
         retryButton.isHidden = !status.canRetry
         resumeButton.superview?.isHidden = resumeButton.isHidden && retryButton.isHidden

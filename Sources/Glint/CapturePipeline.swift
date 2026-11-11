@@ -147,6 +147,7 @@ final class CapturePipeline {
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
         capturer.options.snapToEdges = prefs.snapToEdges
+        capturer.options.scrollCaptureAutoScroll = prefs.scrollCaptureAutoScroll
         let windows = services.captureWindows()
         capturer.options.excludeOwnWindows = prefs.hideWindowsDuringCapture
         capturer.options.excludedWindowIDs = Set(windows.compactMap {

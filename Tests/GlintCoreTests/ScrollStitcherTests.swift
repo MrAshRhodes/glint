@@ -275,6 +275,19 @@ struct ScrollGrabPolicyTests {
         let grabbed = policy.shouldGrab(signature(page, at: 90), at: 0.1, reference: first)
         #expect(grabbed)
     }
+
+    @Test func paceDistinguishesSteadyTooFastAndTooSlow() {
+        let page = Page.noise(width: 64, height: 600)
+        var policy = ScrollPacePolicy()
+        #expect(policy.observe(signature(page, at: 0), at: 0) == .ready)
+        #expect(policy.observe(signature(page, at: 20), at: 0.5) == .steady)
+        #expect(policy.observe(signature(page, at: 100), at: 0.6) == .tooFast)
+        #expect(policy.observe(signature(page, at: 104), at: 1.6) == .tooSlow)
+        policy.reset()
+        #expect(policy.observe(signature(page, at: 104), at: 5) == .ready)
+        #expect(policy.observe(signature(page, at: 104), at: 7.1) == .tooSlow)
+        #expect(policy.observe(signature(page, at: 124), at: 7.6) == .steady)
+    }
 }
 
 @Suite("Banded text recognition")

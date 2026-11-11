@@ -339,11 +339,14 @@ private struct CaptureTab: View {
     @AppStorage(ShellKey.hideCursor) private var hideCursor = true
     @AppStorage(ShellKey.rememberArea) private var rememberArea = true
     @AppStorage private var snapToEdges: Bool
+    @AppStorage private var scrollCaptureAutoScroll: Bool
     @AppStorage private var editablePointer: Bool
 
     init(model: PrefsModel) {
         self.model = model
         _snapToEdges = AppStorage(wrappedValue: false, AppPreferences.Key.snapToEdges, store: model.prefs.defaults)
+        _scrollCaptureAutoScroll = AppStorage(wrappedValue: true, AppPreferences.Key.scrollCaptureAutoScroll,
+                                             store: model.prefs.defaults)
         _editablePointer = AppStorage(wrappedValue: false, AppPreferences.Key.recordingEditablePointer,
                                       store: model.prefs.defaults)
     }
@@ -362,6 +365,12 @@ private struct CaptureTab: View {
                 Toggle(isOn: $snapToEdges.onChange { model.changed() }) {
                     Text("Snap selection to edges")
                     Text("Snap to window and display edges only. Hold Command to temporarily invert snapping. Shift still constrains the selection to a square.")
+                }
+            }
+            CollapsibleSection("Scrolling capture", id: "scrollingCapture") {
+                Toggle(isOn: $scrollCaptureAutoScroll.onChange { model.changed() }) {
+                    Text("Automatically scroll during scrolling capture")
+                    Text("Turn off to scroll manually, with pace guidance to help keep each part of the capture aligned.")
                 }
             }
             CollapsibleSection("Recording", id: "recording") {

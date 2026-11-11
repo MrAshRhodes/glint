@@ -273,6 +273,39 @@ struct ExportAndPrefsTests {
         #expect(prefs.snapToEdges)
     }
 
+    @Test func scrollingCaptureDefaultsToAutomaticAndPersistsManualMode() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        #expect(prefs.scrollCaptureAutoScroll)
+        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) == nil)
+
+        prefs.scrollCaptureAutoScroll = false
+        let reloaded = AppPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(!reloaded.scrollCaptureAutoScroll)
+        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) as? Bool == false)
+
+        defaults.set(true, forKey: AppPreferences.Key.scrollCaptureAutoScroll)
+        #expect(prefs.scrollCaptureAutoScroll && reloaded.scrollCaptureAutoScroll)
+        defaults.removeObject(forKey: AppPreferences.Key.scrollCaptureAutoScroll)
+        #expect(prefs.scrollCaptureAutoScroll && reloaded.scrollCaptureAutoScroll)
+    }
+
+    @Test func resetRestoresAutomaticScrollingCapture() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AppPreferences(defaults: defaults)
+        prefs.scrollCaptureAutoScroll = false
+
+        prefs.resetToDefaults()
+
+        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) == nil)
+        #expect(prefs.scrollCaptureAutoScroll)
+        #expect(AppPreferences(defaults: defaults).scrollCaptureAutoScroll)
+    }
+
     @Test func editablePointerDefaultsOffAndIsReset() throws {
         let suite = "glint.test.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

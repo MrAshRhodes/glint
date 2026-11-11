@@ -41,6 +41,8 @@ public struct CaptureOptions: Sendable {
     public var excludedWindowIDs: Set<CGWindowID> = []
     /// Snap area-selection edges to visible windows and display bounds. Command temporarily inverts this.
     public var snapToEdges: Bool = false
+    /// Scroll automatically during scrolling capture; disable for manual scrolling with pace guidance.
+    public var scrollCaptureAutoScroll: Bool = true
     /// For window capture: keep the system drop shadow (false = shadow-free, transparent corners).
     public var includeWindowShadow: Bool = false
     /// Seconds to wait after the overlay closes before grabbing display pixels, which could still show its fade-out.

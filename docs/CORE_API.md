@@ -518,6 +518,18 @@ public enum RecordingExporter {
   `shift(from:)` (estimated downward scroll in signature rows). `ScrollGrabPolicy(settleInterval:grabFraction:
   changeThreshold:)` decides when to grab: `shouldGrab(_:at:reference:)`, `reset()`. Grabs happen once the
   content has settled or has moved half a frame since the last grab.
+- `ScrollCapturePace`: `ready`, `steady`, `tooFast`, `tooSlow`, with a user-facing `message`.
+  `ScrollPacePolicy()` observes consecutive signatures with `observe(_:at:) -> ScrollCapturePace` and `reset()`.
+  Guidance is advisory: over one viewport per second is too fast, below 0.08 viewports per second or two seconds
+  without movement is too slow; it never pauses capture by itself.
+
+The `GlintCapture` integration defaults `CaptureOptions.scrollCaptureAutoScroll` and
+`ScrollCaptureSession(snapToEdges:showsCursor:autoScroll:)` to automatic scrolling. It posts bounded pixel-wheel
+events to the original window's process, rechecks the target before each event and waits for a settled, accepted
+frame before another step. It needs macOS event-posting (Accessibility) permission; manual mode does not.
+After three unchanged attempts, 200 steps, 120 seconds, target loss or an unsettled step, it pauses for review
+instead of assuming the entire page was captured. **Resume** continues manually. **Done** stops new events and
+captures pending movement, unless the session is already paused for review; cancellation discards the capture.
 
 ## Projects (`GlintProject.swift`, `ProjectStore.swift`)
 Editable `.glint` projects keep the original capture plus the editor state, so every element stays changeable after
@@ -594,6 +606,8 @@ public enum ProjectStore {
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
 `defaultPresetName`, `hotkeys`, `hideDockIcon`, `launchAtLogin` (value only; app registers the login item),
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
+`scrollCaptureAutoScroll` (on by default; key `glint.scrollCaptureAutoScroll`; off enables manual scrolling
+with pace guidance, and `resetToDefaults()` restores automatic scrolling),
 `fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether new screenshots, in
 the editor and in automatic export, start from `lastRenderSettings` instead of the default preset; until set, on
 unless `defaultPresetName` is set),
@@ -603,7 +617,7 @@ under `glint.outputRetentionDays`, where an unknown or negative value reads as `
 `annotationColor`, `redactColor`;
 `AppPreferences.Key`, `resetToDefaults()` (which also restores `keepCopiedImages` and `outputRetention`).
 The `AppPreferences.redactStyle` property has been removed. The legacy `glint.redactStyle` key is ignored
-by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual mode is not persisted.
+by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual redaction mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`
 (`captureArea` ⌃⌥⌘4, `captureAreaToClipboard` ⌃⌥⌘5, `captureWindow` ⌃⌥⌘6, `captureFullscreen` ⌃⌥⌘3,
 `captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9, `captureScrolling` ⌃⌥⌘8); `HotkeyAction.defaultCombo`.

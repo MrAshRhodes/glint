@@ -1269,6 +1269,34 @@ struct ScrollingCapturePipelineTests {
         return try #require(context.makeImage())
     }
 
+    @Test(arguments: [nil, false, true] as [Bool?])
+    func automaticScrollingPreferenceReachesSessionFactory(autoScroll: Bool?) async throws {
+        let f = try CaptureFixture(); defer { f.cleanUp() }
+        if let autoScroll { f.preferences.scrollCaptureAutoScroll = autoScroll }
+        let expected = autoScroll ?? true
+        let capturer = ScreenCapturer.shared
+        let previousOptions = capturer.options
+        defer { capturer.options = previousOptions }
+        capturer.options.scrollCaptureAutoScroll = !expected
+        let capture = FakeScrollingCapture(image: f.image)
+        var observed: [Bool] = []
+        let pipeline = f.pipeline {
+            $0.makeScrollingCapture = {
+                observed.append(capturer.options.scrollCaptureAutoScroll)
+                return capture
+            }
+        }
+
+        let task = try #require(pipeline.start(.scrolling))
+        for _ in 0..<100 where !capture.isRunning { await Task.yield() }
+        capture.cancel()
+        await task.value
+
+        #expect(observed == [expected])
+        #expect(!pipeline.isBusy)
+        #expect(f.copies == 0 && f.writes.isEmpty && f.notifications.isEmpty)
+    }
+
     @Test func secondPressFinishesAndTheWholeImageIsRedacted() async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         f.preferences.hideWindowsDuringCapture = false

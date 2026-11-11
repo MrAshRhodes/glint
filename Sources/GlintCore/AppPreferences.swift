@@ -126,6 +126,7 @@ public final class AppPreferences {
         public static let closeAfterCopy = "glint.closeAfterCopy"
         public static let hideWindowsDuringCapture = "glint.hideWindowsDuringCapture"
         public static let snapToEdges = "glint.snapToEdges"
+        public static let scrollCaptureAutoScroll = "glint.scrollCaptureAutoScroll"
         public static let recordingEditablePointer = "glint.recordingEditablePointer"
         public static let fileNameTemplate = "glint.fileNameTemplate"
         public static let enableFileNameTemplate = "glint.enableFileNameTemplate"
@@ -144,7 +145,8 @@ public final class AppPreferences {
              copyToClipboardAfterCapture, openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions,
              defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
-             hideWindowsDuringCapture, snapToEdges, recordingEditablePointer, fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
+             hideWindowsDuringCapture, snapToEdges, scrollCaptureAutoScroll, recordingEditablePointer,
+             fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
              compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
         }
     }
@@ -241,6 +243,9 @@ public final class AppPreferences {
     }
     public var snapToEdges: Bool {
         get { bool(Key.snapToEdges, false) } set { defaults.set(newValue, forKey: Key.snapToEdges) }
+    }
+    public var scrollCaptureAutoScroll: Bool {
+        get { bool(Key.scrollCaptureAutoScroll, true) } set { defaults.set(newValue, forKey: Key.scrollCaptureAutoScroll) }
     }
     /// Records the pointer separately instead of in the frames, so the editor can enlarge or hide it.
     public var recordingEditablePointer: Bool {
