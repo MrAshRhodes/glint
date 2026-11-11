@@ -247,8 +247,9 @@ struct ScrollCaptureSessionTests {
     @Test func automaticStepsCaptureTheWholePageBeforeAskingToFinish() async throws {
         let harness = ScrollHarness(autoScroll: true)
         let run = harness.run()
-        await harness.waitUntil { harness.session.phase == .paused }
-        #expect(harness.presenter.statuses.last?.automaticStop?.contains("bottom was reached") == true)
+        await harness.waitUntil { harness.presenter.statuses.last?.manualFallback != nil }
+        #expect(harness.presenter.statuses.last?.manualFallback?.contains("bottom was reached") == true)
+        #expect(harness.session.phase == .capturing)
         #expect(harness.source.offset == 440)
         #expect(harness.driver.steps.count > 3)
         #expect(harness.driver.stops == 1)
@@ -313,18 +314,20 @@ struct ScrollCaptureSessionTests {
         #expect(harness.presenter.dismissed)
     }
 
-    @Test func deniedAutomaticPermissionOffersManualRecovery() async throws {
+    @Test func deniedAutomaticPermissionKeepsCapturingManualScrollsWithoutResume() async throws {
         let harness = ScrollHarness(autoScroll: true)
         harness.scrollerError = .failed("Accessibility permission denied")
         let run = harness.run()
-        await harness.waitUntil { harness.session.phase == .paused }
-        #expect(harness.presenter.statuses.last?.automaticStop?.contains("Accessibility permission denied") == true)
+        await harness.waitUntil { harness.scrollersMade == 1 }
         #expect(harness.driver.steps.isEmpty)
         harness.source.offset = 40
-        harness.presenter.actions?.resume()
-        harness.onScriptEnd = { $0.session.finish() }
+        await harness.waitUntil { harness.presenter.statuses.last?.frames == 2 }
+        #expect(harness.session.phase == .capturing)
+        #expect(harness.presenter.statuses.last?.frames == 2)
+        harness.session.finish()
         let result = try await run.value
         #expect(result.image.height == 200)
+        #expect(bytes(result.image) == bytes(harness.source.page.image(rows: 0..<200)))
         #expect(harness.scrollersMade == 1)
         #expect(harness.driver.steps.isEmpty)
     }
@@ -340,6 +343,25 @@ struct ScrollCaptureSessionTests {
         harness.session.finish()
         let result = try await run.value
         #expect(result.image.height == 192)
+    }
+
+    @Test func ignoredAutomaticEventsStillCaptureSubsequentManualScrolling() async throws {
+        let harness = ScrollHarness(autoScroll: true)
+        harness.driver.onScroll = { _ in }
+        let run = harness.run()
+        await harness.waitUntil { harness.driver.stops == 1 }
+        harness.source.offset = 40
+        await harness.waitUntil { harness.presenter.statuses.last?.frames == 2 }
+        #expect(harness.session.phase == .capturing)
+        #expect(harness.presenter.statuses.last?.frames == 2)
+        #expect(harness.presenter.statuses.last?.manualFallback != nil)
+        #expect(harness.driver.steps.count == 3)
+        harness.session.finish()
+        let result = try await run.value
+        #expect(result.image.height == 200)
+        let matches = bytes(result.image) == bytes(harness.source.page.image(rows: 0..<200))
+        #expect(matches)
+        #expect(harness.driver.stops == 1)
     }
 
     @Test func automaticSafetyLimitRequiresExplicitCompletion() async throws {

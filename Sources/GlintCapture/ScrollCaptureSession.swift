@@ -40,6 +40,7 @@ public final class ScrollCaptureSession: ScrollingCapture {
     private var warning: ScrollStitchWarning?
     private var scroller: (any ScrollDriving)?
     private var automaticStop: String?
+    private var manualFallback: String?
     private var automaticStarted: TimeInterval = 0
     private var automaticSteps = 0
     private var unchangedSteps = 0
@@ -146,8 +147,8 @@ public final class ScrollCaptureSession: ScrollingCapture {
                 automaticStarted = environment.now()
                 publish()
             } catch {
-                pauseAutomatic("Automatic scrolling is unavailable. \(error.localizedDescription) "
-                    + "Scroll manually, then choose Resume.")
+                fallBackToManual("Automatic scrolling is unavailable. \(error.localizedDescription) "
+                    + "Manual capture is active. Scroll slowly, then choose Done.")
             }
         }
 
@@ -270,8 +271,8 @@ public final class ScrollCaptureSession: ScrollingCapture {
                 guard !isPaused, !isInterrupted else { return }
                 unchangedSteps = step.addedRows > 0 ? 0 : unchangedSteps + 1
                 if unchangedSteps >= timing.noMovementLimit {
-                    pauseAutomatic("No further scrolling was detected. Check that the bottom was reached, then "
-                        + "choose Done. To capture more, scroll manually and choose Resume.")
+                    fallBackToManual("No further automatic scrolling was detected. Check that the bottom was reached, "
+                        + "then choose Done. Manual capture is still active; scroll slowly to capture more.")
                 }
                 return
             }
@@ -330,6 +331,15 @@ public final class ScrollCaptureSession: ScrollingCapture {
         publish()
     }
 
+    private func fallBackToManual(_ message: String) {
+        stopAutomaticScrolling()
+        manualFallback = message
+        policy.reset()
+        pacePolicy.reset()
+        pace = .ready
+        publish()
+    }
+
     private func stopAutomaticScrolling() {
         scroller?.stop()
         scroller = nil
@@ -350,7 +360,8 @@ public final class ScrollCaptureSession: ScrollingCapture {
         let status = ScrollCaptureStatus(frames: stitcher.frameCount, height: stitcher.height,
                                          progress: stitcher.progress, isNearLimit: stitcher.isNearLimit,
                                          canUndo: stitcher.canUndo, warning: warning,
-                                         isAutomatic: scroller != nil, pace: pace, automaticStop: automaticStop)
+                                         isAutomatic: scroller != nil, pace: pace, automaticStop: automaticStop,
+                                         manualFallback: manualFallback)
         presenter?.update(status, preview: preview)
     }
 

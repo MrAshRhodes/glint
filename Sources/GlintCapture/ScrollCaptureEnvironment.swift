@@ -42,6 +42,8 @@ struct ScrollCaptureStatus: Equatable {
     var pace: ScrollCapturePace = .ready
     /// Automatic scrolling has stopped; completion must be confirmed rather than assuming this is the bottom.
     var automaticStop: String?
+    /// Automatic scrolling is unavailable, but manual frame capture is still running.
+    var manualFallback: String?
 
     var isPaused: Bool { warning != nil || automaticStop != nil }
     var pauseMessage: String? { warning?.message ?? automaticStop }

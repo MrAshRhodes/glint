@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+### Fixed
+
+- An unavailable automatic scroller or three unchanged scrolling attempts now leaves manual frame capture active instead of requiring **Resume**. The panel explains the fallback; unsafe target changes, uncertain joins and safety limits still pause for review. ([#132])
+
 ## [1.9.1] - 2026-11-11
 
 ### Added

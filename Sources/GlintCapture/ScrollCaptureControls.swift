@@ -106,6 +106,7 @@ final class ScrollCaptureOverlayPresenter: ScrollCapturePresenting {
         let previousMessage = self.status.pauseMessage
         let previousPace = self.status.pace
         let wasAutomatic = self.status.isAutomatic
+        let previousFallback = self.status.manualFallback
         self.status = status
         hasCaptured = hasCaptured || status.frames > 0
         hudPanel?.apply(status, preview: preview)
@@ -113,6 +114,8 @@ final class ScrollCaptureOverlayPresenter: ScrollCapturePresenting {
         setPauseKeys(status.isPaused)
         if let message = status.pauseMessage, message != previousMessage {
             chrome.announce("Capture paused. " + message)
+        } else if let message = status.manualFallback, message != previousFallback {
+            chrome.announce(message)
         } else if wasPaused, !status.isPaused {
             chrome.announce(ScrollCaptureAnnouncement.resumed)
         } else if status.isAutomatic, !wasAutomatic {
@@ -306,8 +309,8 @@ final class ScrollCaptureHUDView: NSView {
         paceLabel.setAccessibilityValue(paceLabel.stringValue)
         progress.doubleValue = status.progress
         progress.isHidden = !status.isNearLimit
-        warningLabel.stringValue = status.pauseMessage ?? ""
-        warningLabel.isHidden = !status.isPaused
+        warningLabel.stringValue = status.pauseMessage ?? status.manualFallback ?? ""
+        warningLabel.isHidden = warningLabel.stringValue.isEmpty
         resumeButton.isHidden = !status.isPaused || status.isAtLimit
         retryButton.isHidden = !status.canRetry
         resumeButton.superview?.isHidden = resumeButton.isHidden && retryButton.isHidden
