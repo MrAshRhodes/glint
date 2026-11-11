@@ -59,7 +59,7 @@ final class CapturePipeline {
             case .repeatLast: return try await capturer.captureLastArea()
             case .timer(let seconds):
                 return try await capturer.captureWithTimer(seconds: seconds, mode: .area, onTick: onTick)
-            case .text, .scrolling:
+            case .text:
                 throw CaptureError.failed("This capture mode requires its dedicated capture operation.")
             }
         }
@@ -67,7 +67,6 @@ final class CapturePipeline {
             try await $0.captureTextOnly()
         }
         var permissionDenied: @MainActor () -> Void = { PermissionsWindow.shared.show() }
-        var makeScrollingCapture: @MainActor () -> any ScrollingCapture = { ScreenCapturer.shared.scrollingSession() }
         var readProject: @Sendable (URL) throws -> GlintProject = { try ProjectStore.read(from: $0) }
         var presentRecordingEditor: @MainActor (RecordingEditorWindowController) -> Void = {
             NSApp.activate(ignoringOtherApps: true)
@@ -88,8 +87,6 @@ final class CapturePipeline {
     private var editors: [EditorWindowController] = []
     private var recordingEditors: [RecordingEditorWindowController] = []
     private var busy = false
-    /// The scrolling capture in progress; pressing its shortcut again finishes it.
-    private var activeScroll: (any ScrollingCapture)?
     private var reportedCleanupFailures: Set<String> = []
     private lazy var quickAccess: any QuickAccessPresenting = services.makeQuickAccess()
     var onStatusTitle: ((String?) -> Void)?
@@ -98,7 +95,6 @@ final class CapturePipeline {
     private var availabilityRequest = UUID()
 
     var isBusy: Bool { busy || isRecordingActive() }
-    var isScrollingCaptureActive: Bool { activeScroll != nil }
 
     /// Set by the app shell so screenshots never start while a screen recording is in progress.
     var isRecordingActive: () -> Bool = { false }
@@ -111,7 +107,7 @@ final class CapturePipeline {
     }
 
     enum Mode: Equatable {
-        case area, window, fullscreen, repeatLast, text, areaToClipboard, scrolling, timer(Int)
+        case area, window, fullscreen, repeatLast, text, areaToClipboard, timer(Int)
 
         /// The signpost label: the mode alone, without a timer's delay.
         var signpostLabel: String {
@@ -122,7 +118,6 @@ final class CapturePipeline {
             case .repeatLast: "repeatLast"
             case .text: "text"
             case .areaToClipboard: "areaToClipboard"
-            case .scrolling: "scrolling"
             case .timer: "timer"
             }
         }
@@ -130,13 +125,9 @@ final class CapturePipeline {
 
     // MARK: capture entry
 
-    /// Starts a capture. While a scrolling capture runs, starting another one finishes it instead.
+    /// Starts a capture.
     @discardableResult
     func start(_ mode: Mode, trigger: CaptureSignposts.Trigger = .menu) -> Task<Void, Never>? {
-        if mode == .scrolling, let activeScroll {
-            activeScroll.finish()
-            return nil
-        }
         guard !isBusy else {
             services.reject()
             return nil
@@ -147,7 +138,6 @@ final class CapturePipeline {
         let defaults = UserDefaults.standard
         capturer.options.hideCursor = defaults.object(forKey: ShellKey.hideCursor) as? Bool ?? true
         capturer.options.snapToEdges = prefs.snapToEdges
-        capturer.options.scrollCaptureAutoScroll = prefs.scrollCaptureAutoScroll
         let windows = services.captureWindows()
         capturer.options.excludeOwnWindows = prefs.hideWindowsDuringCapture
         capturer.options.excludedWindowIDs = Set(windows.compactMap {
@@ -167,13 +157,13 @@ final class CapturePipeline {
             for window in hidden.reversed() { window.orderFront(nil) }
             hidden.removeAll()
         }
-        // Frozen selection hides windows only after covering them. Live timer/scrolling selection still
+        // Frozen selection hides windows only after covering them. Live timer selection still
         // needs them out of the way; noninteractive captures rely on the ScreenCaptureKit exclusion.
         capturer.onSelectionPresented = nil
         switch mode {
         case .area, .areaToClipboard, .window, .text:
             if canHide { capturer.onSelectionPresented = { hideWindows() } }
-        case .timer, .scrolling:
+        case .timer:
             hideWindows()
         case .fullscreen, .repeatLast:
             break
@@ -184,7 +174,6 @@ final class CapturePipeline {
             defer {
                 capturer.onSelectionPresented = nil
                 busy = false
-                activeScroll = nil
                 onStatusTitle?(nil)
                 restoreWindows()
                 CaptureSignposts.end(signpost, outcome == .completed && Task.isCancelled ? .cancelled : outcome)
@@ -197,14 +186,6 @@ final class CapturePipeline {
                     try Task.checkCancellation()
                     restoreWindows()
                     await recognizeText(in: image)
-                case .scrolling:
-                    let session = services.makeScrollingCapture()
-                    activeScroll = session
-                    let result = try await session.run()
-                    activeScroll = nil
-                    try Task.checkCancellation()
-                    restoreWindows()
-                    await handle(result, source: String(describing: result.kind))
                 case .area, .window, .fullscreen, .repeatLast, .areaToClipboard, .timer:
                     let result = try await services.capture(capturer, mode) { [weak self] remaining in
                         self?.onStatusTitle?(remaining > 0 ? " \(remaining)" : nil)

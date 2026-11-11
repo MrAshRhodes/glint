@@ -5,14 +5,13 @@ import Testing
 @Suite("URL capture consent")
 @MainActor
 struct URLCaptureHandlerTests {
-    @Test(arguments: ["capture-area", "capture-window", "capture-fullscreen", "capture-text", "repeat-last",
-                      "capture-scrolling"])
+    @Test(arguments: ["capture-area", "capture-window", "capture-fullscreen", "capture-text", "repeat-last"])
     func urlRoutingRequiresFreshConsentForEveryMode(action: String) throws {
         let application = NSApplication.shared
         let delegate = AppDelegate()
         let modes: [String: CapturePipeline.Mode] = [
             "capture-area": .area, "capture-window": .window, "capture-fullscreen": .fullscreen,
-            "capture-text": .text, "repeat-last": .repeatLast, "capture-scrolling": .scrolling,
+            "capture-text": .text, "repeat-last": .repeatLast,
         ]
         let expected = try #require(modes[action])
         let url = try #require(URL(string: "glint://\(action)?approved=true&confirm=false"))
@@ -44,6 +43,19 @@ struct URLCaptureHandlerTests {
         delegate.application(application, open: [url])
         #expect(prompts == [action, action, action])
         #expect(starts.isEmpty)
+    }
+
+    @Test func removedCaptureActionIsNotHandled() {
+        let handler = URLCaptureHandler(services: .init(
+            confirm: { _ in
+                Issue.record("A removed action must not prompt for capture")
+                return .alertSecondButtonReturn
+            },
+            isCaptureBusy: { false },
+            startCapture: { _ in Issue.record("A removed action must not start capture") },
+            reject: { Issue.record("A removed action must fall through to URL routing") }
+        ))
+        #expect(!handler.handle(action: "capture-scrolling"))
     }
 
     @Test func onlyExplicitApprovalStartsCapture() {

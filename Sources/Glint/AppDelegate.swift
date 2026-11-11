@@ -208,7 +208,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         case .captureText: pipeline.start(.text, trigger: .hotkey)
         case .repeatLast: pipeline.start(.repeatLast, trigger: .hotkey)
         case .recordScreen: recorder.toggle()
-        case .captureScrolling: pipeline.start(.scrolling, trigger: .hotkey)
         }
     }
 
@@ -244,8 +243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         add(menu, "Capture Fullscreen", #selector(captureFullscreen), hotkey: .captureFullscreen)
         add(menu, "Capture Text (OCR)", #selector(captureText), hotkey: .captureText)
         add(menu, "Repeat Last Area", #selector(repeatLast), hotkey: .repeatLast)
-        add(menu, pipeline.isScrollingCaptureActive ? "Finish Scrolling Capture" : "Scrolling Capture",
-            #selector(captureScrolling), hotkey: .captureScrolling)
         add(menu, Self.recordingMenuTitle(for: recorder.phase, isActive: recorder.isActive),
             #selector(toggleRecording), hotkey: .recordScreen)
 
@@ -321,7 +318,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     @objc private func captureWindow() { pipeline.start(.window) }
     @objc private func captureFullscreen() { pipeline.start(.fullscreen) }
     @objc private func captureText() { pipeline.start(.text) }
-    @objc private func captureScrolling() { pipeline.start(.scrolling) }
     @objc private func repeatLast() { pipeline.start(.repeatLast) }
     @objc private func toggleRecording() { recorder.toggle() }
 

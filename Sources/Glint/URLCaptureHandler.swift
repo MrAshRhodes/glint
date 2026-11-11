@@ -8,7 +8,6 @@ final class URLCaptureHandler {
         case fullscreen = "capture-fullscreen"
         case text = "capture-text"
         case repeatLast = "repeat-last"
-        case scrolling = "capture-scrolling"
 
         var mode: CapturePipeline.Mode {
             switch self {
@@ -17,7 +16,6 @@ final class URLCaptureHandler {
             case .fullscreen: return .fullscreen
             case .text: return .text
             case .repeatLast: return .repeatLast
-            case .scrolling: return .scrolling
             }
         }
 
@@ -28,7 +26,6 @@ final class URLCaptureHandler {
             case .fullscreen: return "Capture Fullscreen"
             case .text: return "Capture Text (OCR)"
             case .repeatLast: return "Repeat Last Area"
-            case .scrolling: return "Scrolling Capture"
             }
         }
     }

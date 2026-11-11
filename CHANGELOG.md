@@ -8,10 +8,9 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
-### Fixed
+### Removed
 
-- An unavailable automatic scroller or three unchanged scrolling attempts now leaves manual frame capture active instead of requiring **Resume**. The panel explains the fallback; unsafe target changes, uncertain joins and safety limits still pause for review. ([#132])
-- Automatic scrolling selects a normal application window rather than the cursor, menu bar or floating panels. Manual capture also grabs during continuous movement, and a localized animation spanning at most 5% of a verified overlap no longer pauses an otherwise aligned capture. Larger changes and ambiguous joins still require review. ([#132])
+- Scrolling capture has been removed because reliable end-to-end capture could not be verified. Its menu item, ⌃⌥⌘8 shortcut, `glint://capture-scrolling` URL and Preferences option are no longer available. Regular screenshots and screen recording are unchanged; Fit, Fit Width and 100% zoom, tall-image OCR and editing existing images remain available. ([#132])
 
 ## [1.9.1] - 2026-11-11
 

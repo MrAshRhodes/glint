@@ -60,7 +60,7 @@ inset band → window frame → rounded card + two-layer shadow → background �
 so `contentRect` (where annotations land) is offset by the frame's left and top insets. Frames are drawn
 deterministically by the compositor, so the editor preview and exports show the same frame.
 Aspect-ratio fitting never grows a canvas beyond the larger of its own area and an internal area budget
-(16,384 × 8,192 px), so a very tall scrolling capture with a wide aspect ratio keeps its natural size. The budget
+(16,384 × 8,192 px), so a very tall image with a wide aspect ratio keeps its natural size. The budget
 is judged at an output scale of 1, so reduced previews and 1x/2x exports make the same choice.
 Canvas expansion: only magnifier (`.magnify`) insets can enlarge the canvas. When an inset (with its outline,
 connector, border and shadow) reaches beyond the base region (the auto-balance crop or the full image), the
@@ -217,7 +217,7 @@ are local to the editor session; automatic redaction remains plain opaque Solid.
 - `TextRecognizer.recognize(in:) async throws -> [RecognizedLine]` (`text`, `box`, `words`, `confidence`,
   `rect(for: Range<String.Index>)`).
   Images taller than 4,096 px are read in 4,096 px bands with a 256 px overlap; boxes are mapped back to the
-  full image and lines repeated in an overlap are removed, so OCR and auto-redaction cover tall scrolling captures.
+  full image and lines repeated in an overlap are removed, so OCR and auto-redaction cover tall images.
   `TextRecognizer.statistics` (`passes`, `failures`, `seconds`, `inFlight`) counts recognition passes in the
   process: one per `recognize`/`recognizeSync` call, however many bands. It only grows and other work adds to it, so
   read it before and after an action and subtract. Each pass is also a `Recognize` signpost interval (see
@@ -500,37 +500,6 @@ public enum RecordingExporter {
   MP4 as a file URL only. Copies are kept for `retention` (24 h); each copy first runs
   `pruneExpired(in:now:retention:)`.
 
-## Scrolling capture (`ScrollStitcher.swift`, `ScrollCapturePolicy.swift`)
-- `ScrollStitchLimits(maxHeight: 16_384, maxPixels: 64_000_000, warningFraction: 0.9, maxUndoBytes: 16_000_000)`,
-  `maxRows(width:)`. `maxUndoBytes` bounds the memory kept only for undo (earlier footers are stored only when
-  they changed); past it the oldest steps can no longer be undone but stay in the image.
-- `ScrollStitcher(limits:)` stitches same-size frames of a region scrolled downwards: `add(_ image:) ->
-  ScrollStitchStep` (`addedRows`, `warning: ScrollStitchWarning?`), `undoLast() -> Bool`, `makeImage() -> CGImage?`,
-  `thumbnail(maxWidth:maxHeight:)`, `height`, `width`, `frameHeight`, `frameCount`, `canUndo`, `undoableSteps`,
-  `isEmpty`,
-  `progress`, `isNearLimit`, `isAtLimit`, `sticky` (detected header/footer rows). Matching is pixel-based on the
-  first frame size. Rows that stay fixed between the first two moving frames are treated as a sticky header and
-  footer and appear once, at the top and bottom of the result. A frame that is rejected leaves the image unchanged.
-- `ScrollStitchWarning`: `lowConfidence(rows:)` (frame added; rows of the result that differed, e.g. animation),
-  `ambiguousRepeat`, `noMovement`, `scrolledBack`, `tooFast`, `sizeChanged`, `heightLimit`; `message` and
-  `pausesCapture` (every warning except `noMovement`).
-- `ScrollSignature(image:columns:)` is a small luma fingerprint of a frame, with `difference(from:)` and
-  `shift(from:)` (estimated downward scroll in signature rows). `ScrollGrabPolicy(settleInterval:grabFraction:
-  changeThreshold:)` decides when to grab: `shouldGrab(_:at:reference:)`, `reset()`. Grabs happen once the
-  content has settled or has moved half a frame since the last grab.
-- `ScrollCapturePace`: `ready`, `steady`, `tooFast`, `tooSlow`, with a user-facing `message`.
-  `ScrollPacePolicy()` observes consecutive signatures with `observe(_:at:) -> ScrollCapturePace` and `reset()`.
-  Guidance is advisory: over one viewport per second is too fast, below 0.08 viewports per second or two seconds
-  without movement is too slow; it never pauses capture by itself.
-
-The `GlintCapture` integration defaults `CaptureOptions.scrollCaptureAutoScroll` and
-`ScrollCaptureSession(snapToEdges:showsCursor:autoScroll:)` to automatic scrolling. It posts bounded pixel-wheel
-events to the original window's process, rechecks the target before each event and waits for a settled, accepted
-frame before another step. It needs macOS event-posting (Accessibility) permission; manual mode does not.
-After three unchanged attempts, 200 steps, 120 seconds, target loss or an unsettled step, it pauses for review
-instead of assuming the entire page was captured. **Resume** continues manually. **Done** stops new events and
-captures pending movement, unless the session is already paused for review; cancellation discards the capture.
-
 ## Projects (`GlintProject.swift`, `ProjectStore.swift`)
 Editable `.glint` projects keep the original capture plus the editor state, so every element stays changeable after
 reopening. **Privacy:** the original capture includes everything that was redacted; share flattened exports only.
@@ -606,8 +575,6 @@ public enum ProjectStore {
 `copyToClipboardAfterCapture`, `openEditorAfterCapture`, `autoBalance`, `autoRedact` + `autoRedactOptions`,
 `defaultPresetName`, `hotkeys`, `hideDockIcon`, `launchAtLogin` (value only; app registers the login item),
 `soundsEnabled`, `notificationsEnabled`, `theme` (`AppTheme`), `closeAfterCopy`, `hideWindowsDuringCapture`,
-`scrollCaptureAutoScroll` (on by default; key `glint.scrollCaptureAutoScroll`; off enables manual scrolling
-with pace guidance, and `resetToDefaults()` restores automatic scrolling),
 `fileNameTemplate`, `exportFormat`, `exportScale`, `lastRenderSettings`, `rememberSettings` (whether new screenshots, in
 the editor and in automatic export, start from `lastRenderSettings` instead of the default preset; until set, on
 unless `defaultPresetName` is set),
@@ -620,4 +587,4 @@ The `AppPreferences.redactStyle` property has been removed. The legacy `glint.re
 by editing and automatic redaction, and is still cleared by `resetToDefaults()`. Manual redaction mode is not persisted.
 `KeyCombo(keyCode, modifiers: KeyModifiers)` with `.displayString`, `.carbonModifiers`; `HotkeyAction`
 (`captureArea` ⌃⌥⌘4, `captureAreaToClipboard` ⌃⌥⌘5, `captureWindow` ⌃⌥⌘6, `captureFullscreen` ⌃⌥⌘3,
-`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9, `captureScrolling` ⌃⌥⌘8); `HotkeyAction.defaultCombo`.
+`captureText` ⌃⌥⌘7, `repeatLast` ⌃⌥⌘R, `recordScreen` ⌃⌥⌘9); `HotkeyAction.defaultCombo`.

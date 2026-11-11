@@ -67,7 +67,6 @@ public struct KeyCombo: Codable, Equatable, Hashable, Sendable {
 
 public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
     case captureArea, captureAreaToClipboard, captureWindow, captureFullscreen, captureText, repeatLast, recordScreen
-    case captureScrolling
 
     public var displayName: String {
         switch self {
@@ -78,7 +77,6 @@ public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
         case .captureText: return "Capture text (OCR)"
         case .repeatLast: return "Repeat last capture area"
         case .recordScreen: return "Record screen (start / stop)"
-        case .captureScrolling: return "Scrolling capture (start / finish)"
         }
     }
 
@@ -92,7 +90,6 @@ public enum HotkeyAction: String, Codable, CaseIterable, Sendable {
         case .captureText: return KeyCombo(keyCode: 26, modifiers: m) // ⌃⌥⌘7
         case .repeatLast: return KeyCombo(keyCode: 15, modifiers: m) // ⌃⌥⌘R
         case .recordScreen: return KeyCombo(keyCode: 25, modifiers: m) // ⌃⌥⌘9
-        case .captureScrolling: return KeyCombo(keyCode: 28, modifiers: m) // ⌃⌥⌘8
         }
     }
 }
@@ -126,7 +123,6 @@ public final class AppPreferences {
         public static let closeAfterCopy = "glint.closeAfterCopy"
         public static let hideWindowsDuringCapture = "glint.hideWindowsDuringCapture"
         public static let snapToEdges = "glint.snapToEdges"
-        public static let scrollCaptureAutoScroll = "glint.scrollCaptureAutoScroll"
         public static let recordingEditablePointer = "glint.recordingEditablePointer"
         public static let fileNameTemplate = "glint.fileNameTemplate"
         public static let enableFileNameTemplate = "glint.enableFileNameTemplate"
@@ -145,7 +141,7 @@ public final class AppPreferences {
              copyToClipboardAfterCapture, openEditorAfterCapture, autoBalance, autoRedact, autoRedactOptions,
              defaultPresetName, hotkeys,
              hideDockIcon, launchAtLogin, soundsEnabled, notificationsEnabled, theme, closeAfterCopy,
-             hideWindowsDuringCapture, snapToEdges, scrollCaptureAutoScroll, recordingEditablePointer,
+             hideWindowsDuringCapture, snapToEdges, recordingEditablePointer,
              fileNameTemplate, enableFileNameTemplate, exportFormat, exportScale,
              compressToJPEG, jpegQuality, lastRenderSettings, rememberSettings, annotationColor, redactColor, redactStyle]
         }
@@ -243,9 +239,6 @@ public final class AppPreferences {
     }
     public var snapToEdges: Bool {
         get { bool(Key.snapToEdges, false) } set { defaults.set(newValue, forKey: Key.snapToEdges) }
-    }
-    public var scrollCaptureAutoScroll: Bool {
-        get { bool(Key.scrollCaptureAutoScroll, true) } set { defaults.set(newValue, forKey: Key.scrollCaptureAutoScroll) }
     }
     /// Records the pointer separately instead of in the frames, so the editor can enlarge or hide it.
     public var recordingEditablePointer: Bool {

@@ -193,7 +193,7 @@ struct ProjectEditorTests {
         #expect(closes == 1)
         #expect(FileManager.default.fileExists(atPath: clip.url.path), "a project's clip belongs to the project")
     }
-    @Test func aReopenedScrollingCaptureStartsAtFitWidth() throws {
+    @Test func aReopenedTallImageStartsAtFitWidth() throws {
         let f = try EditorFixture(); defer { f.cleanUp() }
         let bitmap = try #require(GlintBitmap.makeContext(width: 100, height: 800))
         bitmap.setFillColor(RGBAColor(r: 0.3, g: 0.6, b: 0.9).cgColor)

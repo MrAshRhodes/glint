@@ -143,17 +143,6 @@ public final class ScreenCapturer {
         return r.image
     }
 
-    /// A scrolling capture using the current options. Keep it to `finish()` or `cancel()` it from elsewhere.
-    public func scrollingSession() -> any ScrollingCapture {
-        ScrollCaptureSession(snapToEdges: options.snapToEdges, showsCursor: !options.hideCursor,
-                             autoScroll: options.scrollCaptureAutoScroll)
-    }
-
-    /// Select a region, scroll through it, and get one tall stitched image (kind `.scrolling`).
-    public func captureScrolling() async throws -> CaptureResult {
-        try await scrollingSession().run()
-    }
-
     // MARK: Internals
 
     private func requirePermission() async throws {
