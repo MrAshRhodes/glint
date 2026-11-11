@@ -61,20 +61,25 @@ public struct ScrollSignature: Equatable, Sendable {
 }
 
 /// Decides when the scrolling capture grabs a full frame: once the content has changed and then held still for
-/// `settleInterval` (the user paused), or as soon as it has moved `grabFraction` of the frame, so fast scrolling
-/// still leaves the overlap the stitcher needs.
+/// `settleInterval` (the user paused), as soon as it has moved `grabFraction` of the frame, or after it has kept
+/// moving for `maxMovingInterval`, so fast or continuous scrolling still leaves the overlap the stitcher needs.
+/// The time cap matters when fixed headers or footers hide how far the content moved from the signature shift.
 public struct ScrollGrabPolicy: Sendable {
     public var settleInterval: TimeInterval
     public var grabFraction: Double
+    public var maxMovingInterval: TimeInterval
     /// Mean luma difference below which two signatures count as the same picture.
     public var changeThreshold: Double
 
     private var last: ScrollSignature?
     private var stillSince: TimeInterval?
+    private var movingSince: TimeInterval?
 
-    public init(settleInterval: TimeInterval = 0.15, grabFraction: Double = 0.5, changeThreshold: Double = 0.75) {
+    public init(settleInterval: TimeInterval = 0.15, grabFraction: Double = 0.5, maxMovingInterval: TimeInterval = 0.3,
+                changeThreshold: Double = 0.75) {
         self.settleInterval = settleInterval
         self.grabFraction = grabFraction
+        self.maxMovingInterval = maxMovingInterval
         self.changeThreshold = changeThreshold
     }
 
@@ -86,30 +91,36 @@ public struct ScrollGrabPolicy: Sendable {
         guard let reference else { return true }
         guard signature.difference(from: reference) > changeThreshold else {
             stillSince = nil
+            movingSince = nil
             return false
         }
+        let moving = movingSince ?? now
+        movingSince = moving
         if let shift = signature.shift(from: reference),
            Double(abs(shift)) >= Double(signature.height) * grabFraction {
-            stillSince = nil
-            return true
+            return grabbed()
         }
+        if now - moving >= maxMovingInterval { return grabbed() }
         if let last, signature.difference(from: last) <= changeThreshold {
             let since = stillSince ?? now
             stillSince = since
-            if now - since >= settleInterval {
-                stillSince = nil
-                return true
-            }
-            return false
+            return now - since >= settleInterval ? grabbed() : false
         }
         stillSince = now
         return false
+    }
+
+    private mutating func grabbed() -> Bool {
+        stillSince = nil
+        movingSince = nil
+        return true
     }
 
     /// Forgets the movement seen so far, for example after the user resumed from a warning.
     public mutating func reset() {
         last = nil
         stillSince = nil
+        movingSince = nil
     }
 }
 

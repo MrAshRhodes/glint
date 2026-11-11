@@ -129,6 +129,8 @@ public struct ScrollStitcher {
     static let minimumOverlap = 0.25
     /// A verified join may differ in at most this fraction of the overlap and still be offered (with a warning).
     static let maximumMismatch = 0.25
+    /// A localized animation inside an otherwise verified overlap should not interrupt scrolling.
+    static let maximumIncidentalMismatch = 0.05
     /// Fixed bands are capped so a mostly static frame still leaves a band to align.
     static let maximumStickyFraction = 0.4
 
@@ -373,7 +375,9 @@ public struct ScrollStitcher {
         if let first = partial.first {
             let rivals = peaks.filter { scores[$0] >= best * 0.9 && abs($0 - maxShift - first.shift) > 1 }
             if partial.count > 1, !rivals.isEmpty { return .ambiguous }
-            return .offset(first.shift, mismatch: first.rows)
+            // Keep imperfect matches out of `clean` so exact matches and ambiguity checks still take precedence.
+            let incidentalLimit = Int(Double(rows - abs(first.shift)) * Self.maximumIncidentalMismatch)
+            return .offset(first.shift, mismatch: first.rows.count <= incidentalLimit ? nil : first.rows)
         }
         return .none
     }

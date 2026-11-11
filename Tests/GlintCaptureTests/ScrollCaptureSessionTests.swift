@@ -620,4 +620,20 @@ struct ScrollCapturePaceControlsTests {
         #expect(LiveScrollDriver.target(at: point, windows: [window(2, id: 20, x: -450)], excluding: 1) != target)
         #expect(LiveScrollDriver.target(at: .zero, windows: [original], excluding: 1) == nil)
     }
+
+    @Test func nativeTargetSkipsCursorMenuBarAndFloatingWindows() throws {
+        let point = CGPoint(x: 100, y: 100)
+        func window(_ pid: Int, id: Int, layer: Int) -> [String: Any] {
+            [kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowNumber as String: NSNumber(value: id),
+             kCGWindowLayer as String: NSNumber(value: layer),
+             kCGWindowAlpha as String: NSNumber(value: 1),
+             kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 400, height: 500).dictionaryRepresentation]
+        }
+        let cursor = window(858, id: 8, layer: 2_147_483_630), floating = window(5, id: 50, layer: 5)
+        let app = window(2, id: 20, layer: 0)
+        let target = try #require(LiveScrollDriver.target(at: point, windows: [cursor, floating, app], excluding: 1))
+        #expect(target.pid == 2 && target.windowID == 20)
+        #expect(LiveScrollDriver.target(at: point, windows: [cursor, floating], excluding: 1) == nil)
+    }
 }

@@ -114,6 +114,41 @@ struct ScrollStitcherTests {
         #expect(stitcher.height == 220)
     }
 
+    @Test(arguments: [5, 6]) func localizedAnimationOnlyPausesAboveFivePercentOfOverlap(changedRows: Int) throws {
+        let page = Page.noise(height: 400)
+        var stitcher = ScrollStitcher()
+        _ = stitcher.add(page.frame(at: 0, visible: 160))
+        let animated = page.frame(at: 60, visible: 160) { rows in
+            for y in 30..<(30 + changedRows) {
+                rows[y] = Array(repeating: [255, 0, 0, 255], count: 48).flatMap { $0 }
+            }
+        }
+        let step = stitcher.add(animated)
+        #expect(step.addedRows == 60)
+        #expect(step.warning == (changedRows == 5 ? nil : .lowConfidence(rows: 90..<(90 + changedRows))))
+        // The changed pixels were already captured in the overlap; no new content is discarded.
+        let expected = Page(width: page.width, rows: Array(page.rows.prefix(220)))
+        #expect(bytes(try #require(stitcher.makeImage())) == expected.expected)
+        if changedRows == 5 {
+            let next = stitcher.add(page.frame(at: 120, visible: 160))
+            #expect(next == ScrollStitchStep(addedRows: 60, warning: nil))
+            let continued = Page(width: page.width, rows: Array(page.rows.prefix(280)))
+            #expect(bytes(try #require(stitcher.makeImage())) == continued.expected)
+        }
+    }
+
+    @Test func scatteredAnimationStillRequiresReview() {
+        let page = Page.noise(height: 400)
+        var stitcher = ScrollStitcher()
+        _ = stitcher.add(page.frame(at: 0, visible: 160))
+        let animated = page.frame(at: 60, visible: 160) { rows in
+            for y in [30, 70] {
+                rows[y] = Array(repeating: [255, 0, 0, 255], count: 48).flatMap { $0 }
+            }
+        }
+        #expect(stitcher.add(animated) == ScrollStitchStep(addedRows: 60, warning: .lowConfidence(rows: 90..<131)))
+    }
+
     @Test func undoRestoresThePreviousState() throws {
         var page = Page.noise(height: 500)
         page.header = Page.solidRows(width: 48, count: 12, (90, 90, 90), stripe: 5)
@@ -274,6 +309,40 @@ struct ScrollGrabPolicyTests {
         _ = policy.shouldGrab(first, at: 0, reference: nil)
         let grabbed = policy.shouldGrab(signature(page, at: 90), at: 0.1, reference: first)
         #expect(grabbed)
+    }
+
+    @Test func grabsDuringContinuousScrollingBeforeOverlapRunsOut() {
+        let page = Page.noise(width: 64, height: 600)
+        var policy = ScrollGrabPolicy()
+        let first = signature(page, at: 0)
+        _ = policy.shouldGrab(first, at: 0, reference: nil)
+        // Never still and never half a frame: only the time cap can grab.
+        var grabbed = policy.shouldGrab(signature(page, at: 12), at: 0.1, reference: first)
+        #expect(!grabbed)
+        grabbed = policy.shouldGrab(signature(page, at: 24), at: 0.2, reference: first)
+        #expect(!grabbed)
+        grabbed = policy.shouldGrab(signature(page, at: 36), at: 0.3, reference: first)
+        #expect(!grabbed)
+        grabbed = policy.shouldGrab(signature(page, at: 48), at: 0.4, reference: first)
+        #expect(grabbed)
+    }
+
+    @Test func movingDeadlineStillAppliesDuringABriefPause() {
+        let page = Page.noise(width: 64, height: 600)
+        var policy = ScrollGrabPolicy()
+        let first = signature(page, at: 0)
+        _ = policy.shouldGrab(first, at: 0, reference: nil)
+        _ = policy.shouldGrab(signature(page, at: 12), at: 0.1, reference: first)
+        _ = policy.shouldGrab(signature(page, at: 24), at: 0.2, reference: first)
+        let moved = signature(page, at: 36)
+        var grabbed = policy.shouldGrab(moved, at: 0.3, reference: first)
+        #expect(!grabbed)
+        grabbed = policy.shouldGrab(moved, at: 0.4, reference: first)
+        #expect(grabbed)
+        grabbed = policy.shouldGrab(moved, at: 0.5, reference: moved)
+        #expect(!grabbed)
+        grabbed = policy.shouldGrab(signature(page, at: 48), at: 0.6, reference: moved)
+        #expect(!grabbed)
     }
 
     @Test func paceDistinguishesSteadyTooFastAndTooSlow() {

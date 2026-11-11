@@ -210,6 +210,8 @@ public final class ScrollCaptureSession: ScrollingCapture {
         let frame = try await source.frame()
         try throwIfCancelled()
         let step = stitcher.add(frame)
+        scrollCaptureLog.info(
+            "Frame \(self.stitcher.frameCount, privacy: .public): +\(step.addedRows, privacy: .public) rows, height \(self.stitcher.height, privacy: .public), warning \(String(describing: step.warning), privacy: .public), automatic \(self.scroller != nil, privacy: .public)")
         // The reference must describe the accepted snapshot itself: a second look could already show content
         // scrolled past the stitched image, and holding still there would then never grab the rest.
         if step.addedRows > 0 {
@@ -267,6 +269,8 @@ public final class ScrollCaptureSession: ScrollingCapture {
             let changed = reference.map { signature.difference(from: $0) > policy.changeThreshold } ?? true
             let timedOut = now - started >= timing.responseTimeout
             if now - stableSince >= timing.settleInterval, changed || timedOut {
+                scrollCaptureLog.debug(
+                    "Automatic step \(self.automaticSteps, privacy: .public) settled after \(now - started, privacy: .public)s, changed \(changed, privacy: .public)")
                 let step = try await grab(source)
                 guard !isPaused, !isInterrupted else { return }
                 unchangedSteps = step.addedRows > 0 ? 0 : unchangedSteps + 1
@@ -324,6 +328,7 @@ public final class ScrollCaptureSession: ScrollingCapture {
     }
 
     private func pauseAutomatic(_ message: String) {
+        scrollCaptureLog.notice("Automatic scrolling paused: \(message, privacy: .public)")
         stopAutomaticScrolling()
         finishRequested = false
         automaticStop = message
@@ -332,6 +337,7 @@ public final class ScrollCaptureSession: ScrollingCapture {
     }
 
     private func fallBackToManual(_ message: String) {
+        scrollCaptureLog.notice("Manual fallback: \(message, privacy: .public)")
         stopAutomaticScrolling()
         manualFallback = message
         policy.reset()

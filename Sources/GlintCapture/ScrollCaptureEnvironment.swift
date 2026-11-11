@@ -1,6 +1,9 @@
 import AppKit
 import GlintCore
+import os
 import ScreenCaptureKit
+
+let scrollCaptureLog = Logger(subsystem: "io.github.mrashrhodes.glint", category: "scroll-capture")
 
 /// Grabs the region of a scrolling capture. `signature()` is a cheap, low-resolution look used about ten times a
 /// second to notice scrolling; `frame()` is the full-resolution grab that goes to the stitcher.
@@ -119,12 +122,17 @@ final class LiveScrollDriver: ScrollDriving {
     private var stopped = false
 
     init(region: RecordingRegion) throws {
-        point = CGPoint(x: region.rect.midX, y: region.rect.midY)
+        let point = CGPoint(x: region.rect.midX, y: region.rect.midY)
+        self.point = point
         guard let target = Self.target(at: point) else {
+            scrollCaptureLog.error("No scroll target at \(point.debugDescription, privacy: .public)")
             throw CaptureError.failed("No application window was found inside the selected region.")
         }
         self.target = target
+        scrollCaptureLog.info(
+            "Scroll target pid \(target.pid, privacy: .public) window \(target.windowID, privacy: .public) bounds \(target.bounds.debugDescription, privacy: .public)")
         guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
+            scrollCaptureLog.error("Accessibility (post event) access is not granted")
             throw CaptureError.failed("Allow Glint in Privacy & Security → Accessibility to scroll automatically.")
         }
     }
@@ -132,15 +140,20 @@ final class LiveScrollDriver: ScrollDriving {
     func scroll(by points: CGFloat) throws {
         guard !stopped else { return }
         guard CGPreflightPostEventAccess() else {
+            scrollCaptureLog.error("Accessibility (post event) access was revoked")
             throw CaptureError.failed("Accessibility permission is required for automatic scrolling.")
         }
-        guard Self.target(at: point) == target else {
+        let current = Self.target(at: point)
+        guard current == target else {
+            scrollCaptureLog.error(
+                "Scroll target changed to pid \(current?.pid ?? -1, privacy: .public) window \(current?.windowID ?? 0, privacy: .public)")
             throw CaptureError.failed("The selected window moved, closed, or was covered.")
         }
         guard let event = Self.event(at: point, points: points) else {
             throw CaptureError.failed("Could not create a scrolling event.")
         }
         event.postToPid(target.pid)
+        scrollCaptureLog.debug("Posted \(Int(points.rounded()), privacy: .public) pt scroll to pid \(self.target.pid, privacy: .public)")
     }
 
     func stop() { stopped = true }
@@ -164,7 +177,9 @@ final class LiveScrollDriver: ScrollDriving {
 
     static func target(at point: CGPoint, windows: [[String: Any]], excluding ownPID: pid_t) -> Target? {
         for window in windows {
-            guard let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid > 0, pid != ownPID,
+            // Only normal windows: the pointer, menu bar and floating panels sit above them at other layers.
+            guard (window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0 == 0,
+                  let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid > 0, pid != ownPID,
                   let id = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                   let bounds = window[kCGWindowBounds as String] as? NSDictionary,
                   let rect = CGRect(dictionaryRepresentation: bounds), rect.contains(point),
