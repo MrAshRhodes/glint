@@ -114,7 +114,7 @@ public enum TextRecognizer {
     }
 
     /// Tallest slice given to Vision in one request. Vision scales a whole image down to its working size, so text
-    /// in a very tall image (a scrolling capture) would shrink below what it can read; slices keep it legible.
+    /// in a very tall image would shrink below what it can read; slices keep it legible.
     public static let maximumBandHeight = 4096
     /// Rows shared by neighbouring slices, taller than any line of text, so every line lies whole in one slice.
     public static let bandOverlap = 256

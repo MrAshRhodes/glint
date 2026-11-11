@@ -54,7 +54,7 @@ but a size-changing resample uses the same sRGB bitmap policy as the compositor.
 A scale option that needs no resize leaves the profile unchanged. Clipboard PNG
 and TIFF use the same encoding policy as equivalent files, including scale and
 backing-scale inputs. Pasting into an app that ignores profiles is outside Glint's
-control. Scrolling capture/stitching and recording explicitly use sRGB.
+control. Recording explicitly uses sRGB.
 
 `ColourPolicyTests` covers equivalent in-gamut sRGB/Display P3 patches, neutral
 gradients, saturated P3 input, alpha edges, composition, original/resized export,
@@ -218,7 +218,7 @@ revisions, displays and input path when comparing.
 | Interval | Spans |
 | --- | --- |
 | `QueueDelay` | A global hotkey's callback arriving, through the main actor handling it. |
-| `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `scrolling`, `timer`). |
+| `CaptureTotal` | `CapturePipeline.start` through the end of the capture task, tagged `trigger` (`hotkey`, `menu`, `url`, `timer`) and `mode` (`area`, `window`, `fullscreen`, `repeatLast`, `text`, `areaToClipboard`, `timer`). |
 | `PermissionCheck` | The Screen Recording permission check that starts an area, window or full-screen capture. |
 | `ShareableContent` | One ScreenCaptureKit shareable-content query: Glint's own refill after launch or a change of screens or session, a capture that had no usable kept snapshot (the overlay's freeze, a grab), a window grab. |
 | `SnapTargets` | Building the overlay's edge-snap targets. Emitted through `OverlayPerformance`, which stays free of GlintCore. |
@@ -623,8 +623,8 @@ image tests establish pixel routing and lifecycle behavior, not another app's ac
 
 Use optimized cold/warm runs and the overlay signposts described above to compare snapshot acquisition
 and first-presentation costs separately. Do not treat drawing CPU measurements as end-to-end latency.
-Record unavailable applications or display arrangements as unverified, not passed. Recording and
-scrolling capture must remain live and must not inherit screenshot freezing.
+Record unavailable applications or display arrangements as unverified, not passed. Recording
+must remain live and must not inherit screenshot freezing.
 
 ## Reopen Last Image and Output retention
 
@@ -640,19 +640,6 @@ After `make test` and `make app`, point Preferences → Output → History folde
 4. **Other settings.** With **Save styled output** on, the kept image is the file already saved, not a second one. `Raw/`, files saved with Save or Save As, and files that were already in `Output/` are never changed.
 5. **Cleanup.** Choose **1 day**. With Glint quit, set the `date` (seconds since 1970) of two kept images in the scratch `.glint-output-index.json` to more than a day ago, `touch` one of them, and add a symlink, a pre-existing image, a Raw image and a manual save, then relaunch. Shortly after launch only the untouched back-dated image moves to the Trash. The `touch`ed image stays and is no longer tracked, the other files stay, a file being dragged is skipped, and nothing is removed the instant the picker changes. Choosing **Forever** again removes nothing else.
 6. **History off.** Turn **Keep history** off: the toggle is dimmed with an explanation, nothing new is kept or removed, and Glint never turns history back on. Turning it on again resumes keeping and cleanup.
-
-## Scrolling capture
-
-Frame matching lives in `GlintCore/ScrollStitcher.swift` and the grab timing in `ScrollCapturePolicy.swift`, so both are unit tested with synthetic images (sticky headers, repeating stripes, an animated band, undo and the height limit). `GlintCapture/ScrollCaptureSession.swift` drives them from an injected frame source, clock and presenter; tests use fakes and never touch or scroll the real screen. Nothing is written to disk until the result reaches the editor.
-
-Before a release, after `make app`, check by hand:
-
-- With **Automatically scroll during scrolling capture** enabled in Preferences → Capture (the default), start with ⌃⌥⌘8 and select a long web page with a sticky header. Without touching the wheel, confirm the preview grows beyond the first viewport and the header appears once. Check the bottom of the result, not just its height.
-- Deny the Accessibility request and confirm the first frame stays available with an explanation and manual **Resume**. Manual mode must never request event-posting permission. With permission granted, three unchanged attempts at the bottom should pause for confirmation; **Resume** after any automatic stop must continue manually without posting more events.
-- Disable the preference and repeat. The app must not scroll for you; the panel should distinguish steady scrolling, too-fast scrolling and too-slow/idle scrolling. Pause safely, scroll back up, and use **Undo**, **Resume** and **Retry**.
-- In both modes, cancel with Esc and confirm nothing opens or continues scrolling; finish with the shortcut immediately after a small scroll and check that the final visible content is included. Confirm the editor opens at Fit Width with Fit, Fit Width and 100% zoom working.
-- Try a nested scrolling pane, an app that ignores synthetic scroll events, and a window that moves or closes mid-capture. Check that automatic scrolling cannot continue into another app, and that a stall or uncertain join is explained rather than silently advertised as a complete page.
-- Capture Text on the result reads the bottom of the page; a very long page stops at the height limit with a warning. Restart Glint to check that the preference persists, and reset preferences to restore automatic scrolling.
 
 ## Product site
 

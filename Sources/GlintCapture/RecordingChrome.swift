@@ -16,8 +16,6 @@ enum RecordingChromeTokens {
     /// Padding inside the capsule. The trailing and vertical padding match the control height, so the corners of
     /// the controls stay concentric with the bar's.
     static let barInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 8)
-    /// Corner radius of a floating panel that is taller than one bar, such as the scrolling-capture controls.
-    static let panelCornerRadius: CGFloat = 18
 }
 
 // MARK: - Display options

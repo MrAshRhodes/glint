@@ -1,7 +1,7 @@
 import CoreGraphics
 
 /// How the image fits the editor canvas. Fit shows all of it; Fit Width and 100% can be larger than the window and
-/// scroll, so a tall scrolling capture can be annotated at a readable size.
+/// scroll, so a tall image can be annotated at a readable size.
 enum CanvasZoom: String, CaseIterable, Identifiable {
     case fit, fitWidth, actualSize
 
@@ -29,7 +29,7 @@ enum CanvasZoom: String, CaseIterable, Identifiable {
         self = zoom
     }
 
-    /// Images much taller than wide, like a scrolling capture, open at Fit Width so their text is readable.
+    /// Images much taller than wide open at Fit Width so their text is readable.
     static func initial(for imageSize: CGSize) -> CanvasZoom {
         imageSize.width > 0 && imageSize.height > imageSize.width * 3 ? .fitWidth : .fit
     }

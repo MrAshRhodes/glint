@@ -273,39 +273,6 @@ struct ExportAndPrefsTests {
         #expect(prefs.snapToEdges)
     }
 
-    @Test func scrollingCaptureDefaultsToAutomaticAndPersistsManualMode() throws {
-        let suite = "glint.test.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let prefs = AppPreferences(defaults: defaults)
-        #expect(prefs.scrollCaptureAutoScroll)
-        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) == nil)
-
-        prefs.scrollCaptureAutoScroll = false
-        let reloaded = AppPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
-        #expect(!reloaded.scrollCaptureAutoScroll)
-        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) as? Bool == false)
-
-        defaults.set(true, forKey: AppPreferences.Key.scrollCaptureAutoScroll)
-        #expect(prefs.scrollCaptureAutoScroll && reloaded.scrollCaptureAutoScroll)
-        defaults.removeObject(forKey: AppPreferences.Key.scrollCaptureAutoScroll)
-        #expect(prefs.scrollCaptureAutoScroll && reloaded.scrollCaptureAutoScroll)
-    }
-
-    @Test func resetRestoresAutomaticScrollingCapture() throws {
-        let suite = "glint.test.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let prefs = AppPreferences(defaults: defaults)
-        prefs.scrollCaptureAutoScroll = false
-
-        prefs.resetToDefaults()
-
-        #expect(defaults.object(forKey: AppPreferences.Key.scrollCaptureAutoScroll) == nil)
-        #expect(prefs.scrollCaptureAutoScroll)
-        #expect(AppPreferences(defaults: defaults).scrollCaptureAutoScroll)
-    }
-
     @Test func editablePointerDefaultsOffAndIsReset() throws {
         let suite = "glint.test.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -423,8 +390,6 @@ struct ExportAndPrefsTests {
         #expect(combo.displayString == "⌃⌥⌘4")
         #expect(HotkeyAction.captureAreaToClipboard.defaultCombo.displayString == "⌃⌥⌘5")
         #expect(HotkeyAction.recordScreen.defaultCombo.displayString == "⌃⌥⌘9")
-        #expect(HotkeyAction.captureScrolling.defaultCombo.displayString == "⌃⌥⌘8")
-        #expect(HotkeyAction.captureScrolling.rawValue == "captureScrolling")
         #expect(combo.carbonModifiers == 0x1000 | 0x800 | 0x100)
         #expect(Set(HotkeyAction.allCases.map { $0.defaultCombo }).count == HotkeyAction.allCases.count)
 
@@ -438,6 +403,25 @@ struct ExportAndPrefsTests {
         #expect(AppPreferences(defaults: defaults).hotkey(for: .captureArea) == custom)
         #expect(custom.displayString == "⇧⌘A")
         #expect(AppPreferences(defaults: defaults).hotkey(for: .repeatLast) == HotkeyAction.repeatLast.defaultCombo)
+    }
+
+    @Test func removedHotkeyDoesNotDiscardOtherOverridesOrReserveItsCombo() throws {
+        let suite = "glint.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let custom = KeyCombo(keyCode: 0, modifiers: [.command, .shift])
+        let removed = KeyCombo(keyCode: 28, modifiers: [.control, .option, .command])
+        let stored = ["captureArea": custom, "captureScrolling": removed]
+        defaults.set(try JSONEncoder().encode(stored), forKey: AppPreferences.Key.hotkeys)
+
+        let prefs = AppPreferences(defaults: defaults)
+        #expect(prefs.hotkey(for: .captureArea) == custom)
+        #expect(prefs.hotkey(for: .recordScreen) == HotkeyAction.recordScreen.defaultCombo)
+        #expect(prefs.hotkeyConflict(for: removed, assigning: .captureWindow) == nil)
+        prefs.setHotkey(removed, for: .captureWindow)
+        let reloaded = AppPreferences(defaults: defaults)
+        #expect(reloaded.hotkey(for: .captureArea) == custom)
+        #expect(reloaded.hotkey(for: .captureWindow) == removed)
     }
 
     @Test func hotkeyConflictNamesTheOtherActionUsingACombo() throws {

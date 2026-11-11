@@ -187,33 +187,6 @@ private final class HeldCapture {
     }
 }
 
-/// Stands in for a scrolling capture that runs until it is finished or cancelled.
-@MainActor
-private final class RunningScroll: ScrollingCapture {
-    let result: CaptureResult
-    private(set) var finishes = 0
-    private(set) var isRunning = false
-    private var continuation: CheckedContinuation<CaptureResult, Error>?
-
-    init(result: CaptureResult) { self.result = result }
-
-    func run() async throws -> CaptureResult {
-        isRunning = true
-        return try await withCheckedThrowingContinuation { continuation = $0 }
-    }
-
-    func finish() {
-        finishes += 1
-        continuation?.resume(returning: result)
-        continuation = nil
-    }
-
-    func cancel() {
-        continuation?.resume(throwing: CaptureError.cancelled)
-        continuation = nil
-    }
-}
-
 @MainActor
 private final class Reports {
     var failures: [(title: String, message: String, url: URL?)] = []
@@ -239,7 +212,7 @@ struct CaptureFeedbackTests {
         }
     }
 
-    @Test(arguments: [CapturePipeline.Mode.area, .areaToClipboard, .window, .fullscreen, .repeatLast, .timer(3), .text, .scrolling])
+    @Test(arguments: [CapturePipeline.Mode.area, .areaToClipboard, .window, .fullscreen, .repeatLast, .timer(3), .text])
     func startingWhileACaptureIsRunningIsRejectedAudibly(mode: CapturePipeline.Mode) async throws {
         let f = try CaptureFixture(); defer { f.cleanUp() }
         let held = HeldCapture()
@@ -289,23 +262,6 @@ struct CaptureFeedbackTests {
         try await #require(pipeline.start(mode)).value
         try await #require(pipeline.start(mode)).value
         #expect(f.rejections == 0)
-    }
-
-    @Test func theScrollingShortcutFinishesTheRunningScrollInsteadOfBeeping() async throws {
-        let f = try CaptureFixture(); defer { f.cleanUp() }
-        let scroll = RunningScroll(result: CaptureResult(image: f.image, scale: 2, displayID: 1,
-                                                         rect: CGRect(x: 0, y: 0, width: 50, height: 400),
-                                                         kind: .scrolling, windowInfo: nil))
-        f.scrolling = scroll
-        let pipeline = f.pipeline()
-        let task = try #require(pipeline.start(.scrolling))
-        for _ in 0..<200 where !scroll.isRunning { await Task.yield() }
-        #expect(scroll.isRunning)
-
-        #expect(pipeline.start(.scrolling) == nil)
-        #expect(scroll.finishes == 1 && f.rejections == 0)
-        await task.value
-        #expect(!pipeline.isBusy)
     }
 
     @Test func aCaptureFailureIsReportedOnceThroughTheFailureChannel() async throws {

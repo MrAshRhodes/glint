@@ -350,7 +350,7 @@ enum ImageGrabber {
     }
 
     /// ScreenCaptureKit reports a declined Screen Recording grant as an ordinary error; map it to
-    /// `.permissionDenied` (as recording and scroll capture do) and leave every other error untouched.
+    /// `.permissionDenied` (as recording does) and leave every other error untouched.
     static func permissionDenial(_ error: Error) -> CaptureError? {
         guard case .permissionDenied = ScreenRecorder.captureError(from: error) else { return nil }
         return .permissionDenied
