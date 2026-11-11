@@ -145,7 +145,8 @@ public final class ScreenCapturer {
 
     /// A scrolling capture using the current options. Keep it to `finish()` or `cancel()` it from elsewhere.
     public func scrollingSession() -> any ScrollingCapture {
-        ScrollCaptureSession(snapToEdges: options.snapToEdges, showsCursor: !options.hideCursor)
+        ScrollCaptureSession(snapToEdges: options.snapToEdges, showsCursor: !options.hideCursor,
+                             autoScroll: options.scrollCaptureAutoScroll)
     }
 
     /// Select a region, scroll through it, and get one tall stitched image (kind `.scrolling`).

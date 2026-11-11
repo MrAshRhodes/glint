@@ -12,6 +12,21 @@ protocol ScrollFrameSource: AnyObject {
     func signature(of frame: CGImage) -> ScrollSignature?
 }
 
+/// Delivers one bounded step, never a repeating timer. The session decides when another step is safe.
+@MainActor
+protocol ScrollDriving: AnyObject {
+    func scroll(by points: CGFloat) throws
+    func stop()
+}
+
+struct ScrollAutoScrollTiming {
+    var settleInterval: TimeInterval = 0.25
+    var responseTimeout: TimeInterval = 2
+    var noMovementLimit = 3
+    var maxSteps = 200
+    var maxDuration: TimeInterval = 120
+}
+
 /// What the scrolling-capture controls show.
 struct ScrollCaptureStatus: Equatable {
     var frames = 0
@@ -23,8 +38,13 @@ struct ScrollCaptureStatus: Equatable {
     var canUndo = false
     /// Set while the capture is paused, waiting for the user to decide.
     var warning: ScrollStitchWarning?
+    var isAutomatic = false
+    var pace: ScrollCapturePace = .ready
+    /// Automatic scrolling has stopped; completion must be confirmed rather than assuming this is the bottom.
+    var automaticStop: String?
 
-    var isPaused: Bool { warning != nil }
+    var isPaused: Bool { warning != nil || automaticStop != nil }
+    var pauseMessage: String? { warning?.message ?? automaticStop }
     var isAtLimit: Bool { warning == .heightLimit }
     /// Retry only makes sense for a join that was kept but may be wrong.
     var canRetry: Bool {
@@ -65,6 +85,10 @@ struct ScrollCaptureEnvironment {
     /// Time between two looks at the region.
     var pollInterval: TimeInterval = 0.1
     var limits = ScrollStitchLimits()
+    var automaticTiming = ScrollAutoScrollTiming()
+    var makeScroller: @MainActor (RecordingRegion) throws -> any ScrollDriving = {
+        try LiveScrollDriver(region: $0)
+    }
 
     @MainActor
     static var live: ScrollCaptureEnvironment {
@@ -75,6 +99,77 @@ struct ScrollCaptureEnvironment {
             makeSource: { try await LiveScrollFrameSource.make(region: $0, showsCursor: $1) },
             sleep: { try await Task.sleep(nanoseconds: UInt64(max($0, 0) * 1_000_000_000)) },
             now: { ProcessInfo.processInfo.systemUptime })
+    }
+}
+
+/// A pixel-wheel event addressed only to the original application and a point inside the selected region.
+/// Re-checking the window under that point prevents scrolling a replacement window or a different app.
+@MainActor
+final class LiveScrollDriver: ScrollDriving {
+    struct Target: Equatable {
+        let pid: pid_t
+        let windowID: CGWindowID
+        let bounds: CGRect
+    }
+
+    private let point: CGPoint
+    private let target: Target
+    private var stopped = false
+
+    init(region: RecordingRegion) throws {
+        point = CGPoint(x: region.rect.midX, y: region.rect.midY)
+        guard let target = Self.target(at: point) else {
+            throw CaptureError.failed("No application window was found inside the selected region.")
+        }
+        self.target = target
+        guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
+            throw CaptureError.failed("Allow Glint in Privacy & Security → Accessibility to scroll automatically.")
+        }
+    }
+
+    func scroll(by points: CGFloat) throws {
+        guard !stopped else { return }
+        guard CGPreflightPostEventAccess() else {
+            throw CaptureError.failed("Accessibility permission is required for automatic scrolling.")
+        }
+        guard Self.target(at: point) == target else {
+            throw CaptureError.failed("The selected window moved, closed, or was covered.")
+        }
+        guard let event = Self.event(at: point, points: points) else {
+            throw CaptureError.failed("Could not create a scrolling event.")
+        }
+        event.postToPid(target.pid)
+    }
+
+    func stop() { stopped = true }
+
+    /// Kept separate so direction and coordinates can be checked without posting an event.
+    static func event(at point: CGPoint, points: CGFloat) -> CGEvent? {
+        guard points.isFinite, points > 0,
+              let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                  wheel1: -Int32(min(max(points.rounded(), 1), 120)), wheel2: 0, wheel3: 0)
+        else { return nil }
+        event.location = point
+        event.flags = []
+        return event
+    }
+
+    private static func target(at point: CGPoint) -> Target? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                       kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return target(at: point, windows: windows, excluding: ProcessInfo.processInfo.processIdentifier)
+    }
+
+    static func target(at point: CGPoint, windows: [[String: Any]], excluding ownPID: pid_t) -> Target? {
+        for window in windows {
+            guard let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid > 0, pid != ownPID,
+                  let id = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds), rect.contains(point),
+                  (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue != 0 else { continue }
+            return Target(pid: pid, windowID: id, bounds: rect)
+        }
+        return nil
     }
 }
 

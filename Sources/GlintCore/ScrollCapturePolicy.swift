@@ -112,3 +112,50 @@ public struct ScrollGrabPolicy: Sendable {
         stillSince = nil
     }
 }
+
+/// Advisory feedback only: a slow scroll is safe, but the user may need a nudge to continue or finish.
+public enum ScrollCapturePace: Equatable, Sendable {
+    case ready, steady, tooFast, tooSlow
+
+    public var message: String {
+        switch self {
+        case .ready: return "Scroll down steadily to capture more."
+        case .steady: return "Steady — keep this pace."
+        case .tooFast: return "Too fast — slow down to keep frames aligned."
+        case .tooSlow: return "Too slow — scroll down a little, or choose Done if finished."
+        }
+    }
+}
+
+/// Measures viewport travel per second from successive observations, independently of the grab threshold.
+public struct ScrollPacePolicy: Sendable {
+    private var last: ScrollSignature?
+    private var lastTime: TimeInterval?
+    private var lastMovement: TimeInterval?
+    private var pace: ScrollCapturePace = .ready
+
+    public init() {}
+
+    public mutating func observe(_ signature: ScrollSignature, at now: TimeInterval) -> ScrollCapturePace {
+        defer {
+            last = signature
+            lastTime = now
+        }
+        guard let last, let lastTime else {
+            lastMovement = now
+            return .ready
+        }
+        let elapsed = now - lastTime
+        if elapsed > 0, signature.difference(from: last) > 0.75,
+           let shift = signature.shift(from: last), shift != 0 {
+            let rate = Double(abs(shift)) / Double(max(signature.height, 1)) / elapsed
+            lastMovement = now
+            pace = rate > 1 ? .tooFast : (rate < 0.08 ? .tooSlow : .steady)
+        } else if now - (lastMovement ?? now) >= 2 {
+            pace = .tooSlow
+        }
+        return pace
+    }
+
+    public mutating func reset() { self = ScrollPacePolicy() }
+}

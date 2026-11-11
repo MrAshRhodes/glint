@@ -643,9 +643,16 @@ After `make test` and `make app`, point Preferences → Output → History folde
 
 ## Scrolling capture
 
-Frame matching lives in `GlintCore/ScrollStitcher.swift` and the grab timing in `ScrollCapturePolicy.swift`, so both are unit tested with synthetic images (sticky headers, repeating stripes, an animated band, undo and the height limit). `GlintCapture/ScrollCaptureSession.swift` drives them from an injected frame source, clock and presenter; tests use fakes and never touch the screen. Nothing is written to disk until the result reaches the editor.
+Frame matching lives in `GlintCore/ScrollStitcher.swift` and the grab timing in `ScrollCapturePolicy.swift`, so both are unit tested with synthetic images (sticky headers, repeating stripes, an animated band, undo and the height limit). `GlintCapture/ScrollCaptureSession.swift` drives them from an injected frame source, clock and presenter; tests use fakes and never touch or scroll the real screen. Nothing is written to disk until the result reaches the editor.
 
-Before a release, after `make app`, check by hand: start with ⌃⌥⌘8 and scroll a long web page with a sticky header (the header appears once); scroll back up and use **Undo** and **Retry**; cancel with Esc and confirm nothing opens; finish with the shortcut and confirm the editor opens at Fit Width with Fit, Fit Width and 100% zoom working; Capture Text on the result reads the bottom of the page; and a very long page stops at the height limit with a warning.
+Before a release, after `make app`, check by hand:
+
+- With **Automatically scroll during scrolling capture** enabled in Preferences → Capture (the default), start with ⌃⌥⌘8 and select a long web page with a sticky header. Without touching the wheel, confirm the preview grows beyond the first viewport and the header appears once. Check the bottom of the result, not just its height.
+- Deny the Accessibility request and confirm the first frame stays available with an explanation and manual **Resume**. Manual mode must never request event-posting permission. With permission granted, three unchanged attempts at the bottom should pause for confirmation; **Resume** after any automatic stop must continue manually without posting more events.
+- Disable the preference and repeat. The app must not scroll for you; the panel should distinguish steady scrolling, too-fast scrolling and too-slow/idle scrolling. Pause safely, scroll back up, and use **Undo**, **Resume** and **Retry**.
+- In both modes, cancel with Esc and confirm nothing opens or continues scrolling; finish with the shortcut immediately after a small scroll and check that the final visible content is included. Confirm the editor opens at Fit Width with Fit, Fit Width and 100% zoom working.
+- Try a nested scrolling pane, an app that ignores synthetic scroll events, and a window that moves or closes mid-capture. Check that automatic scrolling cannot continue into another app, and that a stall or uncertain join is explained rather than silently advertised as a complete page.
+- Capture Text on the result reads the bottom of the page; a very long page stops at the height limit with a warning. Restart Glint to check that the preference persists, and reset preferences to restore automatic scrolling.
 
 ## Product site
 

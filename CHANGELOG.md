@@ -8,6 +8,16 @@ See [GitHub Releases](https://github.com/MrAshRhodes/glint/releases) for downloa
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-11
+
+### Added
+
+- Scrolling capture now scrolls automatically by default, advancing in small overlapping steps after each capture is stitched. Automatic scrolling needs Accessibility permission; unavailable scrolling, an apparent page bottom, a changed target window or a safety limit pauses for review, with **Resume** switching to manual capture. Turn off **Automatically scroll during scrolling capture** in Preferences → Capture to scroll manually without that extra permission; the capture panel highlights when your pace is too fast, too slow or steady. ([#132])
+
+### Fixed
+
+- Finishing a scrolling capture now includes the final short scroll even when **Done** is pressed before it settles; previously this could return only the first viewport. Finishing during an automatic step waits for that step, while an uncertain final join requires review instead of silently returning a truncated image. ([#132])
+
 ## [1.9.0] - 2026-11-10
 
 ### Added
@@ -282,7 +292,8 @@ First public release.
 - The reusable GlintCore library for capture, rendering, annotations, OCR, and sensitive-information detection.
 - Homebrew cask installation and ad-hoc-signed ZIP and DMG downloads with SHA-256 checksums.
 
-[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/MrAshRhodes/glint/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/MrAshRhodes/glint/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/MrAshRhodes/glint/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/MrAshRhodes/glint/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/MrAshRhodes/glint/compare/v1.8.0...v1.8.1
@@ -303,6 +314,7 @@ First public release.
 [1.1.0]: https://github.com/MrAshRhodes/glint/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/MrAshRhodes/glint/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/MrAshRhodes/glint/releases/tag/v1.0.0
+[#132]: https://github.com/MrAshRhodes/glint/issues/132
 [#3]: https://github.com/MrAshRhodes/glint/pull/3
 [#4]: https://github.com/MrAshRhodes/glint/pull/4
 [#8]: https://github.com/MrAshRhodes/glint/pull/8
